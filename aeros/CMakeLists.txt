@@ -15,6 +15,7 @@ set(LIBDIR ${CMAKE_CURRENT_SOURCE_DIR}/../libs)
 add_executable(main
     src/main.cpp
     src/globals.cpp
+    src/input.cpp
     src/gl_utils.cpp
     src/stl_loader.cpp
     src/voxel_grid.cpp

@@ -12,7 +12,7 @@ nvcc -arch=sm_75 -std=c++17 -Xcompiler /MD ^
   -I "%LIBDIR%\glm" ^
   -I src ^
   -I src\imgui ^
-  src\main.cpp src\globals.cpp src\gl_utils.cpp src\stl_loader.cpp ^
+  src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
   src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^
   src\forces.cpp src\model.cpp src\ui.cpp ^
   src\glad.c src\kernel.cu ^
