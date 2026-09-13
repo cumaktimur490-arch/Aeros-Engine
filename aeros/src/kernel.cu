@@ -53,7 +53,9 @@ __device__ bool sampleSDF(float3 p, float* dist, int nx, int ny, int nz,
         *outD = 1000.0f;
         return false;
     }
-    *outD = dist[(iz*ny + iy)*nx + ix];
+    // Поле хранится в ВОКСЕЛЯХ (шаг BFS = 1), переводим в мировые единицы,
+    // иначе зоны влияния зависят от разрешения сетки.
+    *outD = dist[(iz*ny + iy)*nx + ix] * csX;
     return true;
 }
 
