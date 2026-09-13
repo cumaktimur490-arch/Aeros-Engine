@@ -106,6 +106,9 @@ unsigned int particleVAO = 0;
 unsigned int particleVBO_pos = 0, particleVBO_col = 0;
 std::vector<float> particlePositions;
 std::vector<float> particleColors;
+// Сколько частиц реально аллоцировано в буферах/векторах.
+// Слайдер Count меняет numParticles, но буферы перевыделяются только в initParticles().
+int particleDrawCount = 0;
 
 int   numStreamlines     = 24;
 int   streamlineSteps    = 300;
@@ -325,36 +328,20 @@ void main() {
 bool loadSTL(const std::string& filename, std::vector<float>& vertices, std::vector<float>& normals) {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) return false;
-    char header[5] = {0};
-    file.read(header, 4);
-    if (strncmp(header, "solid", 5) == 0) {
-        file.clear(); file.seekg(0);
-        std::string line;
-        std::vector<glm::vec3> tv, tn;
-        glm::vec3 cn(0.0f);
-        while (std::getline(file, line)) {
-            std::istringstream iss(line);
-            std::string t; iss >> t;
-            if (t == "facet") { std::string nk; iss >> nk; iss >> cn.x >> cn.y >> cn.z; }
-            else if (t == "vertex") { glm::vec3 v; iss >> v.x >> v.y >> v.z; tv.push_back(v); tn.push_back(cn); }
-        }
-        for (size_t i = 0; i + 2 < tv.size(); i += 3) {
-            glm::vec3 v0 = tv[i], v1 = tv[i+1], v2 = tv[i+2];
-            glm::vec3 n = tn[i];
-            if (glm::length(n) < 0.0001f) n = glm::normalize(glm::cross(v1-v0, v2-v0));
-            for (int k = 0; k < 3; k++) {
-                glm::vec3 v = tv[i+k];
-                vertices.push_back(v.x); vertices.push_back(v.y); vertices.push_back(v.z);
-                normals.push_back(n.x);  normals.push_back(n.y);  normals.push_back(n.z);
-            }
-        }
-        file.close();
-        return !vertices.empty();
-    } else {
-        file.clear(); file.seekg(0);
-        char h[80]; file.read(h, 80);
-        uint32_t nt = 0; file.read(reinterpret_cast<char*>(&nt), sizeof(nt));
-        if (nt == 0) return false;
+
+    // Формат определяем по размеру файла: бинарный STL имеет размер ровно
+    // 84 + 50 * кол-во_треугольников байт. Всё остальное пробуем парсить как ASCII.
+    // (Проверка по слову "solid" ненадёжна: бинарные файлы тоже могут начинаться с "solid".)
+    file.seekg(0, std::ios::end);
+    std::streamoff fileSize = file.tellg();
+    file.seekg(80, std::ios::beg);
+    uint32_t nt = 0;
+    if (fileSize >= 84)
+        file.read(reinterpret_cast<char*>(&nt), sizeof(nt));
+    bool isBinary = (fileSize >= 84) && (fileSize == 84 + (std::streamoff)nt * 50);
+
+    if (isBinary) {
+        file.clear(); file.seekg(84, std::ios::beg);
         for (uint32_t i = 0; i < nt; i++) {
             float nx, ny, nz;
             file.read(reinterpret_cast<char*>(&nx), sizeof(float));
@@ -373,6 +360,30 @@ bool loadSTL(const std::string& filename, std::vector<float>& vertices, std::vec
         file.close();
         return !vertices.empty();
     }
+
+    // ASCII STL
+    file.clear(); file.seekg(0);
+    std::string line;
+    std::vector<glm::vec3> tv, tn;
+    glm::vec3 cn(0.0f);
+    while (std::getline(file, line)) {
+        std::istringstream iss(line);
+        std::string t; iss >> t;
+        if (t == "facet") { std::string nk; iss >> nk; iss >> cn.x >> cn.y >> cn.z; }
+        else if (t == "vertex") { glm::vec3 v; iss >> v.x >> v.y >> v.z; tv.push_back(v); tn.push_back(cn); }
+    }
+    for (size_t i = 0; i + 2 < tv.size(); i += 3) {
+        glm::vec3 v0 = tv[i], v1 = tv[i+1], v2 = tv[i+2];
+        glm::vec3 n = tn[i];
+        if (glm::length(n) < 0.0001f) n = glm::normalize(glm::cross(v1-v0, v2-v0));
+        for (int k = 0; k < 3; k++) {
+            glm::vec3 v = tv[i+k];
+            vertices.push_back(v.x); vertices.push_back(v.y); vertices.push_back(v.z);
+            normals.push_back(n.x);  normals.push_back(n.y);  normals.push_back(n.z);
+        }
+    }
+    file.close();
+    return !vertices.empty();
 }
 
 // =====================================================
@@ -525,7 +536,9 @@ float sampleSDFCPU(const glm::vec3& p) {
     int iz = (int)((p.z - g_voxMinZ) / flowParams.cellSizeZ);
     if (ix < 0 || ix >= g_voxNx || iy < 0 || iy >= g_voxNy || iz < 0 || iz >= g_voxNz)
         return 1000.0f;
-    return g_distanceField[(iz * g_voxNy + iy) * g_voxNx + ix];
+    // Поле хранится в ВОКСЕЛЯХ (шаг BFS = 1), переводим в мировые единицы,
+    // иначе зоны влияния зависят от разрешения сетки.
+    return g_distanceField[(iz * g_voxNy + iy) * g_voxNx + ix] * flowParams.cellSizeX;
 }
 
 glm::vec3 sdfNormalCPU(const glm::vec3& p) {
@@ -754,6 +767,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
 // =====================================================
 void initParticles() {
     updateFlowParams();
+    particleDrawCount = numParticles;
     if (useCUDA == 1) {
         initParticlesCUDA(particlePositions, particleColors, numParticles, flowParams);
     } else {
@@ -792,10 +806,14 @@ void initParticles() {
 
 void updateParticles(float dt) {
     updateFlowParams();
+    // Работаем только с аллоцированным количеством: слайдер Count меняет
+    // numParticles, а перевыделение происходит в initParticles() (по отпусканию слайдера).
+    const int n = particleDrawCount;
+    if (n <= 0) return;
     if (useCUDA == 1) {
-        updateParticlesCUDA(particlePositions, particleColors, numParticles, flowParams, dt);
+        updateParticlesCUDA(particlePositions, particleColors, n, flowParams, dt);
     } else {
-        for (int i = 0; i < numParticles; i++) {
+        for (int i = 0; i < n; i++) {
             glm::vec3 p(particlePositions[3*i], particlePositions[3*i+1], particlePositions[3*i+2]);
             glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
             glm::vec3 np = p + v * dt * flowParams.timeScale;
@@ -1269,11 +1287,17 @@ int main() {
     static float prevAz    = flowAzimuth;
     static float prevEl    = flowElevation;
     static float prevWake  = wakeStrength;
+    static float prevStro  = strouhal;
+    static float prevWL    = wakeLength;
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
+        // Ограничиваем dt: на первом кадре (после диалога/вокселизации) он может
+        // исчисляться секундами, что телепортирует все частицы.
+        if (deltaTime > 0.1f)   deltaTime = 0.1f;
+        if (deltaTime <= 0.0f)  deltaTime = 0.0001f;
 
         if (limitFPS) {
             double target = 1.0 / maxFPS;
@@ -1291,11 +1315,15 @@ int main() {
         if (showStreamlines && (fabs(prevSpeed-flowSpeed) > 1e-3f ||
                                 fabs(prevAz-flowAzimuth) > 1e-3f ||
                                 fabs(prevEl-flowElevation) > 1e-3f ||
-                                fabs(prevWake-wakeStrength) > 1e-3f)) {
+                                fabs(prevWake-wakeStrength) > 1e-3f ||
+                                fabs(prevStro-strouhal) > 1e-3f ||
+                                fabs(prevWL-wakeLength) > 1e-3f)) {
             prevSpeed = flowSpeed;
             prevAz = flowAzimuth;
             prevEl = flowElevation;
             prevWake = wakeStrength;
+            prevStro = strouhal;
+            prevWL = wakeLength;
             computeStreamlines();
         }
 
@@ -1331,6 +1359,8 @@ int main() {
         if (ImGui::CollapsingHeader("Particles", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Checkbox("Show Particles", &showParticles);
             ImGui::SliderInt("Count", &numParticles, 100, 200000);
+            // Перевыделяем буферы только когда слайдер отпущен
+            if (ImGui::IsItemDeactivatedAfterEdit()) initParticles();
             ImGui::SliderFloat("Size", &particleSize, 1.0f, 8.0f);
             ImGui::SliderFloat("Max Speed Color", &maxSpeedForColor, 0.5f, 20.0f);
             if (ImGui::Button("Reset Particles")) initParticles();
@@ -1480,7 +1510,7 @@ int main() {
             glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
             glPointSize(particleSize);
             glBindVertexArray(particleVAO);
-            glDrawArrays(GL_POINTS, 0, numParticles);
+            glDrawArrays(GL_POINTS, 0, particleDrawCount);
             glBindVertexArray(0);
             glPointSize(1.0f);
         }

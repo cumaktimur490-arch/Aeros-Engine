@@ -1,0 +1,17 @@
+# Артефакты сборки
+bin/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.idb
+*.ipch
+*.tlog
+*.log
+
+# ImGui-макет окна (персональные настройки)
+imgui.ini
+
+# IDE
+.vs/
