@@ -1,0 +1,6 @@
+# Собранные zip (tools/build_zip.sh)
+*.zip
+
+# Системный мусор
+.DS_Store
+Thumbs.db
