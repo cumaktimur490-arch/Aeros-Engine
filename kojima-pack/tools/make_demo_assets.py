@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Генератор демо-ассетов KOJIMA PACK.
+"""Генератор ассетов KOJIMA PACK (v0.3).
 
 Рисует попиксельно (без внешних картинок — всё оригинальное, "по мотивам"):
-  1. textures/item/totem_of_undying.png — BB-капсула, 16x16 x4 кадра (стрип 16x64).
-     Кадры: сканирующая линия идёт вниз, лампочка статуса BB
-     зелёный -> жёлтый -> оранжевый -> красный (нарастание стресса BB).
-  2. textures/item/echo_shard.png — хиралиевый кристалл, 16x16 x4 кадра.
-     Кадры: переливающийся блик в 4 позициях.
+  1. textures/item/totem_of_undying.png — BB-капсула: янтарное стекло,
+     младенец внутри, металлический корпус с синей лампой и лампой статуса.
+     16x16 x4 кадра (стрип 16x64). Кадры: пузырёк всплывает вверх,
+     лампа статуса зелёный -> жёлтый -> оранжевый -> красный.
+  2. textures/item/echo_shard.png — хиральная рука: 4 золотых
+     пальца-кристалла на тёмном камне. 16x16 x4 кадра.
+     Кадры: бегущий блик по пальцам + мерцающие искры.
   3. pack.png — иконка пака 64x64.
 
 Запуск:  python3 tools/make_demo_assets.py
@@ -22,76 +24,90 @@ T = (0, 0, 0, 0)  # transparent
 
 
 # ---------------------------------------------------------------- BB-капсула
-def bb_frame(status_color, scan_y):
+def bb_frame(status_color, bubble):
     px = Image.new("RGBA", (16, 16), T)
     P = px.load()
-    OUT = (16, 20, 34, 255)      # контур
-    SHELL_D = (36, 46, 66, 255)  # корпус тёмный
-    SHELL_M = (62, 78, 108, 255)  # корпус светлый
-    GLASS = (150, 186, 208, 255)  # стекло
-    GLASS_L = (205, 228, 242, 255)  # блик стекла
-    GLASS_D = (110, 138, 162, 255)  # тень стекла
-    BABY = (242, 201, 155, 255)  # силуэт BB
-    BABY_D = (206, 152, 112, 255)
-    ORANGE = (255, 157, 46, 255)  # скан-линия
-    ORANGE_B = (255, 214, 130, 255)
-    ORANGE_D = (150, 80, 20, 255)
+    OUT_G = (70, 40, 12, 255)     # контур стекла
+    AMBER_D = (190, 110, 30, 255)  # янтарь край
+    AMBER = (245, 165, 60, 255)   # янтарь
+    AMBER_L = (255, 205, 120, 255)  # янтарь свечение
+    HIGH = (255, 235, 180, 255)   # блик стекла
+    BABY = (255, 228, 195, 255)   # младенец
+    BABY_D = (232, 175, 135, 255)  # младенец тень
+    OUT_M = (45, 32, 20, 255)     # контур корпуса
+    TAN = (198, 155, 100, 255)    # корпус
+    TAN_D = (150, 112, 70, 255)
+    TAN_L = (225, 185, 130, 255)
+    BLUE = (150, 215, 255, 255)   # синяя лампа
+    BLUE_W = (235, 250, 255, 255)
+    BUB = (255, 242, 215, 255)    # пузырёк
 
-    # --- боковые баки (ручки капсулы)
-    for x in (3, 12):
-        for y in range(6, 10):
-            P[x, y] = SHELL_D
-        P[x, 5] = OUT
-        P[x, 10] = OUT
+    # --- янтарный купол: маска по строкам
+    glass_rows = {
+        1: (5, 10), 2: (4, 11),
+        3: (3, 12), 4: (3, 12), 5: (3, 12),
+        6: (3, 12), 7: (3, 12), 8: (3, 12), 9: (3, 12),
+        10: (4, 11),
+    }
+    mask = set()
+    for y, (x0, x1) in glass_rows.items():
+        for x in range(x0, x1 + 1):
+            mask.add((x, y))
+    for (x, y) in mask:
+        if (x - 1, y) not in mask or (x + 1, y) not in mask \
+                or (x, y - 1) not in mask or (x, y + 1) not in mask:
+            P[x, y] = OUT_G
+        elif x <= 4 or x >= 11:
+            P[x, y] = AMBER_D
+        elif 7 <= x <= 9:
+            P[x, y] = AMBER_L
+        else:
+            P[x, y] = AMBER
+    # блик слева
+    for y in range(3, 9):
+        P[4, y] = HIGH
+    P[5, 2] = HIGH
 
-    # --- корпус капсулы x5..10, y1..14 (скруглённые углы)
-    for x in range(5, 11):
-        for y in range(1, 15):
-            if (x, y) in ((5, 1), (10, 1), (5, 14), (10, 14)):
-                continue
-            P[x, y] = SHELL_M
-    # контур
+    # --- младенец: голова + тельце
+    for x, y in ((7, 3), (8, 3), (7, 4), (8, 4)):
+        P[x, y] = BABY
+    P[8, 4] = BABY_D
     for x in range(6, 10):
-        P[x, 1] = OUT
-        P[x, 14] = OUT
-    for y in range(2, 14):
-        P[5, y] = OUT
-        P[10, y] = OUT
-    P[5, 1] = P[10, 1] = P[5, 14] = P[10, 14] = T
-    # верхняя крышка
-    P[6, 1] = P[9, 1] = SHELL_D
-    P[7, 1] = P[8, 1] = ORANGE_D
+        for y in (6, 7):
+            P[x, y] = BABY
+    P[6, 7] = P[9, 7] = BABY_D
+    P[9, 5] = BABY_D  # ручка
+    P[6, 8] = P[7, 8] = BABY_D  # ножки (поджаты)
 
-    # --- стекло x6..9, y2..13
-    for x in range(6, 10):
-        for y in range(2, 14):
-            P[x, y] = GLASS
-    for y in range(2, 14):
-        P[6, y] = GLASS_L   # блик слева
-        P[9, y] = GLASS_D   # тень справа
+    # --- пузырёк (всплывает по кадрам)
+    bx, by = bubble
+    P[bx, by] = BUB
 
-    # --- силуэт BB: голова 2x2 + тело
-    for x in (7, 8):
-        P[x, 5] = BABY
-        P[x, 6] = BABY
-        P[x, 8] = BABY
-        P[x, 9] = BABY
-    P[7, 7] = BABY_D
-    P[8, 7] = BABY
-    P[7, 10] = P[8, 10] = BABY_D
-    P[7, 4] = GLASS_L  # макушка-блик
-
-    # --- скан-линия (движется по кадрам) + шлейф
-    for x in range(6, 10):
-        P[x, scan_y] = ORANGE
-        if scan_y - 1 >= 2:
-            P[x, scan_y - 1] = ORANGE_D
-    P[9, scan_y] = ORANGE_B
-
-    # --- нижняя панель + лампочка статуса BB
-    for x in range(6, 10):
-        P[x, 13] = SHELL_D
-    P[7, 13] = P[8, 13] = status_color
+    # --- металлический корпус x2..13, y11..14
+    for x in range(2, 14):
+        for y in range(11, 15):
+            P[x, y] = TAN
+    for x in range(2, 14):
+        P[x, 11] = OUT_M if x in (2, 13) else TAN_L
+        P[x, 14] = OUT_M
+    for y in range(11, 15):
+        P[2, y] = OUT_M
+        P[13, y] = OUT_M
+    # заклёпки
+    for x, y in ((3, 12), (12, 12), (3, 13), (12, 13)):
+        P[x, y] = OUT_M
+    # тень корпуса
+    for x in range(4, 12):
+        P[x, 13] = TAN_D
+    # синяя лампа 2x2
+    P[4, 12] = BLUE_W
+    P[5, 12] = BLUE
+    P[4, 13] = BLUE
+    P[5, 13] = BLUE
+    # лампа статуса BB 2x2 (цвет зависит от кадра)
+    for x in (10, 11):
+        for y in (12, 13):
+            P[x, y] = status_color
     return px
 
 
@@ -102,74 +118,89 @@ def make_totem():
         (255, 157, 46, 255),   # оранжевый
         (255, 72, 72, 255),    # красный — BB в стрессе!
     ]
+    bubbles = [(11, 9), (11, 7), (10, 5), (10, 3)]
     strip = Image.new("RGBA", (16, 64), T)
     for f in range(4):
-        frame = bb_frame(statuses[f], scan_y=3 + f * 3)
+        frame = bb_frame(statuses[f], bubbles[f])
         strip.paste(frame, (0, f * 16))
     out = os.path.join(ITEM, "totem_of_undying.png")
     strip.save(out)
     print("wrote", out, strip.size)
 
 
-# ------------------------------------------------------- хиралиевый кристалл
-def chiral_frame(sparkle):
+# ------------------------------------------------------------- хиральная рука
+def chiral_frame(sparkle, glint, lit_finger):
     px = Image.new("RGBA", (16, 16), T)
     P = px.load()
-    EDGE = (58, 44, 18, 255)
-    GOLD_L = (255, 208, 110, 255)
-    GOLD = (232, 164, 60, 255)
-    GOLD_D = (160, 104, 32, 255)
-    TAR = (12, 10, 16, 255)  # смоляное основание
+    EDGE = (110, 75, 25, 255)
+    TIP = (255, 240, 200, 255)
+    ROCK = (55, 50, 58, 255)
+    ROCK_L = (88, 80, 90, 255)
+    WHITE = (255, 252, 240, 255)
 
-    # маска кристалла (ромбовидный осколок)
-    rows = {
-        1: (7, 8),
-        2: (7, 8),
-        3: (6, 9),
-        4: (6, 9),
-        5: (5, 10),
-        6: (5, 10),
-        7: (5, 10),
-        8: (6, 9),
-        9: (6, 9),
-        10: (7, 8),
-        11: (7, 8),
-    }
+    # пальцы-кристаллы (разрывы между ними — фон)
+    fingers = [
+        (2, 3, 5, 10),    # указательный
+        (5, 6, 2, 10),    # средний (самый высокий)
+        (8, 9, 4, 10),    # безымянный
+        (11, 12, 6, 10),  # мизинец
+    ]
+    palm = (2, 12, 10, 12)
     mask = set()
-    for y, (x0, x1) in rows.items():
+    for (x0, x1, y0, y1) in fingers + [palm]:
         for x in range(x0, x1 + 1):
-            mask.add((x, y))
+            for y in range(y0, y1 + 1):
+                mask.add((x, y))
+
+    def gold(x, y, left):
+        if y <= 4:
+            return (255, 220, 140, 255) if left else (235, 185, 90, 255)
+        if y <= 8:
+            return (240, 185, 85, 255) if left else (205, 145, 55, 255)
+        return (210, 150, 60, 255) if left else (170, 115, 40, 255)
+
+    # левая граница каждого пальца (для светотени)
+    lefts = {2, 5, 8, 11}
     for (x, y) in mask:
-        # край = контур
-        if (x - 1, y) not in mask or (x + 1, y) not in mask \
+        if (x, y - 1) not in mask and y <= 6:
+            P[x, y] = TIP  # кончики кристаллов
+        elif (x - 1, y) not in mask or (x + 1, y) not in mask \
                 or (x, y - 1) not in mask or (x, y + 1) not in mask:
-            P[x, y] = EDGE
-        elif x <= 7:
-            P[x, y] = GOLD_L if y < 6 else GOLD
+            P[x, y] = EDGE  # внешний контур (включая низ ладони)
         else:
-            P[x, y] = GOLD if y < 7 else GOLD_D
-    # блик-грань
-    P[6, 5] = P[6, 6] = (255, 236, 190, 255)
+            P[x, y] = gold(x, y, x in lefts)
 
-    # смоляная капля снизу (BT-смола)
-    for x, y in ((6, 12), (7, 12), (8, 12), (9, 12),
-                 (7, 13), (8, 13), (7, 14)):
-        P[x, y] = TAR
-    P[8, 12] = (40, 32, 52, 255)  # блик смолы
+    # бегущий блик: один палец за кадр светится ярче
+    fx0, fx1, fy0, fy1 = fingers[lit_finger]
+    for y in range(fy0, fy1 + 1):
+        if P[fx0, y] != TIP:
+            P[fx0, y] = (255, 235, 170, 255)
 
-    # переливающаяся искра (позиция зависит от кадра)
+    # тёмное каменное основание
+    for x in range(1, 14):
+        P[x, 13] = ROCK
+    for x in range(2, 13):
+        P[x, 14] = ROCK
+    for x in range(4, 11):
+        P[x, 15] = ROCK
+    for x, y in ((3, 13), (7, 13), (11, 13), (5, 14), (9, 14)):
+        P[x, y] = ROCK_L
+
+    # мерцающая искра-крест + одиночный блик
     sx, sy = sparkle
     for dx, dy in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)):
-        P[sx + dx, sy + dy] = (255, 255, 255, 255)
-    P[sx, sy] = (255, 246, 220, 255)
+        P[sx + dx, sy + dy] = WHITE
+    gx, gy = glint
+    P[gx, gy] = WHITE
     return px
 
 
 def make_chiral():
-    spots = [(3, 3), (12, 4), (3, 11), (12, 10)]
+    sparkles = [(6, 5), (9, 7), (3, 8), (6, 9)]
+    glints = [(11, 9), (3, 6), (8, 6), (12, 11)]
     strip = Image.new("RGBA", (16, 64), T)
     for f in range(4):
-        strip.paste(chiral_frame(spots[f]), (0, f * 16))
+        strip.paste(chiral_frame(sparkles[f], glints[f], f), (0, f * 16))
     out = os.path.join(ITEM, "echo_shard.png")
     strip.save(out)
     print("wrote", out, strip.size)

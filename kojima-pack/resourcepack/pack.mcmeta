@@ -1,10 +1,7 @@
 {
   "pack": {
-    "pack_format": 48,
-    "supported_formats": {
-      "min_inclusive": 15,
-      "max_inclusive": 80
-    },
-    "description": "§6KOJIMA PACK §7— MGS × Death Stranding §8(v0.1 demo)"
+    "description": "§6KOJIMA PACK §7— MGS × Death Stranding §8(v0.3, MC 1.21.11)",
+    "min_format": 75,
+    "max_format": 75
   }
 }
