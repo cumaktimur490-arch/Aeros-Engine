@@ -1,0 +1,27 @@
+{
+  "display": {
+    "icon": {
+      "id": "minecraft:totem_of_undying"
+    },
+    "title": "KEEP ON KEEPING ON",
+    "description": "Tomorrow is in your hands.",
+    "background": "minecraft:textures/gui/advancements/backgrounds/adventure.png",
+    "frame": "challenge",
+    "announce_to_chat": true,
+    "show_toast": true,
+    "hidden": false
+  },
+  "criteria": {
+    "hold_bb_pod": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": ["minecraft:totem_of_undying"]
+          }
+        ]
+      }
+    }
+  },
+  "requirements": [["hold_bb_pod"]]
+}

@@ -1,0 +1,34 @@
+{
+  "_note": "ШАБЛОН. Переименуй в sounds.json и положи .ogg файлы в assets/minecraft/sounds/kojima/ (см. README раздел Звуки). Формат: Ogg Vorbis, 44100 Hz, mono/stereo.",
+  "kojima.odradek.ping": {
+    "category": "hostile",
+    "subtitle": "subtitles.kojima.odradek.ping",
+    "sounds": [
+      "kojima/odradek_ping"
+    ]
+  },
+  "kojima.bb.cry": {
+    "category": "friendly",
+    "subtitle": "subtitles.kojima.bb.cry",
+    "sounds": [
+      "kojima/bb_cry"
+    ]
+  },
+  "kojima.bt.whale": {
+    "category": "ambient",
+    "subtitle": "subtitles.kojima.bt.whale",
+    "sounds": [
+      {
+        "name": "kojima/bt_whale",
+        "stream": true
+      }
+    ]
+  },
+  "kojima.alert": {
+    "category": "hostile",
+    "subtitle": "subtitles.kojima.alert",
+    "sounds": [
+      "kojima/alert_stinger"
+    ]
+  }
+}
