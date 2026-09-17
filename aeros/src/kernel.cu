@@ -53,7 +53,9 @@ __device__ bool sampleSDF(float3 p, float* dist, int nx, int ny, int nz,
         *outD = 1000.0f;
         return false;
     }
-    *outD = dist[(iz*ny + iy)*nx + ix];
+    // Поле хранится в ВОКСЕЛЯХ (шаг BFS = 1), переводим в мировые единицы,
+    // иначе зоны влияния зависят от разрешения сетки.
+    *outD = dist[(iz*ny + iy)*nx + ix] * csX;
     return true;
 }
 
@@ -289,20 +291,16 @@ __global__ void updateParticlesKernel(float3* pos, float3* col, int n,
         float vmag = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
         if (vmag < 1e-4f) vmag = 1e-4f;
 
-        // Нормальная компонента потока
         float vinf_n = prm.vx*nrm.x + prm.vy*nrm.y + prm.vz*nrm.z;
-        // Тангенциальная составляющая потока (вдоль поверхности)
         float3 vinf_t = make_float3(prm.vx - vinf_n*nrm.x,
                                     prm.vy - vinf_n*nrm.y,
                                     prm.vz - vinf_n*nrm.z);
 
-        // Убираем нормальную составляющую скорости частицы
         float vn = v.x*nrm.x + v.y*nrm.y + v.z*nrm.z;
         v.x -= vn * nrm.x;
         v.y -= vn * nrm.y;
         v.z -= vn * nrm.z;
 
-        // При ударе под 90° (перпендикулярно) даём сильный тангенциальный импульс
         float perpFactor = fabsf(vinf_n) / (vmag + 1e-6f);
         float slideBoost = 1.2f + 0.8f * perpFactor;
 
@@ -310,7 +308,6 @@ __global__ void updateParticlesKernel(float3* pos, float3* col, int n,
         v.y += vinf_t.y * slideBoost * 0.6f;
         v.z += vinf_t.z * slideBoost * 0.6f;
 
-        // Если скорость частицы совсем мала — полностью заменяем на касательный поток
         float spd = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
         if (spd < 0.3f * vmag) {
             v.x = vinf_t.x * slideBoost;
@@ -376,7 +373,6 @@ __global__ void pressureKernel(float3* verts, float3* nrms, float3* outCol,
     float speedRatio = speed / vinf;
     float cp = 1.0f - speedRatio*speedRatio;
 
-    // Разрежение за кормой (wake suction)
     float rx = p.x - prm.centerX;
     float ry = p.y - prm.centerY;
     float rz = p.z - prm.centerZ;
@@ -476,3 +472,6 @@ extern "C" void computeVertexPressureCUDA(const std::vector<float>& verts,
     cudaFree(dn);
     cudaFree(dc);
 }
+
+// Доступ к SDF-полю на устройстве для LBM-солвера (lbm.cu)
+extern "C" float* getCudaDistField() { return g_dDist; }
