@@ -11,7 +11,6 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
-      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +33,7 @@ jobs:
           where nvcc.exe
           nvcc --version
           dir libs\glfw\lib-vc2022
+          dir aeros\src
 
       - name: Build x64 CPU (fallback, always works)
         shell: cmd
@@ -76,41 +76,21 @@ jobs:
           path: |
             build-*.log
 
-      - name: Upload logs to gist on failure
-        if: failure()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $log = ""
-          if (Test-Path "build-x64-cpu.log") { $log += "=== build-x64-cpu.log ===`n" + (Get-Content "build-x64-cpu.log" -Raw) + "`n`n" }
-          if (Test-Path "build-x64.log") { $log += "=== build-x64.log ===`n" + (Get-Content "build-x64.log" -Raw) }
-          if ($log.Length -gt 90000) { $log = $log.Substring(0,90000) }
-          $log | Out-File -FilePath /tmp/log.txt -Encoding utf8
-          # Create gist via API
-          $body = @{
-            description = "Build logs for run ${{ github.run_id }}"
-            public = $false
-            files = @{
-              "build.log" = @{ content = $log }
-            }
-          } | ConvertTo-Json -Depth 5
-          $body | Out-File -FilePath /tmp/gist.json -Encoding utf8
-          try {
-            $response = gh api gists --method POST --input /tmp/gist.json
-            Write-Host "Gist created: $response"
-            $url = ($response | ConvertFrom-Json).html_url
-            Write-Host "Gist URL: $url"
-            echo "GIST_URL=$url" >> $env:GITHUB_ENV
-          } catch {
-            Write-Host "Failed to create gist: $_"
-          }
-
-      - name: Show gist URL
+      - name: Push logs to branch on failure
         if: failure()
         shell: pwsh
         run: |
-          if (Test-Path env:GIST_URL) { Write-Host "Logs gist: $env:GIST_URL" }
+          $runId = "${{ github.run_id }}"
+          $branch = "ci-logs/$runId"
+          Write-Host "Creating branch $branch with logs"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout -b $branch
+          if (Test-Path "build-x64-cpu.log") { Copy-Item "build-x64-cpu.log" -Destination "build-x64-cpu-$runId.log" -Force }
+          if (Test-Path "build-x64.log") { Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force }
+          git add *.log
+          git commit -m "ci: logs for run $runId" || echo "No logs to commit"
+          git push origin $branch --force
 
       - name: Check binary
         if: success()
