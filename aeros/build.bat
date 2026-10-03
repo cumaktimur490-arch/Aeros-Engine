@@ -99,8 +99,15 @@ if errorlevel 1 (
 
 where nvcc.exe >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] nvcc.exe not found. Install CUDA Toolkit and add to PATH.
-    exit /b 1
+    echo [WARN] nvcc.exe not found, trying CPU-only build...
+    call "%~dp0build-cpu.bat" %OUT_ARCH%
+    if errorlevel 1 (
+        echo [ERROR] CPU build also failed
+        exit /b 1
+    ) else (
+        echo [Aeros] CPU build succeeded (nvcc not found fallback)
+        goto :done
+    )
 )
 
 if not exist bin mkdir bin

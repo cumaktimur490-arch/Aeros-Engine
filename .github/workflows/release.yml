@@ -69,7 +69,7 @@ jobs:
         run: |
           echo === MSVC ===
           where cl.exe
-          cl.exe 2>&1 | head -n 5
+          cl.exe 2>&1 | more
           echo === CUDA ===
           nvcc --version
           where nvcc
@@ -77,6 +77,9 @@ jobs:
           dir libs\glfw\lib-vc2022
           echo === Env ===
           set | findstr /i cuda
+          echo === Source files ===
+          dir aeros\src\*.cpp
+          dir aeros\src\*.cu
 
       - name: Setup Inno Setup
         shell: pwsh
@@ -118,17 +121,19 @@ jobs:
             Write-Host "Failed to download GLFW x86: $_" -ForegroundColor Yellow
           }
 
-      - name: Build x64
+      - name: Build x64 (with log)
         shell: cmd
         run: |
           cd aeros
           echo Building x64...
-          call build.bat x64
+          call build.bat x64 > ..\build-x64.log 2>&1
+          type ..\build-x64.log
           if errorlevel 1 (
             echo CUDA build failed, trying CPU fallback...
-            call build-cpu.bat x64
+            call build-cpu.bat x64 > ..\build-x64-cpu.log 2>&1
+            type ..\build-x64-cpu.log
             if errorlevel 1 (
-              echo Both CUDA and CPU builds failed
+              echo Both builds failed, see logs
               exit /b 1
             )
           )
@@ -152,17 +157,32 @@ jobs:
         run: |
           cd aeros
           echo Building x86...
-          call build.bat x86
+          call build.bat x86 > ..\build-x86.log 2>&1
+          type ..\build-x86.log
           if errorlevel 1 (
-            echo x86 build failed, trying fallback with x64 binary copy
-            if exist bin\main-x64.exe (
-              copy /Y bin\main-x64.exe bin\main-x86.exe
-              echo Fallback copy done
-            ) else (
-              echo No x64 binary for fallback
+            echo x86 build failed, trying CPU fallback...
+            call build-cpu.bat x86 > ..\build-x86-cpu.log 2>&1
+            type ..\build-x86-cpu.log
+            if errorlevel 1 (
+              echo x86 CPU build failed, trying fallback with x64 binary copy
+              if exist bin\main-x64.exe (
+                copy /Y bin\main-x64.exe bin\main-x86.exe
+                echo Fallback copy done
+              ) else (
+                echo No x64 binary for fallback
+              )
             )
           )
           dir bin
+
+      - name: Upload build logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build-*.log
+            aeros/bin/
 
       - name: Prepare release folder
         shell: pwsh
