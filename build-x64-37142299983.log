@@ -1,0 +1,124 @@
+[Aeros] Building for x64 using vcvars64.bat ...
+[Aeros] MSVC already in PATH, skipping vcvars detection
+[Aeros] Version: 1.0.0
+[Aeros] Libs: D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs
+[Aeros] GLFW lib dir: lib-vc2022
+[Aeros] Checking tools...
+[Aeros] Starting nvcc compilation for x64...
+nvcc -arch=sm_75 -std=c++17 -Xcompiler /MD -Xcompiler /EHsc -I ... -o bin\main-x64.exe
+main.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:/a/Aeros-Engine/Aeros-Engine/aeros/../libs/glad/include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+globals.cpp
+input.cpp
+gl_utils.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:/a/Aeros-Engine/Aeros-Engine/aeros/../libs/glad/include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+stl_loader.cpp
+voxel_grid.cpp
+flow_field.cpp
+particles.cpp
+streamlines.cpp
+forces.cpp
+model.cpp
+ui.cpp
+glad.c
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\include\crt/host_config.h(170): fatal error C1189: #error:  -- unsupported Microsoft Visual Studio version! Only the versions between 2017 and 2022 (inclusive) are supported! The nvcc flag '-allow-unsupported-compiler' can be used to override this version check; however, using an unsupported host compiler may cause compilation failure or incorrect run time execution. Use at your own risk.
+kernel.cu
+[WARN] CUDA build failed for x64, trying CPU-only fallback...
+[Aeros CPU] Building for x64 ...
+[Aeros CPU] Version: 1.0.0 Arch: x64
+[Aeros CPU] LibDir: D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs GLFW: lib-vc2022
+[Aeros CPU] Compiling glad.c...
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+glad.c
+[Aeros CPU] Compiling C++ files...
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+main.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs\glad\include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+globals.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+input.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+gl_utils.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs\glad\include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+stl_loader.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+voxel_grid.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+flow_field.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+particles.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+streamlines.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+forces.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+model.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+ui.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+cuda_stub.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_draw.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_tables.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_widgets.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_impl_glfw.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_impl_opengl3.cpp
+[Aeros CPU] Linking...
+Microsoft (R) Incremental Linker Version 14.51.36260.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+[Aeros CPU] Build OK: bin\main-x64.exe
+[Aeros] CPU fallback build succeeded for x64
+[Aeros] Done.

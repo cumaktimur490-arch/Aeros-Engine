@@ -1,0 +1,145 @@
+[Aeros CPU] Building for x86 ...
+[Aeros CPU] Version: 1.0.0 Arch: x86
+[Aeros CPU] LibDir: D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs GLFW: lib-vc2022-x86
+[Aeros CPU] Compiling glad.c...
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+glad.c
+[Aeros CPU] Compiling C++ files...
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+main.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs\glad\include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+globals.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+input.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+gl_utils.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs\glad\include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+stl_loader.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+voxel_grid.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+flow_field.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+particles.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+streamlines.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+forces.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+model.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+ui.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+cuda_stub.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_draw.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_tables.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_widgets.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_impl_glfw.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+imgui_impl_opengl3.cpp
+[Aeros CPU] Linking...
+Microsoft (R) Incremental Linker Version 14.51.36260.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+main.obj : error LNK2019: unresolved external symbol glfwInit referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwTerminate referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwWindowHint referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwCreateWindow referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwWindowShouldClose referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwShowWindow referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwSetFramebufferSizeCallback referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwPollEvents referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwSetInputMode referenced in function main
+imgui_impl_glfw.obj : error LNK2001: unresolved external symbol glfwSetInputMode
+main.obj : error LNK2019: unresolved external symbol glfwSetCursorPosCallback referenced in function main
+imgui_impl_glfw.obj : error LNK2001: unresolved external symbol glfwSetCursorPosCallback
+main.obj : error LNK2019: unresolved external symbol glfwSetScrollCallback referenced in function main
+imgui_impl_glfw.obj : error LNK2001: unresolved external symbol glfwSetScrollCallback
+main.obj : error LNK2019: unresolved external symbol glfwGetTime referenced in function main
+flow_field.obj : error LNK2001: unresolved external symbol glfwGetTime
+imgui_impl_glfw.obj : error LNK2001: unresolved external symbol glfwGetTime
+main.obj : error LNK2019: unresolved external symbol glfwMakeContextCurrent referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwSwapBuffers referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwSwapInterval referenced in function main
+main.obj : error LNK2019: unresolved external symbol glfwGetProcAddress referenced in function main
+input.obj : error LNK2019: unresolved external symbol glfwSetWindowShouldClose referenced in function "void __cdecl processInput(struct GLFWwindow *)" (?processInput@@YAXPEAUGLFWwindow@@@Z)
+input.obj : error LNK2019: unresolved external symbol glfwGetKey referenced in function "void __cdecl processInput(struct GLFWwindow *)" (?processInput@@YAXPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2001: unresolved external symbol glfwGetKey
+input.obj : error LNK2019: unresolved external symbol glfwGetMouseButton referenced in function "void __cdecl mouse_callback(struct GLFWwindow *,double,double)" (?mouse_callback@@YAXPEAUGLFWwindow@@NN@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetError referenced in function "int __cdecl ImGui_ImplGlfw_TranslateUntranslatedKey(int,int)" (?ImGui_ImplGlfw_TranslateUntranslatedKey@@YAHHH@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetErrorCallback referenced in function "int __cdecl ImGui_ImplGlfw_TranslateUntranslatedKey(int,int)" (?ImGui_ImplGlfw_TranslateUntranslatedKey@@YAHHH@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetMonitorContentScale referenced in function "float __cdecl ImGui_ImplGlfw_GetContentScaleForMonitor(struct GLFWmonitor *)" (?ImGui_ImplGlfw_GetContentScaleForMonitor@@YAMPEAUGLFWmonitor@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetMonitorCallback referenced in function "void __cdecl ImGui_ImplGlfw_InstallCallbacks(struct GLFWwindow *)" (?ImGui_ImplGlfw_InstallCallbacks@@YAXPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetWindowSize referenced in function "void __cdecl ImGui_ImplGlfw_GetWindowSizeAndFramebufferScale(struct GLFWwindow *,struct ImVec2 *,struct ImVec2 *)" (?ImGui_ImplGlfw_GetWindowSizeAndFramebufferScale@@YAXPEAUGLFWwindow@@PEAUImVec2@@1@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetFramebufferSize referenced in function "void __cdecl ImGui_ImplGlfw_GetWindowSizeAndFramebufferScale(struct GLFWwindow *,struct ImVec2 *,struct ImVec2 *)" (?ImGui_ImplGlfw_GetWindowSizeAndFramebufferScale@@YAXPEAUGLFWwindow@@PEAUImVec2@@1@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetWindowContentScale referenced in function "float __cdecl ImGui_ImplGlfw_GetContentScaleForWindow(struct GLFWwindow *)" (?ImGui_ImplGlfw_GetContentScaleForWindow@@YAMPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetWindowAttrib referenced in function "void __cdecl ImGui_ImplGlfw_UpdateMouseData(void)" (?ImGui_ImplGlfw_UpdateMouseData@@YAXXZ)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetWindowFocusCallback referenced in function "void __cdecl ImGui_ImplGlfw_InstallCallbacks(struct GLFWwindow *)" (?ImGui_ImplGlfw_InstallCallbacks@@YAXPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetInputMode referenced in function "void __cdecl ImGui_ImplGlfw_UpdateMouseCursor(void)" (?ImGui_ImplGlfw_UpdateMouseCursor@@YAXXZ)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetKeyName referenced in function "int __cdecl ImGui_ImplGlfw_TranslateUntranslatedKey(int,int)" (?ImGui_ImplGlfw_TranslateUntranslatedKey@@YAHHH@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetCursorPos referenced in function "void __cdecl ImGui_ImplGlfw_UpdateMouseData(void)" (?ImGui_ImplGlfw_UpdateMouseData@@YAXXZ)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetCursorPos referenced in function "void __cdecl ImGui_ImplGlfw_UpdateMouseData(void)" (?ImGui_ImplGlfw_UpdateMouseData@@YAXXZ)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwCreateStandardCursor referenced in function "bool __cdecl ImGui_ImplGlfw_Init(struct GLFWwindow *,bool,enum GlfwClientApi)" (?ImGui_ImplGlfw_Init@@YA_NPEAUGLFWwindow@@_NW4GlfwClientApi@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwDestroyCursor referenced in function "void __cdecl ImGui_ImplGlfw_Shutdown(void)" (?ImGui_ImplGlfw_Shutdown@@YAXXZ)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetCursor referenced in function "void __cdecl ImGui_ImplGlfw_UpdateMouseCursor(void)" (?ImGui_ImplGlfw_UpdateMouseCursor@@YAXXZ)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetKeyCallback referenced in function "void __cdecl ImGui_ImplGlfw_InstallCallbacks(struct GLFWwindow *)" (?ImGui_ImplGlfw_InstallCallbacks@@YAXPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetCharCallback referenced in function "void __cdecl ImGui_ImplGlfw_InstallCallbacks(struct GLFWwindow *)" (?ImGui_ImplGlfw_InstallCallbacks@@YAXPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetMouseButtonCallback referenced in function "void __cdecl ImGui_ImplGlfw_InstallCallbacks(struct GLFWwindow *)" (?ImGui_ImplGlfw_InstallCallbacks@@YAXPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetCursorEnterCallback referenced in function "void __cdecl ImGui_ImplGlfw_InstallCallbacks(struct GLFWwindow *)" (?ImGui_ImplGlfw_InstallCallbacks@@YAXPEAUGLFWwindow@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetGamepadState referenced in function "void __cdecl ImGui_ImplGlfw_UpdateGamepads(void)" (?ImGui_ImplGlfw_UpdateGamepads@@YAXXZ)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwSetClipboardString referenced in function "public: __cdecl <lambda_589876419df96294dbd87df12e66d959>::operator()(struct ImGuiContext *,char const *)const " (??R<lambda_589876419df96294dbd87df12e66d959>@@QEBA@PEAUImGuiContext@@PEBD@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetClipboardString referenced in function "public: __cdecl <lambda_a78ec5643912d8bc64928aee4aba3245>::operator()(struct ImGuiContext *)const " (??R<lambda_a78ec5643912d8bc64928aee4aba3245>@@QEBA@PEAUImGuiContext@@@Z)
+imgui_impl_glfw.obj : error LNK2019: unresolved external symbol glfwGetWin32Window referenced in function "bool __cdecl ImGui_ImplGlfw_Init(struct GLFWwindow *,bool,enum GlfwClientApi)" (?ImGui_ImplGlfw_Init@@YA_NPEAUGLFWwindow@@_NW4GlfwClientApi@@@Z)
+D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs\glfw\lib-vc2022-x86\glfw3.lib : warning LNK4272: library machine type 'x86' conflicts with target machine type 'x64'
+bin\main-x86.exe : fatal error LNK1120: 43 unresolved externals
+[ERROR] Link failed
