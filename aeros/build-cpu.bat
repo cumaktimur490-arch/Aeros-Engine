@@ -58,21 +58,79 @@ set "APP_VERSION=1.0.0"
 if exist "%VERSION_FILE%" set /p APP_VERSION=<"%VERSION_FILE%"
 
 echo [Aeros CPU] Version: %APP_VERSION% Arch: %OUT_ARCH%
+echo [Aeros CPU] LibDir: %LIBDIR% GLFW: %GLFW_LIBDIR%
 
-rem Компилируем через cl.exe напрямую — без кавычек в VERSION чтобы избежать проблем с парсингом
-cl /std:c++17 /EHsc /MD /DCPU_ONLY /DVERSION_STRING=\"%APP_VERSION%\" ^
-  /I "%LIBDIR%\glfw\include" /I "%LIBDIR%\glad\include" /I "%LIBDIR%\glm" /I src /I src\imgui ^
-  src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
-  src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^
-  src\forces.cpp src\model.cpp src\ui.cpp ^
-  src\glad.c src\cuda_stub.cpp ^
-  src\imgui\imgui.cpp src\imgui\imgui_draw.cpp src\imgui\imgui_tables.cpp src\imgui\imgui_widgets.cpp ^
-  src\imgui\imgui_impl_glfw.cpp src\imgui\imgui_impl_opengl3.cpp ^
-  /link /LIBPATH:"%LIBDIR%\glfw\%GLFW_LIBDIR%" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^
-  /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup /OUT:bin\main-%OUT_ARCH%.exe
+rem Очистка старых obj
+del /Q bin\*.obj 2>nul
+
+rem Компилируем C файл glad отдельно как C
+echo [Aeros CPU] Compiling glad.c...
+cl /c /MD /TC /I "%LIBDIR%\glad\include" src\glad.c /Fo:bin\glad.obj
+if errorlevel 1 (
+    echo [ERROR] glad.c compile failed
+    exit /b 1
+)
+
+rem Компилируем C++ файлы
+echo [Aeros CPU] Compiling C++ files...
+
+set "INCLUDES=/I "%LIBDIR%\glfw\include" /I "%LIBDIR%\glad\include" /I "%LIBDIR%\glm" /I src /I src\imgui"
+set "DEFINES=/DCPU_ONLY /DVERSION_STRING=\"%APP_VERSION%\""
+set "CXXFLAGS=/std:c++17 /EHsc /MD /W1 %DEFINES% %INCLUDES%"
+
+cl /c %CXXFLAGS% src\main.cpp /Fo:bin\main.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\globals.cpp /Fo:bin\globals.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\input.cpp /Fo:bin\input.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\gl_utils.cpp /Fo:bin\gl_utils.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\stl_loader.cpp /Fo:bin\stl_loader.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\voxel_grid.cpp /Fo:bin\voxel_grid.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\flow_field.cpp /Fo:bin\flow_field.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\particles.cpp /Fo:bin\particles.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\streamlines.cpp /Fo:bin\streamlines.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\forces.cpp /Fo:bin\forces.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\model.cpp /Fo:bin\model.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\ui.cpp /Fo:bin\ui.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\cuda_stub.cpp /Fo:bin\cuda_stub.obj
+if errorlevel 1 exit /b 1
+
+rem ImGui
+cl /c %CXXFLAGS% src\imgui\imgui.cpp /Fo:bin\imgui.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\imgui\imgui_draw.cpp /Fo:bin\imgui_draw.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\imgui\imgui_tables.cpp /Fo:bin\imgui_tables.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\imgui\imgui_widgets.cpp /Fo:bin\imgui_widgets.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\imgui\imgui_impl_glfw.cpp /Fo:bin\imgui_impl_glfw.obj
+if errorlevel 1 exit /b 1
+cl /c %CXXFLAGS% src\imgui\imgui_impl_opengl3.cpp /Fo:bin\imgui_impl_opengl3.obj
+if errorlevel 1 exit /b 1
+
+echo [Aeros CPU] Linking...
+link /OUT:bin\main-%OUT_ARCH%.exe ^
+  bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
+  bin\voxel_grid.obj bin\flow_field.obj bin\particles.obj bin\streamlines.obj ^
+  bin\forces.obj bin\model.obj bin\ui.obj bin\cuda_stub.obj bin\glad.obj ^
+  bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
+  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj ^
+  /LIBPATH:"%LIBDIR%\glfw\%GLFW_LIBDIR%" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^
+  /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
 
 if errorlevel 1 (
-    echo [ERROR] CPU build failed
+    echo [ERROR] Link failed
     exit /b 1
 )
 
