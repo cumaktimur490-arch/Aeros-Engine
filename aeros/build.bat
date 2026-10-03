@@ -148,10 +148,12 @@ rem --- Сборка ---
 echo [Aeros] Starting nvcc compilation for !OUT_ARCH!...
 
 set "NVCC_ARCH=-arch=sm_75"
+rem Для поддержки новых MSVC (19.51+) добавляем allow-unsupported-compiler
+set "NVCC_FLAGS=-allow-unsupported-compiler"
 
-echo nvcc !NVCC_ARCH! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc -I ... -o bin\main-!OUT_ARCH!.exe
+echo nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc -I ... -o bin\main-!OUT_ARCH!.exe
 
-nvcc !NVCC_ARCH! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
+nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -I "!LIBDIR!\glfw\include" ^
   -I "!LIBDIR!\glad\include" ^
   -I "!LIBDIR!\glm" ^
