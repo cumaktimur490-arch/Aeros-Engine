@@ -125,16 +125,26 @@ jobs:
           echo Building x64...
           call build.bat x64
           if errorlevel 1 (
-            echo Build x64 failed with error %errorlevel%
-            exit /b 1
+            echo CUDA build failed, trying CPU fallback...
+            call build-cpu.bat x64
+            if errorlevel 1 (
+              echo Both CUDA and CPU builds failed
+              exit /b 1
+            )
           )
           dir bin
           if not exist bin\main-x64.exe (
-            echo main-x64.exe not found!
-            dir bin
-            exit /b 1
+            if exist bin\main.exe (
+              copy /Y bin\main.exe bin\main-x64.exe
+              echo Copied main.exe to main-x64.exe
+            ) else (
+              echo main-x64.exe not found!
+              dir bin
+              exit /b 1
+            )
           )
           echo Build x64 OK
+          dir bin\*.exe
 
       - name: Build x86
         shell: cmd

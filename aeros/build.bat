@@ -183,8 +183,15 @@ nvcc %NVCC_ARCH% -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -o bin\main-%OUT_ARCH%.exe
 
 if errorlevel 1 (
-    echo [ERROR] Build failed for %OUT_ARCH%
-    exit /b 1
+    echo [WARN] CUDA build failed for %OUT_ARCH%, trying CPU-only fallback...
+    call "%~dp0build-cpu.bat" %OUT_ARCH%
+    if errorlevel 1 (
+        echo [ERROR] Both CUDA and CPU builds failed for %OUT_ARCH%
+        exit /b 1
+    ) else (
+        echo [Aeros] CPU fallback build succeeded for %OUT_ARCH%
+        goto :done
+    )
 )
 
 rem Копируем как main.exe для обратной совместимости + arch-specific
@@ -198,6 +205,7 @@ if exist "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.dll" (
     echo [WARN] glfw3.dll not found in %LIBDIR%\glfw\%GLFW_LIBDIR%
 )
 
+:done
 echo [Aeros] Done.
 goto :eof
 

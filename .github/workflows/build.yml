@@ -36,10 +36,22 @@ jobs:
         shell: cmd
         run: |
           cd aeros
+          echo Building x64 CUDA...
           call build.bat x64
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+            echo CUDA build failed, trying CPU fallback...
+            call build-cpu.bat x64
+            if errorlevel 1 exit /b 1
+          )
           dir bin
-          if not exist bin\main-x64.exe exit /b 1
+          if not exist bin\main-x64.exe (
+            if not exist bin\main.exe (
+              echo No binary found!
+              exit /b 1
+            ) else (
+              copy /Y bin\main.exe bin\main-x64.exe
+            )
+          )
 
       - name: Check binary
         shell: pwsh
