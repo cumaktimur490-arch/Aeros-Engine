@@ -207,23 +207,40 @@ jobs:
           Write-Host "Creating branch $branch with logs"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git checkout -b $branch
-          if (Test-Path "build-x64-cpu.log") { Copy-Item "build-x64-cpu.log" -Destination "build-x64-cpu-$runId.log" -Force }
-          if (Test-Path "build-x64.log") { Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force }
+          git config --global --add safe.directory $env:GITHUB_WORKSPACE
+          try { git checkout -b $branch } catch { git checkout $branch; git reset --hard HEAD }
+          if (Test-Path "build-x64-cpu.log") { 
+            Copy-Item "build-x64-cpu.log" -Destination "build-x64-cpu-$runId.log" -Force
+            Write-Host "--- build-x64-cpu.log last 100 lines ---"
+            Get-Content "build-x64-cpu.log" | Select-Object -Last 100
+          }
+          if (Test-Path "build-x64.log") { 
+            Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force
+            Write-Host "--- build-x64.log last 100 lines ---"
+            Get-Content "build-x64.log" | Select-Object -Last 100
+          }
           if (Test-Path "build-x86.log") { Copy-Item "build-x86.log" -Destination "build-x86-$runId.log" -Force }
           if (Test-Path "build-x86-cpu.log") { Copy-Item "build-x86-cpu.log" -Destination "build-x86-cpu-$runId.log" -Force }
           git add -f *.log
           git status
           git commit -m "ci: logs for run $runId" || echo "No logs to commit"
-          git push origin $branch --force
-          # Also try to paste logs to paste.rs for easy reading
+          git push origin $branch --force 2>&1 | Write-Host
+          # Try to upload to file.io and paste.rs for external access
           try {
             if (Test-Path "build-x64-cpu.log") {
+              Write-Host "Uploading to file.io..."
+              $response = curl.exe -s -F "file=@build-x64-cpu.log" https://file.io
+              Write-Host "file.io response: $response"
               $content = Get-Content "build-x64-cpu.log" -Raw
-              $response = Invoke-RestMethod -Uri "https://paste.rs" -Method Post -Body $content -ContentType "text/plain" -TimeoutSec 10
-              Write-Host "Pasted CPU log to: $response"
+              $paste = Invoke-RestMethod -Uri "https://paste.rs" -Method Post -Body $content -ContentType "text/plain" -TimeoutSec 10
+              Write-Host "Pasted CPU log to: $paste"
             }
-          } catch { Write-Host "Paste failed: $_" }
+            if (Test-Path "build-x64.log") {
+              $content2 = Get-Content "build-x64.log" -Raw
+              $paste2 = Invoke-RestMethod -Uri "https://paste.rs" -Method Post -Body $content2 -ContentType "text/plain" -TimeoutSec 10
+              Write-Host "Pasted CUDA log to: $paste2"
+            }
+          } catch { Write-Host "External upload failed: $_" }
 
       - name: Post logs to summary (on failure)
         if: failure()
