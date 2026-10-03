@@ -7,12 +7,13 @@
 #include "cuda_api.h"
 #include "flow_field.h"
 #include "voxel_grid.h"
+#include "globals.h"
 #include <glm/glm.hpp>
 #include <cmath>
+#include <vector>
 
 extern "C" void initParticlesCUDA(std::vector<float>& positions, std::vector<float>& colors,
                                   int numParticles, const FlowParams& params) {
-    // CPU реализация — та же что в particles.cpp CPU путь
     positions.resize(numParticles*3);
     colors.resize(numParticles*3);
     float z = params.minZ + 0.1f * (params.maxZ - params.minZ);
@@ -34,14 +35,6 @@ extern "C" void initParticlesCUDA(std::vector<float>& positions, std::vector<flo
 
 extern "C" void updateParticlesCUDA(std::vector<float>& positions, std::vector<float>& colors,
                                     int numParticles, const FlowParams& params, float dt) {
-    // CPU fallback
-    extern glm::vec3 computeVelocityFieldCPU(glm::vec3 p, const FlowParams& params);
-    extern glm::vec3 sdfNormalCPU(glm::vec3 p);
-    extern std::vector<float> g_distanceField;
-    extern int g_voxNx, g_voxNy, g_voxNz;
-    extern float g_voxMinX, g_voxMinY, g_voxMinZ;
-    extern bool useVoxelCollision;
-
     for (int i = 0; i < numParticles; i++) {
         glm::vec3 p(positions[3*i], positions[3*i+1], positions[3*i+2]);
         glm::vec3 v = computeVelocityFieldCPU(p, params);
@@ -89,13 +82,14 @@ extern "C" void computeVertexPressureCUDA(const std::vector<float>& vertices,
                                           const std::vector<float>& normals,
                                           std::vector<float>& outColors,
                                           int numVertices, const FlowParams& params) {
-    // CPU fallback for pressure
+    (void)normals;
     outColors.resize(numVertices*3);
     for (int i = 0; i < numVertices; i++) {
         glm::vec3 p(vertices[3*i], vertices[3*i+1], vertices[3*i+2]);
         glm::vec3 v = computeVelocityFieldCPU(p, params);
         float speed = glm::length(v);
-        float cp = 1.0f - (speed*speed) / (params.vx*params.vx + params.vy*params.vy + params.vz*params.vz + 1e-6f);
+        float denom = params.vx*params.vx + params.vy*params.vy + params.vz*params.vz + 1e-6f;
+        float cp = 1.0f - (speed*speed) / denom;
         if (cp > 1.0f) cp = 1.0f;
         if (cp < -3.0f) cp = -3.0f;
         float t = (cp + 3.0f) / 4.0f;
@@ -109,7 +103,6 @@ extern "C" void setVoxelData(const int* voxel, const float* dist,
                              int nx, int ny, int nz,
                              float mnX, float mnY, float mnZ,
                              float csX, float csY, float csZ) {
-    // No-op for CPU stub — voxel data is kept on CPU side anyway
     (void)voxel; (void)dist; (void)nx; (void)ny; (void)nz;
     (void)mnX; (void)mnY; (void)mnZ; (void)csX; (void)csY; (void)csZ;
 }
