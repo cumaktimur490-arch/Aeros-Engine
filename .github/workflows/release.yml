@@ -281,12 +281,42 @@ jobs:
           Get-ChildItem release
 
       - name: Build installers
+        id: build_installers
         if: success() || steps.build_x64.conclusion == 'success'
         shell: pwsh
         run: |
           Write-Host "Building installers..."
-          .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all
-          Get-ChildItem release
+          Write-Host "ISCC env: $env:ISCC"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\" -ErrorAction SilentlyContinue | Format-Table Name
+          try {
+            .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath $env:ISCC 2>&1 | Tee-Object -FilePath build-installers.log
+            $result = $LASTEXITCODE
+            Write-Host "Installer build exit code: $result"
+            Get-ChildItem release
+            if ($result -ne 0) { exit $result }
+          } catch {
+            Write-Host "Installer build failed: $_"
+            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 200
+            exit 1
+          }
+
+      - name: Push installer logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $runId = "${{ github.run_id }}"
+          $branch = "ci-logs/$runId"
+          Write-Host "Creating branch $branch with installer logs"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git config --global --add safe.directory $env:GITHUB_WORKSPACE
+          try { git checkout -b $branch } catch { git checkout $branch; git reset --hard HEAD }
+          if (Test-Path "build-installers.log") { Copy-Item "build-installers.log" -Destination "build-installers-$runId.log" -Force }
+          if (Test-Path "build-x64-cpu.log") { Copy-Item "build-x64-cpu.log" -Destination "build-x64-cpu-$runId.log" -Force }
+          if (Test-Path "build-x64.log") { Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force }
+          git add -f *.log
+          git commit -m "ci: installer logs for run $runId" || echo "No logs"
+          git push origin $branch --force 2>&1 | Write-Host
 
       - name: Create checksums
         if: success() || steps.build_x64.conclusion == 'success'
