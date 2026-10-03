@@ -119,27 +119,29 @@ jobs:
             Write-Host "Failed to download GLFW x86: $_" -ForegroundColor Yellow
           }
 
-      - name: Build x64 (with log)
+      - name: Build x64 CPU first (guaranteed to work)
         id: build_x64
         shell: cmd
         run: |
           cd aeros
-          echo Building x64...
+          echo Building x64 CPU first...
+          call build-cpu.bat x64 > ..\build-x64-cpu.log 2>&1
+          set CPU_RESULT=%errorlevel%
+          type ..\build-x64-cpu.log
+          echo === CPU BUILD RESULT: %CPU_RESULT% ===
+          if %CPU_RESULT% neq 0 (
+            echo CPU build failed!
+            exit /b 1
+          )
+          echo CPU build OK, now trying CUDA build for better performance...
           call build.bat x64 > ..\build-x64.log 2>&1
           set BUILD_RESULT=%errorlevel%
           type ..\build-x64.log
-          echo.
-          echo === BUILD RESULT: %BUILD_RESULT% ===
+          echo === CUDA BUILD RESULT: %BUILD_RESULT% ===
           if %BUILD_RESULT% neq 0 (
-            echo CUDA build failed, trying CPU fallback...
-            call build-cpu.bat x64 > ..\build-x64-cpu.log 2>&1
-            set CPU_RESULT=%errorlevel%
-            type ..\build-x64-cpu.log
-            echo === CPU BUILD RESULT: %CPU_RESULT% ===
-            if %CPU_RESULT% neq 0 (
-              echo Both builds failed
-              exit /b 1
-            )
+            echo CUDA build failed, keeping CPU binary
+          ) else (
+            echo CUDA build succeeded, using CUDA binary
           )
           dir bin
           if not exist bin\main-x64.exe (
