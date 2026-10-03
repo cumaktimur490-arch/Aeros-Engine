@@ -141,8 +141,31 @@ nvcc --version | findstr /C:"release"
 
 rem --- Сборка ---
 echo [Aeros] Starting nvcc compilation for %OUT_ARCH%...
+echo [Aeros] NVCC command:
 
-nvcc -gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -std=c++17 -Xcompiler /MD -Xcompiler /EHsc -Xcompiler /DVERSION=\"%APP_VERSION%\" ^
+rem Используем простую архитектуру sm_75 для совместимости, как в оригинале
+rem Для мульти-архитектуры можно добавить -gencode, но с правильным квотированием
+set "NVCC_ARCH=-arch=sm_75"
+rem set "NVCC_ARCH=-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86 -gencode=arch=compute_89,code=sm_89"
+
+echo nvcc %NVCC_ARCH% -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
+  -I "%LIBDIR%\glfw\include" ^
+  -I "%LIBDIR%\glad\include" ^
+  -I "%LIBDIR%\glm" ^
+  -I src ^
+  -I src\imgui ^
+  src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
+  src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^
+  src\forces.cpp src\model.cpp src\ui.cpp ^
+  src\glad.c src\kernel.cu ^
+  src\imgui\imgui.cpp src\imgui\imgui_draw.cpp src\imgui\imgui_tables.cpp src\imgui\imgui_widgets.cpp ^
+  src\imgui\imgui_impl_glfw.cpp src\imgui\imgui_impl_opengl3.cpp ^
+  -L "%LIBDIR%\glfw\%GLFW_LIBDIR%" ^
+  -lglfw3 -lopengl32 -luser32 -lgdi32 -lshell32 -lcomdlg32 ^
+  -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup ^
+  -o bin\main-%OUT_ARCH%.exe
+
+nvcc %NVCC_ARCH% -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -I "%LIBDIR%\glfw\include" ^
   -I "%LIBDIR%\glad\include" ^
   -I "%LIBDIR%\glm" ^
