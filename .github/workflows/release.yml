@@ -191,6 +191,25 @@ jobs:
             aeros/bin/
           if-no-files-found: warn
 
+      - name: Push logs to branch on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $runId = "${{ github.run_id }}"
+          $branch = "ci-logs/$runId"
+          Write-Host "Creating branch $branch with logs"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout -b $branch
+          if (Test-Path "build-x64-cpu.log") { Copy-Item "build-x64-cpu.log" -Destination "build-x64-cpu-$runId.log" -Force }
+          if (Test-Path "build-x64.log") { Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force }
+          if (Test-Path "build-x86.log") { Copy-Item "build-x86.log" -Destination "build-x86-$runId.log" -Force }
+          if (Test-Path "build-x86-cpu.log") { Copy-Item "build-x86-cpu.log" -Destination "build-x86-cpu-$runId.log" -Force }
+          git add -f *.log
+          git status
+          git commit -m "ci: logs for run $runId" || echo "No logs to commit"
+          git push origin $branch --force
+
       - name: Post logs to summary (on failure)
         if: failure()
         shell: pwsh
