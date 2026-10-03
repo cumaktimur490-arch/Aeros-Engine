@@ -307,18 +307,46 @@ jobs:
         run: |
           Write-Host "Building installers..."
           Write-Host "ISCC env: $env:ISCC"
+          Write-Host "Version: $env:VERSION"
           Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\" -ErrorAction SilentlyContinue | Format-Table Name
+          if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
+          Write-Host "Bin dir:"
+          Get-ChildItem "aeros\bin" | Format-Table Name, Length
+          Write-Host "Installer dir:"
+          Get-ChildItem "installer" | Format-Table Name, Length
+          # Ensure log file exists
+          "" | Out-File -FilePath build-installers.log -Encoding utf8
           try {
-            .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath $env:ISCC 2>&1 | Tee-Object -FilePath build-installers.log
+            Write-Host "Running build-installers.ps1..."
+            .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath $env:ISCC *>&1 | Tee-Object -FilePath build-installers.log -Append
             $result = $LASTEXITCODE
             Write-Host "Installer build exit code: $result"
-            Get-ChildItem release
-            if ($result -ne 0) { exit $result }
+            Write-Host "--- build-installers.log tail ---"
+            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 300
+            Write-Host "Release dir contents:"
+            Get-ChildItem release -Recurse | Format-Table Name, Length, Directory -AutoSize
+            if ($result -ne 0) { 
+              Write-Host "Installer build failed with exit $result"
+              exit $result 
+            }
           } catch {
-            Write-Host "Installer build failed: $_"
-            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 200
+            Write-Host "Installer build exception: $_"
+            Write-Host "--- build-installers.log ---"
+            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 500
+            Write-Host "--- Exception details ---"
+            $_ | Format-List * -Force
             exit 1
           }
+
+      - name: Upload installer logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-logs
+          path: |
+            build-installers.log
+            release/
+          if-no-files-found: warn
 
       - name: Push installer logs on failure
         if: failure()
@@ -331,10 +359,25 @@ jobs:
           git config user.email "github-actions@github.com"
           git config --global --add safe.directory $env:GITHUB_WORKSPACE
           try { git checkout -b $branch } catch { git checkout $branch; git reset --hard HEAD }
-          if (Test-Path "build-installers.log") { Copy-Item "build-installers.log" -Destination "build-installers-$runId.log" -Force }
+          if (Test-Path "build-installers.log") { 
+            Copy-Item "build-installers.log" -Destination "build-installers-$runId.log" -Force
+            Write-Host "--- build-installers.log last 300 ---"
+            Get-Content "build-installers.log" | Select-Object -Last 300
+          } else {
+            Write-Host "build-installers.log NOT FOUND"
+            Get-ChildItem -Filter "*.log" | Format-Table Name, Length
+          }
           if (Test-Path "build-x64-cpu.log") { Copy-Item "build-x64-cpu.log" -Destination "build-x64-cpu-$runId.log" -Force }
           if (Test-Path "build-x64.log") { Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force }
+          if (Test-Path "build-x86.log") { Copy-Item "build-x86.log" -Destination "build-x86-$runId.log" -Force }
+          if (Test-Path "build-x86-cpu.log") { Copy-Item "build-x86-cpu.log" -Destination "build-x86-cpu-$runId.log" -Force }
+          # Also list release folder
+          if (Test-Path "release") {
+            Write-Host "Release folder:"
+            Get-ChildItem "release" | Format-Table Name, Length
+          }
           git add -f *.log
+          git status
           git commit -m "ci: installer logs for run $runId" || echo "No logs"
           git push origin $branch --force 2>&1 | Write-Host
 

@@ -60,17 +60,17 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 Source: "..\aeros\bin\main-x64.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion; Check: FileExists(ExpandConstant('..\aeros\bin\main-x64.exe'))
 Source: "..\aeros\bin\main.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('..\aeros\bin\main-x64.exe'))
 ; DLL — все что есть в bin
-Source: "..\aeros\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\aeros\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Модели STL — примеры
-Source: "..\aeros\bin\*.stl"; DestDir: "{app}\models"; Flags: ignoreversion
-Source: "..\aeros\2.stl"; DestDir: "{app}\models"; Flags: ignoreversion; DestName: "2.stl"
+Source: "..\aeros\bin\*.stl"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\aeros\2.stl"; DestDir: "{app}\models"; Flags: ignoreversion; DestName: "2.stl" skipifsourcedoesntexist
 ; Run helper
-Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Лицензия и ридми
-Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
-Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion skipifsourcedoesntexist
 ; Версия
-Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion
+Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; Comment: "{#AppName} {#ArchTitle}"

@@ -46,10 +46,10 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 ; Только бинарь и DLL — обновление
 Source: "..\aeros\bin\main-x64.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion; Check: FileExists(ExpandConstant('..\aeros\bin\main-x64.exe'))
 Source: "..\aeros\bin\main.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('..\aeros\bin\main-x64.exe'))
-Source: "..\aeros\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion
+Source: "..\aeros\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
 ; run.bat обновляем
-Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Code]
 var
