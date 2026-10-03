@@ -1,0 +1,36 @@
+name: Build Check
+
+on:
+  push:
+    branches: [ main, master, arena/* ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup CUDA
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+
+      - name: Build x64
+        shell: cmd
+        run: |
+          cd aeros
+          call build.bat x64
+          if errorlevel 1 exit /b 1
+
+      - name: Check binary
+        shell: pwsh
+        run: |
+          if (Test-Path "aeros\bin\main-x64.exe") { Write-Host "Build OK: main-x64.exe exists" }
+          else { Write-Host "Build output missing!"; Get-ChildItem aeros\bin; exit 1 }

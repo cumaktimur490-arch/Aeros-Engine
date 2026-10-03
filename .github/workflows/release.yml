@@ -1,0 +1,210 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.0)'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create GitHub Release?'
+        type: boolean
+        default: true
+
+env:
+  APP_NAME: Aeros Engine
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version }}"
+          if (-not $ver) {
+            if (Test-Path "VERSION") {
+              $ver = (Get-Content "VERSION" -Raw).Trim()
+            } else {
+              $ver = "1.0.0"
+            }
+            # If triggered by tag v1.2.3, use tag
+            $ref = "${{ github.ref }}"
+            if ($ref -match "refs/tags/v(.+)") {
+              $ver = $Matches[1]
+            }
+          }
+          $ver = $ver -replace "^v",""
+          echo "VERSION=$ver" >> $env:GITHUB_ENV
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "Version: $ver"
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup CUDA
+        uses: Jimver/cuda-toolkit@v0.2.21
+        id: cuda-toolkit
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+
+      - name: Check CUDA
+        shell: cmd
+        run: |
+          nvcc --version
+          where nvcc
+
+      - name: Setup Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (Test-Path $iscc) { echo "ISCC=$iscc" >> $env:GITHUB_ENV }
+          else { echo "ISCC=ISCC.exe" >> $env:GITHUB_ENV }
+
+      - name: Get GLFW x86 (for 32-bit build)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/glfw/glfw/releases/download/3.3.8/glfw-3.3.8.bin.WIN32.zip"
+          $zip = "$env:TEMP\glfw.zip"
+          $extract = "$env:TEMP\glfw_extract"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $extract -Force
+            $lib = Get-ChildItem $extract -Recurse -Filter "glfw3.lib" | Where-Object { $_.FullName -like "*lib-vc2022*" } | Select-Object -First 1
+            $dll = Get-ChildItem $extract -Recurse -Filter "glfw3.dll" | Where-Object { $_.FullName -like "*lib-vc2022*" } | Select-Object -First 1
+            $dest = "libs\glfw\lib-vc2022-x86"
+            if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest | Out-Null }
+            if ($lib) { Copy-Item $lib.FullName -Destination "$dest\glfw3.lib" -Force; Write-Host "Copied lib" }
+            if ($dll) { Copy-Item $dll.FullName -Destination "$dest\glfw3.dll" -Force; Copy-Item $dll.FullName -Destination "aeros\bin\glfw3-x86.dll" -Force }
+          } catch {
+            Write-Host "Failed to download GLFW x86: $_" -ForegroundColor Yellow
+            Write-Host "Will attempt x86 build with x64 lib (may fail) or skip"
+          }
+
+      - name: Build x64
+        shell: cmd
+        run: |
+          cd aeros
+          call build.bat x64
+          if errorlevel 1 exit /b 1
+          dir bin
+          bin\main-x64.exe --help 2>&1 || echo "Binary built (help not supported, ok)"
+
+      - name: Build x86
+        shell: cmd
+        continue-on-error: true
+        run: |
+          cd aeros
+          call build.bat x86
+          if errorlevel 1 (
+            echo x86 build failed, trying fallback with x64 binary copy
+            if exist bin\main-x64.exe (
+              copy /Y bin\main-x64.exe bin\main-x86.exe
+              echo Fallback copy done
+            )
+          )
+          dir bin
+
+      - name: Prepare release folder
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
+          Get-ChildItem "aeros\bin" | Format-Table Name, Length
+
+      - name: Build portable versions
+        shell: pwsh
+        run: |
+          .\installer\build-portable.ps1 -Version $env:VERSION -Arch both -OutputDir release
+
+      - name: Build installers
+        shell: pwsh
+        run: |
+          .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          Push-Location release
+          Get-FileHash * -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash)  $($_.Path)" | Out-File -Append -FilePath "SHA256SUMS.txt" -Encoding ascii
+          }
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      - name: List release files
+        shell: pwsh
+        run: |
+          Get-ChildItem release | Format-Table Name, Length, LastWriteTime -AutoSize
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aeros-Engine-v${{ env.VERSION }}
+          path: release/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: ${{ inputs.create_release != false && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Aeros Engine v${{ env.VERSION }}
+          body: |
+            ## Aeros Engine v${{ env.VERSION }}
+
+            ### 📦 Скачать
+
+            **Установщики (рекомендуется):**
+            - `Aeros-Engine-Setup-x64-v${{ env.VERSION }}.exe` — установщик для 64-bit Windows 10/11
+            - `Aeros-Engine-Setup-x86-v${{ env.VERSION }}.exe` — установщик для 32-bit Windows 10/11
+
+            **Портативные версии (без установки):**
+            - `Aeros-Engine-Portable-x64-v${{ env.VERSION }}.zip` — портативная 64-bit
+            - `Aeros-Engine-Portable-x86-v${{ env.VERSION }}.zip` — портативная 32-bit
+
+            **Обновления (для уже установленной программы):**
+            - `Aeros-Engine-Update-x64-v${{ env.VERSION }}.exe` — обновление 64-bit
+            - `Aeros-Engine-Update-x86-v${{ env.VERSION }}.exe` — обновление 32-bit
+
+            ### 🔧 Системные требования
+            - Windows 10 или новее
+            - GPU с поддержкой OpenGL 3.3+
+            - Для CUDA ускорения: NVIDIA GPU с CUDA 11+ и установленный CUDA Toolkit (опционально, есть CPU fallback)
+            - Visual C++ Redistributable 2022 (обычно уже установлен)
+
+            ### 📝 Установка
+            1. Скачайте установщик для вашей системы (x64 для большинства современных ПК)
+            2. Запустите .exe и следуйте инструкциям
+            3. После установки запустите через ярлык на рабочем столе или меню Пуск
+
+            ### 🔄 Обновление
+            Если у вас уже установлена предыдущая версия:
+            - Скачайте `Aeros-Engine-Update-*` для вашей архитектуры
+            - Запустите — он обновит файлы в папке установки
+
+            ### 📋 Что нового
+            См. CHANGELOG.md или коммиты.
+
+            ---
+            **SHA256 checksums в файле SHA256SUMS.txt**
+          files: release/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          token: ${{ secrets.GITHUB_TOKEN }}

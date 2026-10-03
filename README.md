@@ -8,6 +8,29 @@ CUDA / Dear ImGui / GLM.
 > (набегающий поток + отталкивание от воксельного SDF + вихревая дорожка по числу Струхаля),
 > а не решение уравнений Навье–Стокса. Планы развития — в `REVIEW.md`.
 
+## 📥 Скачать (релиз)
+
+Последний релиз: **[GitHub Releases](https://github.com/cumaktimur490-arch/Aeros-Engine/releases)**
+
+| Файл | Описание | Система |
+|------|----------|---------|
+| `Aeros-Engine-Setup-x64-v*.exe` | Установщик (рекомендуется) | Windows 10+ 64-bit |
+| `Aeros-Engine-Setup-x86-v*.exe` | Установщик | Windows 10+ 32-bit |
+| `Aeros-Engine-Portable-x64-v*.zip` | Портативная (без установки) | 64-bit |
+| `Aeros-Engine-Portable-x86-v*.zip` | Портативная | 32-bit |
+| `Aeros-Engine-Update-x64-v*.exe` | Обновление | Для уже установленной x64 |
+| `Aeros-Engine-Update-x86-v*.exe` | Обновление | Для уже установленной x86 |
+
+**Быстрый старт:**
+1. Скачайте `Aeros-Engine-Setup-x64` для современного ПК (или x86 для 32-bit)
+2. Запустите установщик
+3. Откройте через ярлык на рабочем столе
+4. Выберите STL модель при запуске (примеры в папке `models`)
+
+**Портативная версия:** распакуйте ZIP и запустите `AerosEngine.exe`
+
+**Обновление:** если уже установлена старая версия — скачайте `Update` и запустите.
+
 ## Возможности
 
 - Загрузка STL (бинарный и ASCII), встроенный файловый диалог;
@@ -25,22 +48,59 @@ CUDA / Dear ImGui / GLM.
 
 ```bat
 cd aeros
-build.bat
+build.bat         — x64 (по умолчанию)
+build.bat x64     — 64-bit
+build.bat x86     — 32-bit
 bin\main.exe
 ```
 
-`build.bat` использует библиотеки из репозитория (`libs/`). Если Visual Studio установлена
-не в `D:\c++\VC`, поправьте путь к `vcvars64.bat` в первых строках `build.bat`.
+`build.bat` теперь автоопределяет Visual Studio через `vswhere` и поддерживает x64/x86.
+Библиотеки берутся из `libs/` (в репозитории).
 
-### Вариант 2 — CMake (экспериментальный)
+Для x86 сборки нужен 32-bit GLFW:
+```powershell
+.\tools\get-glfw-x86.ps1
+```
+
+### Вариант 2 — CMake
 
 ```bat
 cd aeros
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
+
+cmake -B build32 -G "Visual Studio 17 2022" -A Win32
+cmake --build build32 --config Release
 ```
 
-Приложение при старте показывает диалог выбора STL-файла (примеры — в `aeros/bin/*.stl`).
+### Вариант 3 — Полный релиз (установщики + портативные)
+
+Требует Inno Setup 6: https://jrsoftware.org/isinfo.php
+
+```bat
+cd tools
+build-all.bat
+```
+
+Результат в `release/`:
+- Setup x64/x86
+- Portable x64/x86 ZIP
+- Update x64/x86
+
+Подробнее: `installer/README.md`
+
+### Автоматический релиз (GitHub Actions)
+
+При пуше тега `v*`:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Автоматически соберутся все версии и создастся GitHub Release.
+
+Ручной запуск: Actions → Release Build → Run workflow
 
 ## Управление
 
@@ -57,10 +117,13 @@ cmake --build build --config Release
 
 ```
 aeros/
-├── build.bat              # сборка (nvcc + MSVC)
+├── build.bat              # сборка x64/x86 (nvcc + MSVC, автоопределение VS)
+├── build-x64.bat          # wrapper для x64
+├── build-x86.bat          # wrapper для x86
 ├── bin/                   # бинарь, DLL и примеры моделей
 ├── src/
 │   ├── main.cpp           # точка входа: инициализация, главный цикл, рендер
+│   ├── version.h          # версия приложения (из VERSION)
 │   ├── globals.h/.cpp     # всё общее состояние приложения
 │   ├── shaders.h          # GLSL-шейдеры (sources)
 │   ├── gl_utils.h/.cpp    # компиляция шейдеров (+проверка ошибок), bbox/оси/эллипсоид
@@ -76,7 +139,29 @@ aeros/
 │   ├── cuda_api.h         # интерфейс CUDA-бэкенда
 │   ├── kernel.cu          # CUDA-реализация физики
 │   └── flow_params.h      # структура параметров потока (общая CPU/GPU)
+├── CMakeLists.txt         # CMake сборка (x64/x86, CPack)
 └── .vscode/tasks.json     # задача сборки для VS Code
+
+libs/                      # GLFW, glad, GLM (в репозитории)
+installer/                 # Скрипты установщиков
+├── AerosEngine-x64.iss    # Полный установщик x64 (Inno Setup)
+├── AerosEngine-x86.iss    # Полный установщик x86
+├── AerosEngine-Updater-x64.iss # Апдейтер x64
+├── AerosEngine-Updater-x86.iss # Апдейтер x86
+├── build-installers.ps1/.bat   # Сборка установщиков
+├── build-portable.ps1/.bat     # Сборка портативных
+└── common.iss             # Общие определения
+
+tools/                     # Инструменты релиза
+├── build-all.ps1/.bat     # Полная сборка релиза
+├── get-glfw-x86.ps1       # Скачать GLFW x86
+└── version-bump.ps1       # Обновить версию
+
+.github/workflows/
+├── release.yml            # Авто-релиз при теге v*
+└── build.yml              # Проверка сборки на PR
+
+release/                   # Собранные релизы (генерируется)
 ```
 
 `libs/` — GLFW, glad, GLM (в репозитории, сборка работает из свежего клона).
@@ -91,3 +176,13 @@ aeros/
 4. **Визуализация**: частицы адвектируются по полю, линии тока интегрируются от входного
    сечения, давление на поверхности оценивается по скорости (Бернулли), lift/drag —
    интегрированием давления по треугольникам.
+
+## Системные требования
+
+- **Для запуска:** Windows 10+, GPU с OpenGL 3.3+, 4GB RAM
+- **Для CUDA ускорения:** NVIDIA GPU + CUDA Toolkit (опционально, есть CPU fallback)
+- **Для сборки:** Visual Studio 2022, CUDA Toolkit 11+, CMake 3.18+ (опционально), Inno Setup 6 (для установщиков)
+
+## Лицензия
+
+GPL-3.0 — см. LICENSE
