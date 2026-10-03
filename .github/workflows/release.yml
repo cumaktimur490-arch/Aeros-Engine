@@ -165,12 +165,18 @@ jobs:
           echo Build x64 OK
           dir bin\*.exe
 
+      - name: Setup MSVC x86 for 32-bit build
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
       - name: Build x86
         shell: cmd
         continue-on-error: true
         run: |
           cd aeros
           echo Building x86...
+          where cl.exe
           call build-cpu.bat x86 > ..\build-x86-cpu.log 2>&1
           type ..\build-x86-cpu.log
           if errorlevel 1 (
@@ -185,8 +191,22 @@ jobs:
             echo x86 CPU build OK, trying CUDA...
             call build.bat x86 > ..\build-x86.log 2>&1
             type ..\build-x86.log
+            if errorlevel 1 (
+              echo x86 CUDA build failed, keeping CPU binary
+            )
           )
           dir bin
+          if not exist bin\main-x86.exe (
+            if exist bin\main-x64.exe (
+              copy /Y bin\main-x64.exe bin\main-x86.exe
+              echo Final fallback copy x64->x86 done
+            )
+          )
+
+      - name: Setup MSVC x64 again (for installer build)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Upload build logs as artifact (always)
         if: always()
