@@ -66,11 +66,24 @@ function Build-Installer($issFile) {
         return
     }
     Write-Host "[Aeros] Compiling $issFile ..." -ForegroundColor Green
-    $args = "`"$fullPath`" /DAppVersion=$Version"
-    $proc = Start-Process -FilePath $ISCCPath -ArgumentList $args -Wait -PassThru -NoNewWindow
-    if ($proc.ExitCode -ne 0) {
-        Write-Host "[ERROR] Failed to compile $issFile (exit $($proc.ExitCode))" -ForegroundColor Red
-        throw "ISCC failed"
+    Write-Host "  ISS: $fullPath"
+    Write-Host "  ISCC: $ISCCPath"
+    Write-Host "  Version: $Version"
+    # Try to run ISCC and capture output
+    try {
+        $output = & $ISCCPath "$fullPath" "/DAppVersion=$Version" 2>&1
+        $exitCode = $LASTEXITCODE
+        Write-Host "ISCC output for $issFile:"
+        $output | ForEach-Object { Write-Host "  $_" }
+        if ($exitCode -ne 0) {
+            Write-Host "[ERROR] Failed to compile $issFile (exit $exitCode)" -ForegroundColor Red
+            Write-Host "Full ISCC output:"
+            $output | ForEach-Object { Write-Host $_ }
+            throw "ISCC failed for $issFile with exit $exitCode"
+        }
+    } catch {
+        Write-Host "[ERROR] Exception compiling $issFile : $_" -ForegroundColor Red
+        throw
     }
     Write-Host "[OK] $issFile compiled" -ForegroundColor Green
 }
