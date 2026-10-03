@@ -41,7 +41,6 @@ jobs:
             } else {
               $ver = "1.0.0"
             }
-            # If triggered by tag v1.2.3, use tag
             $ref = "${{ github.ref }}"
             if ($ref -match "refs/tags/v(.+)") {
               $ver = $Matches[1]
@@ -54,6 +53,8 @@ jobs:
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Setup CUDA
         uses: Jimver/cuda-toolkit@v0.2.21
@@ -63,19 +64,31 @@ jobs:
           method: 'network'
           sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
 
-      - name: Check CUDA
+      - name: Check CUDA and MSVC
         shell: cmd
         run: |
+          echo === MSVC ===
+          where cl.exe
+          cl.exe 2>&1 | head -n 5
+          echo === CUDA ===
           nvcc --version
           where nvcc
+          echo === Libs ===
+          dir libs\glfw\lib-vc2022
+          echo === Env ===
+          set | findstr /i cuda
 
       - name: Setup Inno Setup
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (Test-Path $iscc) { echo "ISCC=$iscc" >> $env:GITHUB_ENV }
-          else { echo "ISCC=ISCC.exe" >> $env:GITHUB_ENV }
+          if (Test-Path $iscc) { 
+            echo "ISCC=$iscc" >> $env:GITHUB_ENV 
+            & $iscc /? | Select-Object -First 5
+          } else { 
+            echo "ISCC=ISCC.exe" >> $env:GITHUB_ENV 
+          }
 
       - name: Get GLFW x86 (for 32-bit build)
         shell: pwsh
@@ -84,39 +97,59 @@ jobs:
           $zip = "$env:TEMP\glfw.zip"
           $extract = "$env:TEMP\glfw_extract"
           try {
+            Write-Host "Downloading GLFW x86..."
             Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
             Expand-Archive -Path $zip -DestinationPath $extract -Force
             $lib = Get-ChildItem $extract -Recurse -Filter "glfw3.lib" | Where-Object { $_.FullName -like "*lib-vc2022*" } | Select-Object -First 1
             $dll = Get-ChildItem $extract -Recurse -Filter "glfw3.dll" | Where-Object { $_.FullName -like "*lib-vc2022*" } | Select-Object -First 1
             $dest = "libs\glfw\lib-vc2022-x86"
             if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest | Out-Null }
-            if ($lib) { Copy-Item $lib.FullName -Destination "$dest\glfw3.lib" -Force; Write-Host "Copied lib" }
-            if ($dll) { Copy-Item $dll.FullName -Destination "$dest\glfw3.dll" -Force; Copy-Item $dll.FullName -Destination "aeros\bin\glfw3-x86.dll" -Force }
+            if ($lib) { 
+              Copy-Item $lib.FullName -Destination "$dest\glfw3.lib" -Force
+              Write-Host "Copied lib: $($lib.FullName)"
+            }
+            if ($dll) { 
+              Copy-Item $dll.FullName -Destination "$dest\glfw3.dll" -Force
+              Copy-Item $dll.FullName -Destination "aeros\bin\glfw3-x86.dll" -Force -ErrorAction SilentlyContinue
+              Write-Host "Copied dll"
+            }
+            Get-ChildItem $dest
           } catch {
             Write-Host "Failed to download GLFW x86: $_" -ForegroundColor Yellow
-            Write-Host "Will attempt x86 build with x64 lib (may fail) or skip"
           }
 
       - name: Build x64
         shell: cmd
         run: |
           cd aeros
+          echo Building x64...
           call build.bat x64
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+            echo Build x64 failed with error %errorlevel%
+            exit /b 1
+          )
           dir bin
-          bin\main-x64.exe --help 2>&1 || echo "Binary built (help not supported, ok)"
+          if not exist bin\main-x64.exe (
+            echo main-x64.exe not found!
+            dir bin
+            exit /b 1
+          )
+          echo Build x64 OK
 
       - name: Build x86
         shell: cmd
         continue-on-error: true
         run: |
           cd aeros
+          echo Building x86...
           call build.bat x86
           if errorlevel 1 (
             echo x86 build failed, trying fallback with x64 binary copy
             if exist bin\main-x64.exe (
               copy /Y bin\main-x64.exe bin\main-x86.exe
               echo Fallback copy done
+            ) else (
+              echo No x64 binary for fallback
             )
           )
           dir bin
@@ -125,24 +158,31 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
+          Write-Host "Bin contents:"
           Get-ChildItem "aeros\bin" | Format-Table Name, Length
 
       - name: Build portable versions
         shell: pwsh
         run: |
+          Write-Host "Building portable..."
           .\installer\build-portable.ps1 -Version $env:VERSION -Arch both -OutputDir release
+          Get-ChildItem release
 
       - name: Build installers
         shell: pwsh
         run: |
+          Write-Host "Building installers..."
           .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all
+          Get-ChildItem release
 
       - name: Create checksums
         shell: pwsh
         run: |
           Push-Location release
-          Get-FileHash * -Algorithm SHA256 | ForEach-Object {
-            "$($_.Hash)  $($_.Path)" | Out-File -Append -FilePath "SHA256SUMS.txt" -Encoding ascii
+          if (Test-Path SHA256SUMS.txt) { Remove-Item SHA256SUMS.txt -Force }
+          Get-ChildItem -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)" | Out-File -Append -FilePath "SHA256SUMS.txt" -Encoding ascii
           }
           Get-Content SHA256SUMS.txt
           Pop-Location

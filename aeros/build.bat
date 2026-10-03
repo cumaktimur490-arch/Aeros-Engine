@@ -33,6 +33,14 @@ if /I "%ARCH%"=="x64" (
 echo [Aeros] Building for %OUT_ARCH% using %VCVARS% ...
 
 taskkill /IM main.exe /F 2>nul
+taskkill /IM main-%OUT_ARCH%.exe /F 2>nul
+
+rem --- Проверка: если cl.exe уже в PATH (CI окружение), пропускаем vcvars ---
+where cl.exe >nul 2>&1
+if %errorlevel%==0 (
+    echo [Aeros] MSVC already in PATH, skipping vcvars detection
+    goto :skip_vcvars
+)
 
 rem --- Поиск vcvars через vswhere ---
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -62,19 +70,36 @@ if not defined VCVARS_PATH (
 if not defined VCVARS_PATH (
     if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\%VCVARS%" set "VCVARS_PATH=%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\%VCVARS%"
 )
+if not defined VCVARS_PATH (
+    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\%VCVARS%" set "VCVARS_PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\%VCVARS%"
+)
+if not defined VCVARS_PATH (
+    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\%VCVARS%" set "VCVARS_PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\%VCVARS%"
+)
 
 if not defined VCVARS_PATH (
-    echo [ERROR] vcvars not found: %VCVARS%
-    echo Install Visual Studio 2022 with C++ workload or set path manually.
-    pause
-    exit /b 1
+    echo [WARN] vcvars not found: %VCVARS%, trying to continue with existing environment...
+    echo [WARN] If build fails, install Visual Studio 2022 with C++ workload
+    goto :skip_vcvars
 )
 
 echo [Aeros] Using VC: %VCVARS_PATH%
 call "%VCVARS_PATH%"
 if errorlevel 1 (
-    echo [ERROR] vcvars call failed
-    pause
+    echo [WARN] vcvars call failed, trying to continue...
+)
+
+:skip_vcvars
+
+where cl.exe >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] cl.exe not found after vcvars setup. MSVC not installed?
+    exit /b 1
+)
+
+where nvcc.exe >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] nvcc.exe not found. Install CUDA Toolkit and add to PATH.
     exit /b 1
 )
 
@@ -90,7 +115,13 @@ if not exist "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.lib" (
         if exist "%LIBDIR%\glfw\lib-vc2022\glfw3.lib" (
             echo [WARN] Fallback to lib-vc2022 (x64) — build may fail for x86 target.
             set "GLFW_LIBDIR=lib-vc2022"
+        ) else (
+            echo [ERROR] No GLFW lib found at all
+            exit /b 1
         )
+    ) else (
+        echo [ERROR] GLFW lib not found for x64: %LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.lib
+        exit /b 1
     )
 )
 
@@ -104,9 +135,14 @@ if exist "%VERSION_FILE%" (
 echo [Aeros] Version: %APP_VERSION%
 echo [Aeros] Libs: %LIBDIR%
 echo [Aeros] GLFW lib dir: %GLFW_LIBDIR%
+echo [Aeros] Checking tools...
+cl.exe 2>&1 | findstr /C:"Version" | head -1
+nvcc --version | findstr /C:"release"
 
 rem --- Сборка ---
-nvcc -arch=sm_75 -gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -std=c++17 -Xcompiler /MD -Xcompiler /DVERSION=\"%APP_VERSION%\" ^
+echo [Aeros] Starting nvcc compilation for %OUT_ARCH%...
+
+nvcc -gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -std=c++17 -Xcompiler /MD -Xcompiler /EHsc -Xcompiler /DVERSION=\"%APP_VERSION%\" ^
   -I "%LIBDIR%\glfw\include" ^
   -I "%LIBDIR%\glad\include" ^
   -I "%LIBDIR%\glm" ^
@@ -125,7 +161,6 @@ nvcc -arch=sm_75 -gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,co
 
 if errorlevel 1 (
     echo [ERROR] Build failed for %OUT_ARCH%
-    pause
     exit /b 1
 )
 
@@ -133,15 +168,11 @@ rem Копируем как main.exe для обратной совместим�
 copy /Y bin\main-%OUT_ARCH%.exe bin\main.exe >nul
 echo [Aeros] Build OK: bin\main-%OUT_ARCH%.exe (and bin\main.exe)
 
-if /I "%ARCH%"=="x64" (
-    rem Для x64 также копируем x64 DLL если есть отдельная папка
-    if exist "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.dll" (
-        copy /Y "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.dll" bin\ >nul
-    )
+if exist "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.dll" (
+    copy /Y "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.dll" bin\ >nul
+    echo [Aeros] Copied glfw3.dll from %GLFW_LIBDIR%
 ) else (
-    if exist "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.dll" (
-        copy /Y "%LIBDIR%\glfw\%GLFW_LIBDIR%\glfw3.dll" bin\ >nul
-    )
+    echo [WARN] glfw3.dll not found in %LIBDIR%\glfw\%GLFW_LIBDIR%
 )
 
 echo [Aeros] Done.

@@ -14,6 +14,8 @@ jobs:
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Setup CUDA
         uses: Jimver/cuda-toolkit@v0.2.21
@@ -22,15 +24,29 @@ jobs:
           method: 'network'
           sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
 
+      - name: Check tools
+        shell: cmd
+        run: |
+          where cl.exe
+          where nvcc.exe
+          nvcc --version
+          dir libs\glfw\lib-vc2022
+
       - name: Build x64
         shell: cmd
         run: |
           cd aeros
           call build.bat x64
           if errorlevel 1 exit /b 1
+          dir bin
+          if not exist bin\main-x64.exe exit /b 1
 
       - name: Check binary
         shell: pwsh
         run: |
-          if (Test-Path "aeros\bin\main-x64.exe") { Write-Host "Build OK: main-x64.exe exists" }
-          else { Write-Host "Build output missing!"; Get-ChildItem aeros\bin; exit 1 }
+          if (Test-Path "aeros\bin\main-x64.exe") { 
+            Write-Host "Build OK: main-x64.exe exists"
+            (Get-Item "aeros\bin\main-x64.exe").Length
+          } else { 
+            Write-Host "Build output missing!"; Get-ChildItem aeros\bin; exit 1 
+          }
