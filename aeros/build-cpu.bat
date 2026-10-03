@@ -59,8 +59,8 @@ if exist "%VERSION_FILE%" set /p APP_VERSION=<"%VERSION_FILE%"
 
 echo [Aeros CPU] Version: %APP_VERSION% Arch: %OUT_ARCH%
 
-rem Компилируем через cl.exe напрямую
-cl /std:c++17 /EHsc /MD /DVERSION=\"%APP_VERSION%\" /DCPU_ONLY ^
+rem Компилируем через cl.exe напрямую — без кавычек в VERSION чтобы избежать проблем с парсингом
+cl /std:c++17 /EHsc /MD /DCPU_ONLY /DVERSION_STRING=\"%APP_VERSION%\" ^
   /I "%LIBDIR%\glfw\include" /I "%LIBDIR%\glad\include" /I "%LIBDIR%\glm" /I src /I src\imgui ^
   src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
   src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^

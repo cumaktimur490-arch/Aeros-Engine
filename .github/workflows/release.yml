@@ -75,8 +75,6 @@ jobs:
           where nvcc
           echo === Libs ===
           dir libs\glfw\lib-vc2022
-          echo === Env ===
-          set | findstr /i cuda
           echo === Source files ===
           dir aeros\src\*.cpp
           dir aeros\src\*.cu
@@ -122,18 +120,24 @@ jobs:
           }
 
       - name: Build x64 (with log)
+        id: build_x64
         shell: cmd
         run: |
           cd aeros
           echo Building x64...
           call build.bat x64 > ..\build-x64.log 2>&1
+          set BUILD_RESULT=%errorlevel%
           type ..\build-x64.log
-          if errorlevel 1 (
+          echo.
+          echo === BUILD RESULT: %BUILD_RESULT% ===
+          if %BUILD_RESULT% neq 0 (
             echo CUDA build failed, trying CPU fallback...
             call build-cpu.bat x64 > ..\build-x64-cpu.log 2>&1
+            set CPU_RESULT=%errorlevel%
             type ..\build-x64-cpu.log
-            if errorlevel 1 (
-              echo Both builds failed, see logs
+            echo === CPU BUILD RESULT: %CPU_RESULT% ===
+            if %CPU_RESULT% neq 0 (
+              echo Both builds failed
               exit /b 1
             )
           )
@@ -175,16 +179,36 @@ jobs:
           )
           dir bin
 
-      - name: Upload build logs (on failure)
-        if: failure()
+      - name: Upload build logs as artifact (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
           path: |
             build-*.log
             aeros/bin/
+          if-no-files-found: warn
+
+      - name: Post logs to summary (on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "=== BUILD LOGS SUMMARY ==="
+          if (Test-Path "build-x64.log") {
+            Write-Host "--- build-x64.log ---"
+            Get-Content "build-x64.log" | Select-Object -Last 200
+          }
+          if (Test-Path "build-x64-cpu.log") {
+            Write-Host "--- build-x64-cpu.log ---"
+            Get-Content "build-x64-cpu.log" | Select-Object -Last 300
+          }
+          if (Test-Path "build-x86.log") {
+            Write-Host "--- build-x86.log ---"
+            Get-Content "build-x86.log" | Select-Object -Last 200
+          }
 
       - name: Prepare release folder
+        if: success() || steps.build_x64.conclusion == 'success'
         shell: pwsh
         run: |
           if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
@@ -192,6 +216,7 @@ jobs:
           Get-ChildItem "aeros\bin" | Format-Table Name, Length
 
       - name: Build portable versions
+        if: success() || steps.build_x64.conclusion == 'success'
         shell: pwsh
         run: |
           Write-Host "Building portable..."
@@ -199,6 +224,7 @@ jobs:
           Get-ChildItem release
 
       - name: Build installers
+        if: success() || steps.build_x64.conclusion == 'success'
         shell: pwsh
         run: |
           Write-Host "Building installers..."
@@ -206,6 +232,7 @@ jobs:
           Get-ChildItem release
 
       - name: Create checksums
+        if: success() || steps.build_x64.conclusion == 'success'
         shell: pwsh
         run: |
           Push-Location release
@@ -218,11 +245,13 @@ jobs:
           Pop-Location
 
       - name: List release files
+        if: success() || steps.build_x64.conclusion == 'success'
         shell: pwsh
         run: |
           Get-ChildItem release | Format-Table Name, Length, LastWriteTime -AutoSize
 
       - name: Upload artifacts
+        if: success() || steps.build_x64.conclusion == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: Aeros-Engine-v${{ env.VERSION }}
@@ -230,7 +259,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release
-        if: ${{ inputs.create_release != false && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') }}
+        if: ${{ inputs.create_release != false && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && (success() || steps.build_x64.conclusion == 'success') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
