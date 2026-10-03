@@ -9,6 +9,9 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -33,14 +36,17 @@ jobs:
           dir libs\glfw\lib-vc2022
 
       - name: Build x64
+        id: build
         shell: cmd
         run: |
           cd aeros
           echo Building x64 CUDA...
-          call build.bat x64
+          call build.bat x64 > ..\build-x64.log 2>&1
+          type ..\build-x64.log
           if errorlevel 1 (
             echo CUDA build failed, trying CPU fallback...
-            call build-cpu.bat x64
+            call build-cpu.bat x64 > ..\build-x64-cpu.log 2>&1
+            type ..\build-x64-cpu.log
             if errorlevel 1 exit /b 1
           )
           dir bin
@@ -53,7 +59,32 @@ jobs:
             )
           )
 
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build-*.log
+            aeros/bin/
+
+      - name: Create issue with logs on failure
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $log1 = if (Test-Path "build-x64.log") { Get-Content "build-x64.log" -Raw } else { "no log" }
+          $log2 = if (Test-Path "build-x64-cpu.log") { Get-Content "build-x64-cpu.log" -Raw } else { "no cpu log" }
+          $combined = "Build failed run ${{ github.run_id }}`n`n=== build-x64.log ===`n$log1`n`n=== build-x64-cpu.log ===`n$log2"
+          $combined | Out-File -FilePath /tmp/body.txt -Encoding utf8
+          # Truncate to 60000 chars for issue
+          if ($combined.Length -gt 60000) { $combined = $combined.Substring(0,60000) }
+          $combined | Out-File -FilePath /tmp/body_trunc.txt -Encoding utf8
+          gh issue create --title "Build failed ${{ github.run_id }}" --body-file /tmp/body_trunc.txt --repo ${{ github.repository }} || echo "Failed to create issue"
+
       - name: Check binary
+        if: success()
         shell: pwsh
         run: |
           if (Test-Path "aeros\bin\main-x64.exe") { 
