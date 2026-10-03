@@ -314,25 +314,30 @@ jobs:
           Get-ChildItem "aeros\bin" | Format-Table Name, Length
           Write-Host "Installer dir:"
           Get-ChildItem "installer" | Format-Table Name, Length
-          # Ensure log file exists
-          "" | Out-File -FilePath build-installers.log -Encoding utf8
+          # Start transcript to capture all output
+          try { Stop-Transcript } catch {}
+          Start-Transcript -Path build-installers.log -Force
+          $global:LASTEXITCODE = 0
           try {
             Write-Host "Running build-installers.ps1..."
-            .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath $env:ISCC *>&1 | Tee-Object -FilePath build-installers.log -Append
+            Write-Host "Command: .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath $env:ISCC"
+            .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath "$env:ISCC"
             $result = $LASTEXITCODE
             Write-Host "Installer build exit code: $result"
-            Write-Host "--- build-installers.log tail ---"
-            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 300
             Write-Host "Release dir contents:"
             Get-ChildItem release -Recurse | Format-Table Name, Length, Directory -AutoSize
+            Stop-Transcript
+            Write-Host "--- build-installers.log tail ---"
+            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 500
             if ($result -ne 0) { 
               Write-Host "Installer build failed with exit $result"
               exit $result 
             }
           } catch {
             Write-Host "Installer build exception: $_"
+            try { Stop-Transcript } catch {}
             Write-Host "--- build-installers.log ---"
-            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 500
+            Get-Content build-installers.log -ErrorAction SilentlyContinue | Select-Object -Last 800
             Write-Host "--- Exception details ---"
             $_ | Format-List * -Force
             exit 1

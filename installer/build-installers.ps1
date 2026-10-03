@@ -69,20 +69,34 @@ function Build-Installer($issFile) {
     Write-Host "  ISS: $fullPath"
     Write-Host "  ISCC: $ISCCPath"
     Write-Host "  Version: $Version"
-    # Try to run ISCC and capture output
+    Write-Host "  Checking ISS exists: $(Test-Path $fullPath)"
+    Write-Host "  Checking ISCC exists: $(Test-Path $ISCCPath)"
+    Write-Host "  Bin dir contents:"
+    Get-ChildItem (Join-Path $RootDir "aeros\bin") | Format-Table Name, Length | Out-String | Write-Host
+    # Try to run ISCC and capture output via temp files
     try {
-        $output = & $ISCCPath "$fullPath" "/DAppVersion=$Version" 2>&1
-        $exitCode = $LASTEXITCODE
-        Write-Host "ISCC output for $issFile:"
-        $output | ForEach-Object { Write-Host "  $_" }
+        $tempOut = [System.IO.Path]::GetTempFileName()
+        $tempErr = [System.IO.Path]::GetTempFileName()
+        Write-Host "  Running: $ISCCPath $fullPath /DAppVersion=$Version"
+        Write-Host "  Temp out: $tempOut, err: $tempErr"
+        $proc = Start-Process -FilePath $ISCCPath -ArgumentList "`"$fullPath`"", "/DAppVersion=$Version" -Wait -PassThru -NoNewWindow -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr
+        $exitCode = $proc.ExitCode
+        $stdout = Get-Content $tempOut -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content $tempErr -Raw -ErrorAction SilentlyContinue
+        Write-Host "  ISCC stdout:"
+        Write-Host $stdout
+        Write-Host "  ISCC stderr:"
+        Write-Host $stderr
+        Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
+        Remove-Item $tempErr -Force -ErrorAction SilentlyContinue
         if ($exitCode -ne 0) {
             Write-Host "[ERROR] Failed to compile $issFile (exit $exitCode)" -ForegroundColor Red
-            Write-Host "Full ISCC output:"
-            $output | ForEach-Object { Write-Host $_ }
             throw "ISCC failed for $issFile with exit $exitCode"
         }
     } catch {
         Write-Host "[ERROR] Exception compiling $issFile : $_" -ForegroundColor Red
+        Write-Host $_.Exception.Message
+        Write-Host $_.ScriptStackTrace
         throw
     }
     Write-Host "[OK] $issFile compiled" -ForegroundColor Green
