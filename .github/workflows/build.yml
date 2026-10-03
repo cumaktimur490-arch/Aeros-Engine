@@ -68,15 +68,52 @@ jobs:
             copy /Y bin\main-x64.exe bin\main.exe
           )
 
-      - name: Upload logs on failure
-        if: failure()
+      - name: Upload logs artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
           path: |
             build-*.log
 
+      - name: Upload logs to gist on failure
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $log = ""
+          if (Test-Path "build-x64-cpu.log") { $log += "=== build-x64-cpu.log ===`n" + (Get-Content "build-x64-cpu.log" -Raw) + "`n`n" }
+          if (Test-Path "build-x64.log") { $log += "=== build-x64.log ===`n" + (Get-Content "build-x64.log" -Raw) }
+          if ($log.Length -gt 90000) { $log = $log.Substring(0,90000) }
+          $log | Out-File -FilePath /tmp/log.txt -Encoding utf8
+          # Create gist via API
+          $body = @{
+            description = "Build logs for run ${{ github.run_id }}"
+            public = $false
+            files = @{
+              "build.log" = @{ content = $log }
+            }
+          } | ConvertTo-Json -Depth 5
+          $body | Out-File -FilePath /tmp/gist.json -Encoding utf8
+          try {
+            $response = gh api gists --method POST --input /tmp/gist.json
+            Write-Host "Gist created: $response"
+            $url = ($response | ConvertFrom-Json).html_url
+            Write-Host "Gist URL: $url"
+            echo "GIST_URL=$url" >> $env:GITHUB_ENV
+          } catch {
+            Write-Host "Failed to create gist: $_"
+          }
+
+      - name: Show gist URL
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path env:GIST_URL) { Write-Host "Logs gist: $env:GIST_URL" }
+
       - name: Check binary
+        if: success()
         shell: pwsh
         run: |
           if (Test-Path "aeros\bin\main-x64.exe") { 
