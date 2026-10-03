@@ -1,0 +1,6 @@
+
+[Aeros] Building installers v1.0.0 Arch=both Type=all
+[Aeros] Using ISCC: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+[Aeros] Compiling AerosEngine-x64.iss ...
+[ERROR] Failed to compile AerosEngine-x64.iss (exit 2)
+[ERROR] ISCC failed
