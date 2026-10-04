@@ -71,7 +71,7 @@ void updateVertexColors() {
 }
 
 // =====================================================
-// Lift / Drag
+// Lift / Drag — улучшено v1.1.0: более точный Cp с учётом следа и вязкости
 // =====================================================
 void computeLiftDrag() {
     updateFlowParams();
@@ -88,6 +88,9 @@ void computeLiftDrag() {
     glm::vec3 cpSum(0.0f);
     float areaSum = 0.0f;
 
+    float D = 2.0f * fmaxf(flowParams.radiusY, flowParams.radiusZ);
+    if (D < 1e-4f) D = 0.5f;
+
     for (size_t i = 0; i + 8 < g_vertices.size(); i += 9) {
         glm::vec3 v0(g_vertices[i],   g_vertices[i+1], g_vertices[i+2]);
         glm::vec3 v1(g_vertices[i+3], g_vertices[i+4], g_vertices[i+5]);
@@ -103,9 +106,36 @@ void computeLiftDrag() {
         float speed = glm::length(vel);
         float cp = 1.0f - (speed*speed)/(vinf*vinf);
 
-        glm::vec3 force = -cp * n * area;
+        // Эффект разрежения за кормой (как в давлении)
+        float rx = triCenter.x - flowParams.centerX;
+        float ry = triCenter.y - flowParams.centerY;
+        float rz = triCenter.z - flowParams.centerZ;
+        float fl = 1.0f / vinf;
+        float along = rx*(flowParams.vx*fl) + ry*(flowParams.vy*fl) + rz*(flowParams.vz*fl);
+        if (along > D * 0.3f) {
+            float w = (along - D*0.3f) / D;
+            if (w > 1.0f) w = 1.0f;
+            cp -= 0.8f * w * w;
+        }
+
+        // Ограничение Cp для стабильности
+        if (cp > 1.5f) cp = 1.5f;
+        if (cp < -3.0f) cp = -3.0f;
+
+        // Сила давления: -Cp * n * area
+        glm::vec3 pressureForce = -cp * n * area;
+
+        // Добавляем вязкое сопротивление (скин-фрикшн) — маленькая компонента вдоль потока
+        // Чем больше площадь, тем больше трение, и чем ближе к бокам (перпендикулярно потоку), тем больше
+        float viscousCoeff = 0.02f; // коэффициент трения
+        float dotFlowNormal = fabsf(glm::dot(n, flowDir));
+        // Трение максимально когда нормаль перпендикулярна потоку (бока)
+        float skinFriction = viscousCoeff * area * (1.0f - dotFlowNormal);
+        glm::vec3 viscousForce = -flowDir * skinFriction;
+
+        glm::vec3 force = pressureForce + viscousForce;
         totalForce += force;
-        cpSum += triCenter * (cp * area);
+        cpSum += triCenter * (fabsf(cp) * area);
         areaSum += area;
     }
 

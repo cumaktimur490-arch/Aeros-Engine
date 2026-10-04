@@ -44,7 +44,11 @@ float maxFPS       = 60.0f;
 float cameraSpeedMultiplier = 1.0f;
 float mouseSensitivity = 0.3f;
 
+#ifdef CPU_ONLY
+int useCUDA = 0;
+#else
 int useCUDA = 1;
+#endif
 
 float flowSpeed     = 2.0f;
 float flowAzimuth   = 0.0f;

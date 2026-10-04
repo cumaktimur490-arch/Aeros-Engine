@@ -78,9 +78,11 @@ __device__ float3 sdfNormal(float3 p, float* dist, int nx, int ny, int nz,
     return make_float3(dx/len, dy/len, dz/len);
 }
 
-// ============ Поле скоростей на основе SDF ============
+// ============ Поле скоростей на основе SDF — улучшено v1.1.0 ============
 __device__ float3 baseFlowSDF(float3 p, FlowParams prm, float* dDist) {
     float3 v = make_float3(prm.vx, prm.vy, prm.vz);
+    float vmag = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
+    if (vmag < 1e-4f) vmag = 1e-4f;
 
     if (!dDist || prm.gridNx <= 0) return v;
 
@@ -89,35 +91,59 @@ __device__ float3 baseFlowSDF(float3 p, FlowParams prm, float* dDist) {
                        prm.gridMinX, prm.gridMinY, prm.gridMinZ,
                        prm.cellSizeX, prm.cellSizeY, prm.cellSizeZ, &d);
     if (!ok) return v;
-    if (d < 0.0f) return make_float3(0.0f, 0.0f, 0.0f);
+    if (d <= 0.0f) {
+        // Внутри — сильно уменьшаем
+        return make_float3(v.x*0.1f, v.y*0.1f, v.z*0.1f);
+    }
 
     float3 n = sdfNormal(p, dDist, prm.gridNx, prm.gridNy, prm.gridNz,
                         prm.gridMinX, prm.gridMinY, prm.gridMinZ,
                         prm.cellSizeX, prm.cellSizeY, prm.cellSizeZ);
 
-    float k = 3.0f * prm.cellSizeX;
+    float k = 2.5f * prm.cellSizeX;
     float factor = expf(-d / k);
     if (factor < 1e-4f) return v;
 
-    // Отражение нормальной компоненты
     float vn = v.x*n.x + v.y*n.y + v.z*n.z;
-    v.x -= factor * vn * n.x;
-    v.y -= factor * vn * n.y;
-    v.z -= factor * vn * n.z;
+    if (vn < 0.0f) {
+        v.x -= factor * vn * n.x;
+        v.y -= factor * vn * n.y;
+        v.z -= factor * vn * n.z;
+    } else {
+        v.x -= factor * 0.3f * vn * n.x;
+        v.y -= factor * 0.3f * vn * n.y;
+        v.z -= factor * 0.3f * vn * n.z;
+    }
 
-    // Ускорение на боках (эффект Бернулли) — усилено
-    if (d < 8.0f * prm.cellSizeX) {
-        float boost = expf(-d / (k * 2.0f)) * 0.7f;
-        float3 vt = make_float3(v.x, v.y, v.z);
-        v.x += boost * vt.x;
-        v.y += boost * vt.y;
-        v.z += boost * vt.z;
+    if (d < 6.0f * prm.cellSizeX) {
+        float distNorm = d / (6.0f * prm.cellSizeX);
+        float boundaryFactor = 1.0f - 0.4f * expf(-distNorm * 3.0f);
+
+        float3 v_n = make_float3(n.x * (v.x*n.x + v.y*n.y + v.z*n.z),
+                                 n.y * (v.x*n.x + v.y*n.y + v.z*n.z),
+                                 n.z * (v.x*n.x + v.y*n.y + v.z*n.z));
+        float3 v_t = make_float3(v.x - v_n.x, v.y - v_n.y, v.z - v_n.z);
+        float vtMag = sqrtf(v_t.x*v_t.x + v_t.y*v_t.y + v_t.z*v_t.z);
+        if (vtMag > 1e-6f) {
+            float boostProfile = expf(-powf((distNorm - 0.3f) * 2.5f, 2.0f));
+            float tangentialBoost = boostProfile * 0.6f;
+            v_t.x *= (1.0f + tangentialBoost);
+            v_t.y *= (1.0f + tangentialBoost);
+            v_t.z *= (1.0f + tangentialBoost);
+            v.x = v_n.x * boundaryFactor + v_t.x;
+            v.y = v_n.y * boundaryFactor + v_t.y;
+            v.z = v_n.z * boundaryFactor + v_t.z;
+        } else {
+            v.x *= boundaryFactor;
+            v.y *= boundaryFactor;
+            v.z *= boundaryFactor;
+        }
     }
 
     return v;
 }
 
-// ============ Вихревая дорожка ============
+// ============ Вихревая дорожка — улучшено v1.1.0 ============
 __device__ float3 wakeField(float3 p, FlowParams prm) {
     float vmag = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
     float3 w = make_float3(0.0f, 0.0f, 0.0f);
@@ -133,10 +159,12 @@ __device__ float3 wakeField(float3 p, FlowParams prm) {
     if (perp < 1e-4f) perp = 1e-4f;
 
     float D = 2.0f * fmaxf(prm.radiusY, prm.radiusZ);
-    if (along < D * 0.5f || along > prm.wakeLength) return w;
+    if (D < 1e-4f) D = 0.5f;
+    if (along < D * 0.3f || along > prm.wakeLength) return w;
 
-    float decay = expf(-(along - D*0.5f) / (prm.wakeLength * 0.4f));
-    float width = expf(-perp*perp / (D*D*1.5f));
+    float decay = expf(-(along - D*0.3f) / (prm.wakeLength * 0.5f));
+    float wakeWidth = D * (0.5f + 0.5f * along / prm.wakeLength);
+    float width = expf(-perp*perp / (wakeWidth*wakeWidth*1.2f));
     float pnx = px/perp, pny = py/perp, pnz = pz/perp;
 
     float vtx = dy*pnz - dz*pny;
@@ -144,22 +172,33 @@ __device__ float3 wakeField(float3 p, FlowParams prm) {
     float vtz = dx*pny - dy*pnx;
 
     float omega = 6.2831853f * prm.strouhal * vmag / D;
-    float phase = omega * prm.time - along * 2.0f;
-    float amp = prm.wakeStrength * decay * width * vmag;
+    float phase = omega * prm.time - along * 1.5f;
+    float amp = prm.wakeStrength * decay * width * vmag * 0.8f;
 
-    w.x += amp * sinf(phase) * vtx;
-    w.y += amp * sinf(phase) * vty;
-    w.z += amp * sinf(phase) * vtz;
+    float sinPhase = sinf(phase);
+    float side = (sinf(phase * 0.5f) > 0) ? 1.0f : -1.0f;
+    w.x += amp * sinPhase * vtx * side;
+    w.y += amp * sinPhase * vty * side;
+    w.z += amp * sinPhase * vtz * side;
 
-    float lat = amp * 0.5f;
-    w.x += lat * cosf(phase) * pnx;
-    w.y += lat * cosf(phase) * pny;
-    w.z += lat * cosf(phase) * pnz;
+    // Дефицит скорости
+    float deficit = 0.3f * decay * width;
+    w.x -= prm.vx * deficit;
+    w.y -= prm.vy * deficit;
+    w.z -= prm.vz * deficit;
 
-    float turb = 0.3f * amp * sinf(prm.time*3.0f + along*3.0f + perp*5.0f);
-    w.x += turb;
-    w.y += turb * 0.5f;
-    w.z += turb * 0.5f;
+    float lat = amp * 0.3f * cosf(phase);
+    w.x += lat * pnx;
+    w.y += lat * pny;
+    w.z += lat * pnz;
+
+    float turbScale = 0.15f * amp;
+    float turbX = turbScale * sinf(prm.time*4.3f + along*2.1f + perp*3.7f + p.x*1.3f);
+    float turbY = turbScale * sinf(prm.time*3.7f + along*2.8f + perp*4.1f + p.y*1.7f);
+    float turbZ = turbScale * sinf(prm.time*5.1f + along*1.9f + perp*3.3f + p.z*1.1f);
+    w.x += turbX;
+    w.y += turbY;
+    w.z += turbZ;
 
     return w;
 }
