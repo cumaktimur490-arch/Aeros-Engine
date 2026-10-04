@@ -102,11 +102,6 @@ begin
   InstallPath := ExistingPath;
 end;
 
-function InitializeWizard(): Boolean;
-begin
-  Result := True;
-end;
-
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpSelectDir then
