@@ -63,7 +63,7 @@ Source: "..\aeros\bin\main.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Fl
 Source: "..\aeros\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Модели STL — примеры
 Source: "..\aeros\bin\*.stl"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "..\aeros\2.stl"; DestDir: "{app}\models"; Flags: ignoreversion; DestName: "2.stl" skipifsourcedoesntexist
+Source: "..\aeros\2.stl"; DestDir: "{app}\models"; DestName: "2.stl"; Flags: ignoreversion skipifsourcedoesntexist
 ; Run helper
 Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Лицензия и ридми
