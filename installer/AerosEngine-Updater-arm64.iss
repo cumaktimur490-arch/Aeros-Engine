@@ -2,7 +2,9 @@
 ; Обновляет существующую установку
 ; Сборка: iscc AerosEngine-Updater-arm64.iss /DAppVersion=1.0.0
 
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  #define AppVersion "1.1.1"
+#endif
 #define Arch "arm64"
 #include "common.iss"
 

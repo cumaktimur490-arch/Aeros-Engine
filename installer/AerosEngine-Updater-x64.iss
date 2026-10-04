@@ -2,7 +2,9 @@
 ; Обновляет существующую установку, проверяет наличие установленного приложения
 ; Сборка: iscc AerosEngine-Updater-x64.iss /DAppVersion=1.0.0
 
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  #define AppVersion "1.1.1"
+#endif
 #define Arch "x64"
 #include "common.iss"
 

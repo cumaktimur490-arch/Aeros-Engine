@@ -2,7 +2,9 @@
 ; Требует Inno Setup 6.x
 ; Сборка: iscc AerosEngine-x86.iss /DAppVersion=1.0.0
 
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  #define AppVersion "1.1.1"
+#endif
 #define Arch "x86"
 #include "common.iss"
 
