@@ -1,0 +1,521 @@
+**********************
+PowerShell transcript start
+Start time: 20261004171054
+Username: runnervmfi6oq\runneradmin
+RunAs User: runnervmfi6oq\runneradmin
+Configuration Name: 
+Machine: runnervmfi6oq (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -command . 'D:\a\_temp\0955d2a2-4734-4730-8a27-63d09567cad2.ps1'
+Process ID: 6676
+PSVersion: 7.6.6
+PSEdition: Core
+GitCommitId: 7.6.6
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.4
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+Transcript started, output file is build-installers.log
+Running build-installers.ps1...
+Command: .\installer\build-installers.ps1 -Version 1.0.0 -Arch both -Type all -ISCCPath C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+[Aeros] Building installers v1.0.0 Arch=both Type=all
+[Aeros] Using ISCC: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+[Aeros] Compiling AerosEngine-x64.iss ...
+  ISS: D:\a\Aeros-Engine\Aeros-Engine\installer\AerosEngine-x64.iss
+  ISCC: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+  Version: 1.0.0
+  Checking ISS exists: True
+  Checking ISCC exists: True
+  Bin dir contents:
+
+Name                    Length
+----                    ------
+ball.stl                 37884
+cuda_stub.obj            38451
+flow_field.obj           19685
+forces.obj               50589
+gl_utils.obj             54323
+glad.obj                129065
+glfw3-x86.dll           196608
+glfw3.dll               196608
+globals.obj              16020
+imgui_draw.obj          389120
+imgui_impl_glfw.obj      34790
+imgui_impl_opengl3.obj   35638
+imgui_tables.obj        188087
+imgui_widgets.obj       443882
+imgui.obj               684880
+input.obj                12711
+main-x64.exe           1540608
+main-x86.exe           1292800
+main.exe               1292800
+main.obj                 68028
+model.obj                44409
+model.stl                  684
+particles.obj            41571
+pelmen.stl               29884
+run.bat                     41
+sl.common.dll           843392
+sl.dlss.dll             422016
+sl.interposer.dll       652928
+stl_loader.obj          133572
+streamlines.obj          52061
+ui.obj                   20340
+varios.stl                7284
+voxel_grid.obj           67350
+  Running: C:\Program Files (x86)\Inno Setup 6\ISCC.exe D:\a\Aeros-Engine\Aeros-Engine\installer\AerosEngine-x64.iss /DAppVersion=1.0.0
+  Temp out: C:\Users\runneradmin\AppData\Local\Temp\tmpfhkvmz.tmp, err: C:\Users\runneradmin\AppData\Local\Temp\tmpvhn4e4.tmp
+  ISCC stdout:
+Inno Setup 6 Command-Line Compiler
+Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
+Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
+Portions Copyright (C) 2001-2004 Alex Yackimoff. All rights reserved.
+https://www.innosetup.com
+
+Compiler engine version: Inno Setup 6.7.1
+Non-commercial use only
+
+Preprocessing
+   Reading file: C:\Program Files (x86)\Inno Setup 6\ISPPBuiltins.iss
+   Line 7: Including file: D:\a\Aeros-Engine\Aeros-Engine\installer\common.iss
+   Reading file: D:\a\Aeros-Engine\Aeros-Engine\installer\common.iss
+Parsing [Setup] section, line 10
+Parsing [Setup] section, line 11
+Parsing [Setup] section, line 12
+Parsing [Setup] section, line 13
+Parsing [Setup] section, line 14
+Parsing [Setup] section, line 15
+Parsing [Setup] section, line 16
+Parsing [Setup] section, line 17
+Parsing [Setup] section, line 18
+Parsing [Setup] section, line 19
+Parsing [Setup] section, line 20
+Parsing [Setup] section, line 21
+Parsing [Setup] section, line 22
+Parsing [Setup] section, line 23
+Parsing [Setup] section, line 24
+Parsing [Setup] section, line 25
+Parsing [Setup] section, line 29
+Parsing [Setup] section, line 30
+Parsing [Setup] section, line 31
+Parsing [Setup] section, line 32
+Parsing [Setup] section, line 33
+Parsing [Setup] section, line 34
+Parsing [Setup] section, line 35
+Parsing [Setup] section, line 36
+Parsing [Setup] section, line 38
+Parsing [Setup] section, line 39
+Parsing [Setup] section, line 40
+Parsing [Setup] section, line 41
+Parsing [Setup] section, line 42
+Parsing [Setup] section, line 43
+Parsing [Setup] section, line 44
+Parsing [Setup] section, line 45
+Parsing [Setup] section, line 46
+Parsing [Setup] section, line 47
+Parsing [Setup] section, line 48
+Reading file (LicenseFile)
+Reading file (WizardImageFile)
+Reading file (WizardSmallImageFile)
+Preparing Setup program executable
+   Verification successful
+   Updating icons (Setup.e32)
+   Updating version info (Setup.e32)
+Determining language code pages
+Parsing [Languages] section, line 51
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+Parsing [Languages] section, line 52
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Languages\Russian.isl
+   Messages in script file
+Reading default messages from Default.isl
+Parsing [Languages] section, line 51
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+Parsing [Languages] section, line 52
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Languages\Russian.isl
+Parsing [LangOptions], [Messages], and [CustomMessages] sections
+   Messages in script file
+Reading [Code] section
+Parsing [Tasks] section, line 55
+Parsing [Tasks] section, line 56
+Parsing [Icons] section, line 76
+Parsing [Icons] section, line 77
+Parsing [Icons] section, line 78
+Parsing [Icons] section, line 79
+Parsing [UninstallDelete] section, line 85
+Parsing [UninstallDelete] section, line 86
+Parsing [Run] section, line 82
+Parsing [Files] section, line 60
+Parsing [Files] section, line 61
+Parsing [Files] section, line 63
+Parsing [Files] section, line 65
+Parsing [Files] section, line 66
+Parsing [Files] section, line 68
+Parsing [Files] section, line 70
+Parsing [Files] section, line 71
+Parsing [Files] section, line 73
+Compiling [Code] section
+Creating setup files
+   Verification successful
+   Updating icons (Setup.exe)
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\main-x64.exe
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\main.exe
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\glfw3-x86.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\glfw3.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\sl.common.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\sl.dlss.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\sl.interposer.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\ball.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\model.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\pelmen.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\varios.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\2.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\run.bat
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\LICENSE
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\README.md
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\VERSION
+   Compressing Setup program executable
+   Updating version info (Setup.exe)
+   Updating manifest (Setup.exe)
+
+Warning: Minimum version specified by the OnlyBelowVersion parameter of an entry should be higher than 6.1 if not 0 otherwise the entry is never processed. The entry should probably be removed. (Windows Vista/Server 2008 are no longer supported.)
+
+Successful compile (2.218 sec). Resulting Setup program filename is:
+D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Setup-x64-v1.0.0.exe
+  ISCC stderr:
+
+[OK] AerosEngine-x64.iss compiled
+[Aeros] Compiling AerosEngine-x86.iss ...
+  ISS: D:\a\Aeros-Engine\Aeros-Engine\installer\AerosEngine-x86.iss
+  ISCC: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+  Version: 1.0.0
+  Checking ISS exists: True
+  Checking ISCC exists: True
+  Bin dir contents:
+
+Name                    Length
+----                    ------
+ball.stl                 37884
+cuda_stub.obj            38451
+flow_field.obj           19685
+forces.obj               50589
+gl_utils.obj             54323
+glad.obj                129065
+glfw3-x86.dll           196608
+glfw3.dll               196608
+globals.obj              16020
+imgui_draw.obj          389120
+imgui_impl_glfw.obj      34790
+imgui_impl_opengl3.obj   35638
+imgui_tables.obj        188087
+imgui_widgets.obj       443882
+imgui.obj               684880
+input.obj                12711
+main-x64.exe           1540608
+main-x86.exe           1292800
+main.exe               1292800
+main.obj                 68028
+model.obj                44409
+model.stl                  684
+particles.obj            41571
+pelmen.stl               29884
+run.bat                     41
+sl.common.dll           843392
+sl.dlss.dll             422016
+sl.interposer.dll       652928
+stl_loader.obj          133572
+streamlines.obj          52061
+ui.obj                   20340
+varios.stl                7284
+voxel_grid.obj           67350
+  Running: C:\Program Files (x86)\Inno Setup 6\ISCC.exe D:\a\Aeros-Engine\Aeros-Engine\installer\AerosEngine-x86.iss /DAppVersion=1.0.0
+  Temp out: C:\Users\runneradmin\AppData\Local\Temp\tmplfsaw0.tmp, err: C:\Users\runneradmin\AppData\Local\Temp\tmpqm4lni.tmp
+  ISCC stdout:
+Inno Setup 6 Command-Line Compiler
+Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
+Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
+Portions Copyright (C) 2001-2004 Alex Yackimoff. All rights reserved.
+https://www.innosetup.com
+
+Compiler engine version: Inno Setup 6.7.1
+Non-commercial use only
+
+Preprocessing
+   Reading file: C:\Program Files (x86)\Inno Setup 6\ISPPBuiltins.iss
+   Line 7: Including file: D:\a\Aeros-Engine\Aeros-Engine\installer\common.iss
+   Reading file: D:\a\Aeros-Engine\Aeros-Engine\installer\common.iss
+Parsing [Setup] section, line 10
+Parsing [Setup] section, line 11
+Parsing [Setup] section, line 12
+Parsing [Setup] section, line 13
+Parsing [Setup] section, line 14
+Parsing [Setup] section, line 15
+Parsing [Setup] section, line 16
+Parsing [Setup] section, line 17
+Parsing [Setup] section, line 18
+Parsing [Setup] section, line 19
+Parsing [Setup] section, line 20
+Parsing [Setup] section, line 21
+Parsing [Setup] section, line 22
+Parsing [Setup] section, line 23
+Parsing [Setup] section, line 24
+Parsing [Setup] section, line 25
+Parsing [Setup] section, line 29
+Parsing [Setup] section, line 31
+Parsing [Setup] section, line 32
+Parsing [Setup] section, line 33
+Parsing [Setup] section, line 34
+Parsing [Setup] section, line 35
+Parsing [Setup] section, line 36
+Parsing [Setup] section, line 37
+Parsing [Setup] section, line 38
+Parsing [Setup] section, line 39
+Parsing [Setup] section, line 40
+Parsing [Setup] section, line 41
+Parsing [Setup] section, line 42
+Parsing [Setup] section, line 43
+Parsing [Setup] section, line 44
+Parsing [Setup] section, line 45
+Reading file (LicenseFile)
+Reading file (WizardImageFile)
+Reading file (WizardSmallImageFile)
+Preparing Setup program executable
+   Verification successful
+   Updating icons (Setup.e32)
+   Updating version info (Setup.e32)
+Determining language code pages
+Parsing [Languages] section, line 48
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+Parsing [Languages] section, line 49
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Languages\Russian.isl
+   Messages in script file
+Reading default messages from Default.isl
+Parsing [Languages] section, line 48
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+Parsing [Languages] section, line 49
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Languages\Russian.isl
+Parsing [LangOptions], [Messages], and [CustomMessages] sections
+   Messages in script file
+Reading [Code] section
+Parsing [Tasks] section, line 52
+Parsing [Icons] section, line 66
+Parsing [Icons] section, line 67
+Parsing [Icons] section, line 68
+Parsing [Run] section, line 71
+Parsing [Files] section, line 55
+Parsing [Files] section, line 56
+Parsing [Files] section, line 57
+Parsing [Files] section, line 58
+Parsing [Files] section, line 59
+Parsing [Files] section, line 60
+Parsing [Files] section, line 61
+Parsing [Files] section, line 62
+Parsing [Files] section, line 63
+Compiling [Code] section
+Creating setup files
+   Verification successful
+   Updating icons (Setup.exe)
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\main-x86.exe
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\main.exe
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\glfw3-x86.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\glfw3.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\sl.common.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\sl.dlss.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\sl.interposer.dll
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\ball.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\model.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\pelmen.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\varios.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\2.stl
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\aeros\bin\run.bat
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\LICENSE
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\README.md
+   Compressing: D:\a\Aeros-Engine\Aeros-Engine\installer\..\VERSION
+   Compressing Setup program executable
+   Updating version info (Setup.exe)
+   Updating manifest (Setup.exe)
+
+
+Successful compile (1.797 sec). Resulting Setup program filename is:
+D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Setup-x86-v1.0.0.exe
+  ISCC stderr:
+
+[OK] AerosEngine-x86.iss compiled
+[Aeros] Compiling AerosEngine-Updater-x64.iss ...
+  ISS: D:\a\Aeros-Engine\Aeros-Engine\installer\AerosEngine-Updater-x64.iss
+  ISCC: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+  Version: 1.0.0
+  Checking ISS exists: True
+  Checking ISCC exists: True
+  Bin dir contents:
+
+Name                    Length
+----                    ------
+ball.stl                 37884
+cuda_stub.obj            38451
+flow_field.obj           19685
+forces.obj               50589
+gl_utils.obj             54323
+glad.obj                129065
+glfw3-x86.dll           196608
+glfw3.dll               196608
+globals.obj              16020
+imgui_draw.obj          389120
+imgui_impl_glfw.obj      34790
+imgui_impl_opengl3.obj   35638
+imgui_tables.obj        188087
+imgui_widgets.obj       443882
+imgui.obj               684880
+input.obj                12711
+main-x64.exe           1540608
+main-x86.exe           1292800
+main.exe               1292800
+main.obj                 68028
+model.obj                44409
+model.stl                  684
+particles.obj            41571
+pelmen.stl               29884
+run.bat                     41
+sl.common.dll           843392
+sl.dlss.dll             422016
+sl.interposer.dll       652928
+stl_loader.obj          133572
+streamlines.obj          52061
+ui.obj                   20340
+varios.stl                7284
+voxel_grid.obj           67350
+  Running: C:\Program Files (x86)\Inno Setup 6\ISCC.exe D:\a\Aeros-Engine\Aeros-Engine\installer\AerosEngine-Updater-x64.iss /DAppVersion=1.0.0
+  Temp out: C:\Users\runneradmin\AppData\Local\Temp\tmpzrnzjv.tmp, err: C:\Users\runneradmin\AppData\Local\Temp\tmpwuwz5m.tmp
+  ISCC stdout:
+Inno Setup 6 Command-Line Compiler
+Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
+Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
+Portions Copyright (C) 2001-2004 Alex Yackimoff. All rights reserved.
+https://www.innosetup.com
+
+Compiler engine version: Inno Setup 6.7.1
+Non-commercial use only
+
+Preprocessing
+   Reading file: C:\Program Files (x86)\Inno Setup 6\ISPPBuiltins.iss
+   Line 7: Including file: D:\a\Aeros-Engine\Aeros-Engine\installer\common.iss
+   Reading file: D:\a\Aeros-Engine\Aeros-Engine\installer\common.iss
+Parsing [Setup] section, line 12
+Parsing [Setup] section, line 13
+Parsing [Setup] section, line 14
+Parsing [Setup] section, line 15
+Parsing [Setup] section, line 16
+Parsing [Setup] section, line 17
+Parsing [Setup] section, line 18
+Parsing [Setup] section, line 19
+Parsing [Setup] section, line 20
+Parsing [Setup] section, line 21
+Parsing [Setup] section, line 22
+Parsing [Setup] section, line 23
+Parsing [Setup] section, line 24
+Parsing [Setup] section, line 25
+Parsing [Setup] section, line 29
+Parsing [Setup] section, line 30
+Parsing [Setup] section, line 31
+Parsing [Setup] section, line 32
+Parsing [Setup] section, line 33
+Parsing [Setup] section, line 34
+Parsing [Setup] section, line 35
+Parsing [Setup] section, line 36
+Parsing [Setup] section, line 37
+Parsing [Setup] section, line 38
+Parsing [Setup] section, line 39
+Reading file (LicenseFile)
+Reading file (WizardImageFile)
+Reading file (WizardSmallImageFile)
+Preparing Setup program executable
+   Verification successful
+   Updating icons (Setup.e32)
+   Updating version info (Setup.e32)
+Determining language code pages
+Parsing [Languages] section, line 42
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+Parsing [Languages] section, line 43
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Languages\Russian.isl
+   Messages in script file
+Reading default messages from Default.isl
+Parsing [Languages] section, line 42
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+Parsing [Languages] section, line 43
+   Reading file: C:\Program Files (x86)\Inno Setup 6\Languages\Russian.isl
+Parsing [LangOptions], [Messages], and [CustomMessages] sections
+   Messages in script file
+Reading [Code] section
+Parsing [Files] section, line 47
+Parsing [Files] section, line 48
+Parsing [Files] section, line 49
+Parsing [Files] section, line 50
+Parsing [Files] section, line 52
+Compiling [Code] section
+  ISCC stderr:
+Error on line 105 in D:\a\Aeros-Engine\Aeros-Engine\installer\AerosEngine-Updater-x64.iss: Column 10:
+Invalid prototype for 'InitializeWizard'
+Compile aborted.
+[ERROR] Failed to compile AerosEngine-Updater-x64.iss (exit 2)
+[ERROR] Exception compiling AerosEngine-Updater-x64.iss : ISCC failed for AerosEngine-Updater-x64.iss with exit 2
+ISCC failed for AerosEngine-Updater-x64.iss with exit 2
+at Build-Installer, D:\a\Aeros-Engine\Aeros-Engine\installer\build-installers.ps1: line 94
+at <ScriptBlock>, D:\a\Aeros-Engine\Aeros-Engine\installer\build-installers.ps1: line 111
+at <ScriptBlock>, D:\a\_temp\0955d2a2-4734-4730-8a27-63d09567cad2.ps1: line 18
+at <ScriptBlock>, <No file>: line 1
+PS>TerminatingError(): "ISCC failed for AerosEngine-Updater-x64.iss with exit 2"
+[ERROR] ISCC failed for AerosEngine-Updater-x64.iss with exit 2
+Installer build exit code: 1
+Release dir contents:
+
+Name                                 Length  Directory
+----                                 ------  ---------
+Aeros-Engine-Portable-x64-v1.0.0
+Aeros-Engine-Portable-x86-v1.0.0
+Aeros-Engine-Portable-x64-v1.0.0.zip 2120285 D:\a\Aeros-Engine\Aeros-Engine\release
+Aeros-Engine-Portable-x86-v1.0.0.zip 2061269 D:\a\Aeros-Engine\Aeros-Engine\release
+Aeros-Engine-Setup-x64-v1.0.0.exe    3361228 D:\a\Aeros-Engine\Aeros-Engine\release
+Aeros-Engine-Setup-x86-v1.0.0.exe    3032900 D:\a\Aeros-Engine\Aeros-Engine\release
+README.md                            868     D:\a\Aeros-Engine\Aeros-Engine\release
+models
+AerosEngine.exe                      1540608 D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+glfw3-x86.dll                        196608  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+glfw3.dll                            196608  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+LICENSE.txt                          35823   D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+main.exe                             1540608 D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+README-Portable.txt                  514     D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+README.txt                           9882    D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+run.bat                              41      D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+sl.common.dll                        843392  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+sl.dlss.dll                          422016  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+sl.interposer.dll                    652928  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+VERSION.txt                          7       D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0
+2.stl                                1884    D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0\m…
+ball.stl                             37884   D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0\m…
+model.stl                            684     D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0\m…
+pelmen.stl                           29884   D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0\m…
+varios.stl                           7284    D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x64-v1.0.0\m…
+models
+AerosEngine.exe                      1292800 D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+glfw3-x86.dll                        196608  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+glfw3.dll                            196608  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+LICENSE.txt                          35823   D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+main.exe                             1292800 D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+README-Portable.txt                  514     D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+README.txt                           9882    D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+run.bat                              41      D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+sl.common.dll                        843392  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+sl.dlss.dll                          422016  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+sl.interposer.dll                    652928  D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+VERSION.txt                          7       D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0
+2.stl                                1884    D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0\m…
+ball.stl                             37884   D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0\m…
+model.stl                            684     D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0\m…
+pelmen.stl                           29884   D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0\m…
+varios.stl                           7284    D:\a\Aeros-Engine\Aeros-Engine\release\Aeros-Engine-Portable-x86-v1.0.0\m…
+
+**********************
+PowerShell transcript end
+End time: 20261004171059
+**********************
