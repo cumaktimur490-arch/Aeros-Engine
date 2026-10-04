@@ -1,6 +1,6 @@
 param(
     [string]$Version = "",
-    [ValidateSet("x64","x86","both")][string]$Arch = "both",
+    [ValidateSet("x64","x86","arm64","both","all")][string]$Arch = "both",
     [string]$OutputDir = "..\release"
 )
 
@@ -122,8 +122,9 @@ Aeros Engine Portable $archSuffix v$Version
     Remove-Item -Recurse -Force $portableDir
 }
 
-if ($Arch -eq "both" -or $Arch -eq "x64") { Build-Portable "x64" }
-if ($Arch -eq "both" -or $Arch -eq "x86") { Build-Portable "x86" }
+if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x64") { Build-Portable "x64" }
+if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x86") { Build-Portable "x86" }
+if ($Arch -eq "all" -or $Arch -eq "arm64") { Build-Portable "arm64" }
 
 Write-Host "[Aeros] Portable builds done. Output: $OutputDir" -ForegroundColor Cyan
 Get-ChildItem $OutputDir -Filter "*Portable*"

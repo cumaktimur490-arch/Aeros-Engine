@@ -1,6 +1,6 @@
 param(
     [string]$Version = "",
-    [ValidateSet("x64","x86","both")][string]$Arch = "both",
+    [ValidateSet("x64","x86","arm64","both","all")][string]$Arch = "both",
     [ValidateSet("full","update","all")][string]$Type = "all",
     [string]$ISCCPath = ""
 )
@@ -104,12 +104,14 @@ function Build-Installer($issFile) {
 
 try {
     if ($Type -eq "full" -or $Type -eq "all") {
-        if ($Arch -eq "both" -or $Arch -eq "x64") { Build-Installer "AerosEngine-x64.iss" }
-        if ($Arch -eq "both" -or $Arch -eq "x86") { Build-Installer "AerosEngine-x86.iss" }
+        if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x64") { Build-Installer "AerosEngine-x64.iss" }
+        if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x86") { Build-Installer "AerosEngine-x86.iss" }
+        if ($Arch -eq "all" -or $Arch -eq "arm64") { Build-Installer "AerosEngine-arm64.iss" }
     }
     if ($Type -eq "update" -or $Type -eq "all") {
-        if ($Arch -eq "both" -or $Arch -eq "x64") { Build-Installer "AerosEngine-Updater-x64.iss" }
-        if ($Arch -eq "both" -or $Arch -eq "x86") { Build-Installer "AerosEngine-Updater-x86.iss" }
+        if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x64") { Build-Installer "AerosEngine-Updater-x64.iss" }
+        if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x86") { Build-Installer "AerosEngine-Updater-x86.iss" }
+        if ($Arch -eq "all" -or $Arch -eq "arm64") { Build-Installer "AerosEngine-Updater-arm64.iss" }
     }
 } catch {
     Write-Host "[ERROR] $_" -ForegroundColor Red

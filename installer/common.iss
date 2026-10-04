@@ -18,6 +18,10 @@
   #define AppId "{A7B8C9D0-E1F2-4A5B-8C9D-0E1F2A3B4C5D}"
   #define ArchSuffix "x64"
   #define ArchTitle "x64 (64-bit)"
+#elif Arch == "arm64"
+  #define AppId "{A7B8C9D0-E1F2-4A5B-8C9D-0E1F2A3B4C5F}"
+  #define ArchSuffix "arm64"
+  #define ArchTitle "arm64 (ARM64)"
 #else
   #define AppId "{A7B8C9D0-E1F2-4A5B-8C9D-0E1F2A3B4C5E}"
   #define ArchSuffix "x86"

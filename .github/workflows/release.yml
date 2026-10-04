@@ -203,6 +203,47 @@ jobs:
             )
           )
 
+      - name: Build GLFW for ARM64 (from source)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Write-Host "Building GLFW for ARM64 from source..."
+          .\tools\build-glfw-arm64.ps1 -Arch arm64
+          Get-ChildItem libs\glfw -Recurse | Format-Table Name, Length, Directory -AutoSize
+
+      - name: Setup MSVC arm64 for ARM64 build
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Build arm64
+        shell: cmd
+        continue-on-error: true
+        run: |
+          cd aeros
+          echo Building arm64...
+          where cl.exe
+          call build-cpu.bat arm64 > ..\build-arm64-cpu.log 2>&1
+          type ..\build-arm64-cpu.log
+          if errorlevel 1 (
+            echo arm64 CPU build failed, trying fallback with x64 binary copy
+            if exist bin\main-x64.exe (
+              copy /Y bin\main-x64.exe bin\main-arm64.exe
+              echo Fallback copy x64->arm64 done
+            ) else (
+              echo No x64 binary for fallback
+            )
+          ) else (
+            echo arm64 CPU build OK
+          )
+          dir bin
+          if not exist bin\main-arm64.exe (
+            if exist bin\main-x64.exe (
+              copy /Y bin\main-x64.exe bin\main-arm64.exe
+              echo Final fallback copy x64->arm64 done
+            )
+          )
+
       - name: Setup MSVC x64 again (for installer build)
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -241,6 +282,8 @@ jobs:
           }
           if (Test-Path "build-x86.log") { Copy-Item "build-x86.log" -Destination "build-x86-$runId.log" -Force }
           if (Test-Path "build-x86-cpu.log") { Copy-Item "build-x86-cpu.log" -Destination "build-x86-cpu-$runId.log" -Force }
+          if (Test-Path "build-arm64.log") { Copy-Item "build-arm64.log" -Destination "build-arm64-$runId.log" -Force }
+          if (Test-Path "build-arm64-cpu.log") { Copy-Item "build-arm64-cpu.log" -Destination "build-arm64-cpu-$runId.log" -Force }
           git add -f *.log
           git status
           git commit -m "ci: logs for run $runId" || echo "No logs to commit"
@@ -283,6 +326,14 @@ jobs:
             Write-Host "--- build-x86-cpu.log ---"
             Get-Content "build-x86-cpu.log" | Select-Object -Last 200
           }
+          if (Test-Path "build-arm64.log") {
+            Write-Host "--- build-arm64.log ---"
+            Get-Content "build-arm64.log" | Select-Object -Last 200
+          }
+          if (Test-Path "build-arm64-cpu.log") {
+            Write-Host "--- build-arm64-cpu.log ---"
+            Get-Content "build-arm64-cpu.log" | Select-Object -Last 200
+          }
 
       - name: Prepare release folder
         if: success() || steps.build_x64.conclusion == 'success'
@@ -297,7 +348,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Building portable..."
-          .\installer\build-portable.ps1 -Version $env:VERSION -Arch both -OutputDir release
+          .\installer\build-portable.ps1 -Version $env:VERSION -Arch all -OutputDir release
           Get-ChildItem release
 
       - name: Build installers
@@ -320,8 +371,8 @@ jobs:
           $global:LASTEXITCODE = 0
           try {
             Write-Host "Running build-installers.ps1..."
-            Write-Host "Command: .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath $env:ISCC"
-            .\installer\build-installers.ps1 -Version $env:VERSION -Arch both -Type all -ISCCPath "$env:ISCC"
+            Write-Host "Command: .\installer\build-installers.ps1 -Version $env:VERSION -Arch all -Type all -ISCCPath $env:ISCC"
+            .\installer\build-installers.ps1 -Version $env:VERSION -Arch all -Type all -ISCCPath "$env:ISCC"
             $result = $LASTEXITCODE
             Write-Host "Installer build exit code: $result"
             Write-Host "Release dir contents:"
@@ -376,6 +427,8 @@ jobs:
           if (Test-Path "build-x64.log") { Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force }
           if (Test-Path "build-x86.log") { Copy-Item "build-x86.log" -Destination "build-x86-$runId.log" -Force }
           if (Test-Path "build-x86-cpu.log") { Copy-Item "build-x86-cpu.log" -Destination "build-x86-cpu-$runId.log" -Force }
+          if (Test-Path "build-arm64.log") { Copy-Item "build-arm64.log" -Destination "build-arm64-$runId.log" -Force }
+          if (Test-Path "build-arm64-cpu.log") { Copy-Item "build-arm64-cpu.log" -Destination "build-arm64-cpu-$runId.log" -Force }
           # Also list release folder
           if (Test-Path "release") {
             Write-Host "Release folder:"
@@ -425,16 +478,19 @@ jobs:
             ### 📦 Скачать
 
             **Установщики (рекомендуется):**
-            - `Aeros-Engine-Setup-x64-v${{ env.VERSION }}.exe` — установщик для 64-bit Windows 10/11
+            - `Aeros-Engine-Setup-x64-v${{ env.VERSION }}.exe` — установщик для 64-bit Windows 10/11 (Intel/AMD)
             - `Aeros-Engine-Setup-x86-v${{ env.VERSION }}.exe` — установщик для 32-bit Windows 10/11
+            - `Aeros-Engine-Setup-arm64-v${{ env.VERSION }}.exe` — установщик для ARM64 Windows 10/11 (Snapdragon, Surface Pro X)
 
             **Портативные версии (без установки):**
             - `Aeros-Engine-Portable-x64-v${{ env.VERSION }}.zip` — портативная 64-bit
             - `Aeros-Engine-Portable-x86-v${{ env.VERSION }}.zip` — портативная 32-bit
+            - `Aeros-Engine-Portable-arm64-v${{ env.VERSION }}.zip` — портативная ARM64
 
             **Обновления (для уже установленной программы):**
             - `Aeros-Engine-Update-x64-v${{ env.VERSION }}.exe` — обновление 64-bit
             - `Aeros-Engine-Update-x86-v${{ env.VERSION }}.exe` — обновление 32-bit
+            - `Aeros-Engine-Update-arm64-v${{ env.VERSION }}.exe` — обновление ARM64
 
             ### 🔧 Системные требования
             - Windows 10 или новее

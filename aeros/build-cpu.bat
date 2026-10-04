@@ -15,6 +15,18 @@ if /I "%ARCH%"=="x64" (
     set "VCVARS=vcvars64.bat"
     set "GLFW_LIBDIR=lib-vc2022"
     set "OUT_ARCH=x64"
+) else if /I "%ARCH%"=="x86" (
+    set "VCVARS=vcvars32.bat"
+    set "GLFW_LIBDIR=lib-vc2022-x86"
+    set "OUT_ARCH=x86"
+) else if /I "%ARCH%"=="arm64" (
+    set "VCVARS=vcvarsamd64_arm64.bat"
+    set "GLFW_LIBDIR=lib-vc2022-arm64"
+    set "OUT_ARCH=arm64"
+) else if /I "%ARCH%"=="arm" (
+    set "VCVARS=vcvarsamd64_arm64.bat"
+    set "GLFW_LIBDIR=lib-vc2022-arm64"
+    set "OUT_ARCH=arm64"
 ) else (
     set "VCVARS=vcvars32.bat"
     set "GLFW_LIBDIR=lib-vc2022-x86"
@@ -50,7 +62,22 @@ if not exist bin mkdir bin
 set "LIBDIR=%~dp0..\libs"
 
 if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
-    if exist "!LIBDIR!\glfw\lib-vc2022\glfw3.lib" set "GLFW_LIBDIR=lib-vc2022"
+    if /I "!OUT_ARCH!"=="arm64" (
+        echo [WARN] GLFW lib not found for arm64: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
+        echo [INFO] Trying to build GLFW for arm64 from source...
+        powershell -ExecutionPolicy Bypass -File "%~dp0..\tools\build-glfw-arm64.ps1" -Arch arm64
+        if !errorlevel! neq 0 (
+            echo [WARN] Failed to build GLFW arm64, trying fallback to x64 lib
+            if exist "!LIBDIR!\glfw\lib-vc2022\glfw3.lib" set "GLFW_LIBDIR=lib-vc2022"
+        )
+    ) else (
+        if exist "!LIBDIR!\glfw\lib-vc2022\glfw3.lib" set "GLFW_LIBDIR=lib-vc2022"
+    )
+)
+if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
+    echo [ERROR] GLFW lib not found: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
+    echo [INFO] For arm64, run tools\build-glfw-arm64.ps1 -Arch arm64
+    exit /b 1
 )
 
 set "VERSION_FILE=%~dp0..\VERSION"

@@ -25,8 +25,16 @@ if /I "%ARCH%"=="x64" (
     set "VCVARS=vcvars32.bat"
     set "GLFW_LIBDIR=lib-vc2022-x86"
     set "OUT_ARCH=x86"
+) else if /I "%ARCH%"=="arm64" (
+    set "VCVARS=vcvarsamd64_arm64.bat"
+    set "GLFW_LIBDIR=lib-vc2022-arm64"
+    set "OUT_ARCH=arm64"
+) else if /I "%ARCH%"=="arm" (
+    set "VCVARS=vcvarsamd64_arm64.bat"
+    set "GLFW_LIBDIR=lib-vc2022-arm64"
+    set "OUT_ARCH=arm64"
 ) else (
-    echo [ERROR] Unknown arch "%ARCH%". Use x64 or x86.
+    echo [ERROR] Unknown arch "%ARCH%". Use x64, x86, or arm64.
     exit /b 1
 )
 
@@ -116,7 +124,7 @@ set "LIBDIR=%~dp0..\libs"
 rem --- Проверка GLFW lib для выбранной архитектуры ---
 if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
     echo [WARN] GLFW lib not found: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
-    if /I "!ARCH!"=="x86" (
+    if /I "!OUT_ARCH!"=="x86" (
         echo [INFO] Trying to use x64 lib as fallback or download 32-bit GLFW.
         echo [INFO] Run tools\get-glfw-x86.ps1 or download from https://www.glfw.org/download.html
         if exist "!LIBDIR!\glfw\lib-vc2022\glfw3.lib" (
@@ -126,10 +134,24 @@ if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
             echo [ERROR] No GLFW lib found at all
             exit /b 1
         )
+    ) else if /I "!OUT_ARCH!"=="arm64" (
+        echo [INFO] Trying to build GLFW for arm64 from source...
+        powershell -ExecutionPolicy Bypass -File "%~dp0..\tools\build-glfw-arm64.ps1" -Arch arm64
+        if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
+            echo [WARN] Failed to build GLFW arm64, trying fallback to x64 lib
+            if exist "!LIBDIR!\glfw\lib-vc2022\glfw3.lib" set "GLFW_LIBDIR=lib-vc2022"
+        )
     ) else (
         echo [ERROR] GLFW lib not found for x64: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
         exit /b 1
     )
+)
+if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
+    echo [ERROR] GLFW lib still not found: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
+    if /I "!OUT_ARCH!"=="arm64" (
+        echo [INFO] For arm64, ensure tools\build-glfw-arm64.ps1 succeeded or manually build GLFW
+    )
+    exit /b 1
 )
 
 rem --- Версия из VERSION файла ---
