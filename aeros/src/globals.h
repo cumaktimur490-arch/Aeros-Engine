@@ -280,4 +280,55 @@ extern float perfCullingMs;
 extern int perfCulledParticles;
 extern int perfCulledTriangles;
 
+// --- Frame Generation v1.16.0 — собственная генерация кадров ---
+enum class FGMode {
+    Off = 0,
+    FG_2x = 1,   // 1 сгенерированный между 2 реальными — 2x FPS
+    FG_3x = 2,   // 2 сгенерированных — 3x FPS
+    FG_4x = 3    // 3 сгенерированных — 4x FPS
+};
+extern FGMode fgMode;
+extern bool fgEnabled;
+extern float fgInterpolationFactor; // 0.5 для 2x
+extern bool fgUseMotionVectors;
+extern bool fgUseOpticalFlow;
+extern bool fgAsync;
+extern bool fgShowDebug;
+extern bool fgLowLatency;           // Reflex-like — снижает задержку
+extern float fgBlendStrength;       // сила бленда
+extern int fgGeneratedCount;        // сколько сгенерировано
+extern int fgRealCount;
+
+// FG GL objects
+extern unsigned int fgRealFBO;
+extern unsigned int fgRealColorTex;
+extern unsigned int fgRealDepthTex;
+extern unsigned int fgPrevColorTex;
+extern unsigned int fgPrevDepthTex;
+extern unsigned int fgMotionFBO;
+extern unsigned int fgMotionTex;
+extern unsigned int fgInterpFBO;
+extern unsigned int fgInterpTex;
+extern unsigned int fgMotionProgram;
+extern unsigned int fgInterpProgram;
+extern unsigned int fgOpticalFlowProgram;
+extern unsigned int fgQuadVAO;
+extern unsigned int fgQuadVBO;
+
+// FG history
+extern glm::mat4 fgPrevView;
+extern glm::mat4 fgPrevProj;
+extern glm::mat4 fgCurrView;
+extern glm::mat4 fgCurrProj;
+extern glm::vec3 fgPrevCameraPos;
+extern glm::vec3 fgCurrCameraPos;
+extern bool fgHasHistory;
+extern float fgLastRealFrameTime;
+
+// FG perf
+extern float perfFGms;
+extern float perfMotionMs;
+extern float perfInterpMs;
+extern float fgEffectiveFPS;
+
 #endif // GLOBALS_H

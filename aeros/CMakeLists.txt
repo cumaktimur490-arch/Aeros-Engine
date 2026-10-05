@@ -91,6 +91,7 @@ set(SOURCES
     src/lbm.cpp
     src/lang.cpp
     src/fsr.cpp
+    src/framegen.cpp
     src/glad.c
     src/imgui/imgui.cpp
     src/imgui/imgui_draw.cpp

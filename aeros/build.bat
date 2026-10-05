@@ -204,7 +204,7 @@ nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -I src\imgui ^
   src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
   src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^
-  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp ^
+  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp src\framegen.cpp ^
   src\glad.c src\kernel.cu ^
   src\imgui\imgui.cpp src\imgui\imgui_draw.cpp src\imgui\imgui_tables.cpp src\imgui\imgui_widgets.cpp ^
   src\imgui\imgui_impl_glfw.cpp src\imgui\imgui_impl_opengl3.cpp ^

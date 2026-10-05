@@ -10,6 +10,7 @@
 #include "forces.h"
 #include "streamlines.h"
 #include "fsr.h"
+#include "framegen.h"
 
 // =====================================================
 // Callbacks v1.9.0 Ultra Realistic+ — улучшено
@@ -26,6 +27,10 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     // v1.15.0 FSR resize
     if (fsrLowResFBO != 0) {
         resizeFSR(width, height);
+    }
+    // v1.16.0 FG resize
+    if (fgRealFBO != 0) {
+        resizeFrameGen(width, height);
     }
 }
 

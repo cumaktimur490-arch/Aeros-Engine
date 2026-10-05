@@ -215,3 +215,45 @@ float perfFSRms = 0.0f;
 float perfCullingMs = 0.0f;
 int perfCulledParticles = 0;
 int perfCulledTriangles = 0;
+
+// v1.16.0 Frame Generation
+FGMode fgMode = FGMode::FG_2x;
+bool fgEnabled = false;
+float fgInterpolationFactor = 0.5f;
+bool fgUseMotionVectors = true;
+bool fgUseOpticalFlow = false;
+bool fgAsync = false;
+bool fgShowDebug = false;
+bool fgLowLatency = true;
+float fgBlendStrength = 0.5f;
+int fgGeneratedCount = 0;
+int fgRealCount = 0;
+
+unsigned int fgRealFBO = 0;
+unsigned int fgRealColorTex = 0;
+unsigned int fgRealDepthTex = 0;
+unsigned int fgPrevColorTex = 0;
+unsigned int fgPrevDepthTex = 0;
+unsigned int fgMotionFBO = 0;
+unsigned int fgMotionTex = 0;
+unsigned int fgInterpFBO = 0;
+unsigned int fgInterpTex = 0;
+unsigned int fgMotionProgram = 0;
+unsigned int fgInterpProgram = 0;
+unsigned int fgOpticalFlowProgram = 0;
+unsigned int fgQuadVAO = 0;
+unsigned int fgQuadVBO = 0;
+
+glm::mat4 fgPrevView = glm::mat4(1.0f);
+glm::mat4 fgPrevProj = glm::mat4(1.0f);
+glm::mat4 fgCurrView = glm::mat4(1.0f);
+glm::mat4 fgCurrProj = glm::mat4(1.0f);
+glm::vec3 fgPrevCameraPos = glm::vec3(0.0f);
+glm::vec3 fgCurrCameraPos = glm::vec3(0.0f);
+bool fgHasHistory = false;
+float fgLastRealFrameTime = 0.0f;
+
+float perfFGms = 0.0f;
+float perfMotionMs = 0.0f;
+float perfInterpMs = 0.0f;
+float fgEffectiveFPS = 0.0f;
