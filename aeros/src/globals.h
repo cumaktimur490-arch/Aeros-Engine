@@ -2,7 +2,7 @@
 #define GLOBALS_H
 // =====================================================
 // Общее состояние приложения (единый источник для всех модулей).
-// v1.8.0 — расширено реалистичной аэродинамикой + улучшениями
+// v1.9.0 Ultra Realistic+ — расширено новыми режимами и фиксами
 // Определения — в globals.cpp.
 // =====================================================
 
@@ -168,7 +168,7 @@ extern float perfForcesMs;
 extern float perfVoxelMs;
 extern int   perfOpenMPThreads;
 
-// --- Realistic Aero (v1.7.0+) ---
+// --- Realistic Aero (v1.7.0+) + v1.9.0 новые режимы ---
 enum class AeroVisMode {
     Pressure,           // Cp — как на фото 4 (NASCAR rainbow)
     VelocityMagnitude,  // |U| — как на фото 1 (U Magnitude)
@@ -176,7 +176,10 @@ enum class AeroVisMode {
     QCriterion,         // Q-критерий — вихревые структуры
     TurbulentKE,        // TKE — турбулентность
     SkinFriction,       // Cf — трение
-    BoundaryLayer       // толщина погранслоя
+    BoundaryLayer,      // толщина погранслоя
+    MachNumber,         // Mach — сжимаемость (v1.9.0)
+    Helicity,           // Helicity — спиральность (v1.9.0)
+    TotalPressure       // Total Pressure — полное давление (v1.9.0)
 };
 extern AeroVisMode aeroVisMode;
 extern bool aeroGroundEffect;       // земля для авто (фото 2,5)
@@ -201,5 +204,29 @@ extern bool aeroUseRealisticLighting;
 extern int aeroColorMap;            // 0=rainbow,1=viridis,2=parula,3=coolwarm
 extern bool aeroExportEnabled;
 extern float aeroAutoRotateSpeed;
+
+// --- v1.9.0 новые ---
+extern bool aeroShowParticleTrails;
+extern float aeroTrailLength;
+extern bool aeroSurfaceStreamlines;
+extern bool aeroAdaptiveLBM;
+extern bool aeroShowHelicity;
+extern float aeroHelicityScale;
+extern bool aeroShowMach;
+extern bool aeroExportCSV;
+extern bool aeroSaveSettings;
+extern bool aeroShowPerfGraph;
+extern float aeroMachThreshold;
+extern bool aeroUseRK4Particles;
+extern bool aeroShowTotalPressure;
+extern int aeroScreenshotFormat; // 0=BMP,1=CSV forces
+extern bool aeroShowMemoryUsage;
+extern float aeroParticleTrailOpacity;
+
+// --- Screenshot & Export ---
+extern bool aeroScreenshotRequested;
+extern bool aeroCSVExportRequested;
+extern std::string aeroLastScreenshotPath;
+extern std::string aeroLastCSVPath;
 
 #endif // GLOBALS_H

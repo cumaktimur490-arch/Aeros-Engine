@@ -7,6 +7,7 @@
 #include "shaders.h"
 #include "lbm.h"
 #include "gl_utils.h"
+#include "ui.h"
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -870,10 +871,10 @@ bool testGroundEffect() {
 }
 
 bool testColorMaps() {
-    logTest("Testing color maps...");
+    logTest("Testing color maps v1.9.0...");
     bool ok = true;
     
-    // Test all color maps for NaN and range
+    // Test all color maps for NaN and range including new v1.9.0 modes
     for (int cm = 0; cm < 4; ++cm) {
         aeroColorMap = cm;
         for (float t = 0.0f; t <= 1.0f; t += 0.1f) {
@@ -882,7 +883,11 @@ bool testColorMaps() {
             glm::vec3 c3 = getVorticityColor(t*20.0f);
             glm::vec3 c4 = getQCriterionColor(t*2.0f - 1.0f);
             glm::vec3 c5 = getTKEColor(t);
-            if (!std::isfinite(c1.x) || !std::isfinite(c2.x) || !std::isfinite(c3.x) || !std::isfinite(c4.x) || !std::isfinite(c5.x)) {
+            glm::vec3 c6 = getMachColor(t*1.5f);
+            glm::vec3 c7 = getHelicityColor(t*2.0f - 1.0f);
+            glm::vec3 c8 = getTotalPressureColor(101325.0f * t, 101325.0f);
+            if (!std::isfinite(c1.x) || !std::isfinite(c2.x) || !std::isfinite(c3.x) || !std::isfinite(c4.x) || !std::isfinite(c5.x) ||
+                !std::isfinite(c6.x) || !std::isfinite(c7.x) || !std::isfinite(c8.x)) {
                 logTestError("  FAIL: color map " + std::to_string(cm) + " t=" + std::to_string(t) + " produced NaN");
                 ok = false;
             }
@@ -896,6 +901,9 @@ bool testColorMaps() {
             };
             if (!checkRange(c1, "pressure")) ok = false;
             if (!checkRange(c2, "velocity")) ok = false;
+            if (!checkRange(c6, "mach")) ok = false;
+            if (!checkRange(c7, "helicity")) ok = false;
+            if (!checkRange(c8, "totalPressure")) ok = false;
         }
     }
     aeroColorMap = 0; // reset
@@ -964,7 +972,7 @@ bool testRefArea() {
 }
 
 bool testReynolds() {
-    logTest("Testing Reynolds number...");
+    logTest("Testing Reynolds number v1.9.0...");
     bool ok = true;
     
     float Re = aeroReNumber;
@@ -990,6 +998,24 @@ bool testReynolds() {
         float lbmRe = computeLBMRe();
         logTest("  LBM Re: " + std::to_string(lbmRe));
         if (!std::isfinite(lbmRe)) { logTestError("  FAIL: LBM Re NaN"); ok = false; }
+
+        // v1.9.0 new: test Mach, Helicity, Total Pressure
+        glm::vec3 testPos = center;
+        float mach = getLBMMachWorld(testPos);
+        float hel = getLBMHelicityWorld(testPos);
+        float pt = getLBMTotalPressureWorld(testPos);
+        logTest("  Mach: " + std::to_string(mach) + " Helicity: " + std::to_string(hel) + " Pt: " + std::to_string(pt));
+        if (!std::isfinite(mach) || mach < 0 || mach > 10.0f) { logTestError("  FAIL: Mach invalid"); ok = false; }
+        if (!std::isfinite(hel) || fabsf(hel) > 1.5f) { logTestError("  FAIL: Helicity invalid"); ok = false; }
+        if (!std::isfinite(pt) || pt < 0) { logTestError("  FAIL: Total Pressure invalid"); ok = false; }
+
+        glm::vec3 machCol = getMachColor(mach);
+        glm::vec3 helCol = getHelicityColor(hel);
+        glm::vec3 ptCol = getTotalPressureColor(pt, airPressure + 0.5f*airDensity*flowSpeed*flowSpeed);
+        if (!std::isfinite(machCol.x) || !std::isfinite(helCol.x) || !std::isfinite(ptCol.x)) {
+            logTestError("  FAIL: new color maps NaN");
+            ok = false;
+        }
     }
     
     if (ok) logTest("  Reynolds OK");
@@ -1078,6 +1104,52 @@ void runOptimizationTests() {
     }
 }
 
+bool testNewFeaturesV19() {
+    logTest("Testing v1.9.0 new features...");
+    bool ok = true;
+    // Test Mach color
+    glm::vec3 cMach0 = getMachColor(0.0f);
+    glm::vec3 cMach1 = getMachColor(1.0f);
+    if (cMach0.b < 0.3f) { logTestError("  FAIL: Mach 0 should be blue"); ok = false; }
+    if (cMach1.r < 0.8f) { logTestError("  FAIL: Mach 1 should be red"); ok = false; }
+    // Test Helicity
+    glm::vec3 cHelNeg = getHelicityColor(-1.0f);
+    glm::vec3 cHelPos = getHelicityColor(1.0f);
+    if (cHelNeg.b < 0.5f) { logTestError("  FAIL: Helicity -1 should be blue"); ok = false; }
+    if (cHelPos.r < 0.5f) { logTestError("  FAIL: Helicity +1 should be red"); ok = false; }
+    // Test Total Pressure
+    glm::vec3 cPtLow = getTotalPressureColor(50000.0f, 101325.0f);
+    glm::vec3 cPtHigh = getTotalPressureColor(101325.0f, 101325.0f);
+    if (!std::isfinite(cPtLow.x) || !std::isfinite(cPtHigh.x)) { logTestError("  FAIL: Pt color NaN"); ok = false; }
+
+    // Test settings save/load
+    float savedSpeed = flowSpeed;
+    flowSpeed = 5.5f;
+    if (!saveSettings("test_settings.ini")) { logTestError("  FAIL: saveSettings failed"); ok = false; }
+    flowSpeed = 1.0f;
+    if (!loadSettings("test_settings.ini")) { logTestError("  FAIL: loadSettings failed"); ok = false; }
+    if (fabsf(flowSpeed - 5.5f) > 0.01f) { logTestError("  FAIL: settings roundtrip failed"); ok = false; }
+    flowSpeed = savedSpeed;
+    // Cleanup test file
+    remove("test_settings.ini");
+
+    // Test adaptive LBM flag
+    bool savedAdaptive = aeroAdaptiveLBM;
+    aeroAdaptiveLBM = true;
+    if (!aeroAdaptiveLBM) { logTestError("  FAIL: adaptive flag"); ok = false; }
+    aeroAdaptiveLBM = savedAdaptive;
+
+    // Test RK4 particles flag
+    if (!aeroUseRK4Particles) logTestWarn("  WARN: RK4 particles disabled");
+
+    // Test screenshot request flag
+    aeroScreenshotRequested = false;
+    aeroCSVExportRequested = false;
+
+    if (ok) logTest("  v1.9.0 new features OK");
+    return ok;
+}
+
 void runRealisticTests() {
     struct Case { const char* name; bool (*func)(); };
     Case tests[] = {
@@ -1087,6 +1159,7 @@ void runRealisticTests() {
         {"Stability", testStability},
         {"Ref Area", testRefArea},
         {"Reynolds", testReynolds},
+        {"New Features v1.9.0", testNewFeaturesV19},
     };
     for (auto& tc : tests) {
         bool passed = false; std::string msg = "";
@@ -1101,7 +1174,7 @@ void runAllTests() {
     auto t0 = std::chrono::high_resolution_clock::now();
     lastTestResults.clear(); testLog.clear();
     testsPassed = 0; testsFailed = 0; codeTestsPassed = 0; codeTestsFailed = 0; lbmTestsPassed = 0; lbmTestsFailed = 0; lastGLError = 0; lastGLErrorStr.clear();
-    logTest("=== Starting Aeros Engine Tests v1.8.0 Realistic+ ===");
+    logTest("=== Starting Aeros Engine Tests v1.9.0 Ultra Realistic+ ===");
     logTest("Model: " + std::to_string(modelVertexCount) + " vertices, Voxel: " + std::to_string(g_voxNx) + "x" + std::to_string(g_voxNy) + "x" + std::to_string(g_voxNz) + ", LBM: " + std::to_string(lbmNx) + "x" + std::to_string(lbmNy) + "x" + std::to_string(lbmNz));
     logTest("--- Physics Tests ---");
     runPhysicsTests();

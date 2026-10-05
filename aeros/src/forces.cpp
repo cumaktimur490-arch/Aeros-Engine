@@ -19,7 +19,7 @@
 #endif
 
 // =====================================================
-// Давление — v1.8.0 Realistic Aero как на фото + фиксы
+// Давление — v1.9.0 Ultra Realistic+ — новые режимы Mach/Helicity/TotalP
 // =====================================================
 void updateVertexColors() {
     updateFlowParams();
@@ -77,7 +77,6 @@ void updateVertexColors() {
                 float t = glm::clamp(tke*10.0f, 0.0f, 1.0f);
                 col = glm::vec3(t, t*0.5f, 1-t);
             } else if (aeroVisMode == AeroVisMode::SkinFriction) {
-                // Cf ~ tau_w / q
                 float cf = speed * 0.02f / vinf;
                 float t = glm::clamp(cf*5.0f, 0.0f, 1.0f);
                 col = glm::vec3(t, 1-t, 0.5f);
@@ -85,6 +84,16 @@ void updateVertexColors() {
                 float d = sampleSDFCPU(p);
                 float bl = glm::clamp(d*5.0f, 0.0f, 1.0f);
                 col = glm::vec3(bl, bl, 1.0f - bl*0.5f);
+            } else if (aeroVisMode == AeroVisMode::MachNumber) {
+                float mach = getLBMMachWorld(p);
+                col = getMachColor(mach);
+            } else if (aeroVisMode == AeroVisMode::Helicity) {
+                float hel = getLBMHelicityWorld(p);
+                col = getHelicityColor(hel);
+            } else if (aeroVisMode == AeroVisMode::TotalPressure) {
+                float pt = getLBMTotalPressureWorld(p);
+                float ptInf = airPressure + 0.5f*airDensity*vinf*vinf;
+                col = getTotalPressureColor(pt, ptInf);
             } else {
                 col = getRealisticPressureColor(cp);
             }
@@ -166,6 +175,16 @@ void updateVertexColors() {
                 float cf = speed * 0.02f / vinf;
                 float t = glm::clamp(cf*5.0f, 0.0f, 1.0f);
                 col = glm::vec3(t, 1-t, 0.5f);
+            } else if (aeroVisMode == AeroVisMode::MachNumber) {
+                float mach = speed / (speedOfSound + 1e-6f);
+                col = getMachColor(mach);
+            } else if (aeroVisMode == AeroVisMode::Helicity) {
+                // No LBM, approximate helicity as 0
+                col = glm::vec3(0.5f);
+            } else if (aeroVisMode == AeroVisMode::TotalPressure) {
+                float pt = airPressure + 0.5f*airDensity*speed*speed;
+                float ptInf = airPressure + 0.5f*airDensity*vinf*vinf;
+                col = getTotalPressureColor(pt, ptInf);
             } else col = getRealisticPressureColor(cp);
 
             if (!std::isfinite(col.x)) col = glm::vec3(0.5f);

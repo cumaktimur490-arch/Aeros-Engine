@@ -221,6 +221,41 @@ glm::vec3 getTKEColor(float tke) {
     return glm::vec3(t, t*0.3f, 1.0f-t*0.5f);
 }
 
+// v1.9.0 new color maps
+glm::vec3 getMachColor(float mach) {
+    if (!std::isfinite(mach)) return glm::vec3(0.5f);
+    float t = glm::clamp(mach / 1.5f, 0.0f, 1.0f);
+    // Blue (low) -> Green (0.3) -> Yellow (0.8) -> Red (supersonic)
+    if (t < 0.2f) { float k=t/0.2f; return glm::vec3(0, k*0.5f, 0.8f+0.2f*k); }
+    else if (t < 0.5f) { float k=(t-0.2f)/0.3f; return glm::vec3(k*0.3f, 0.5f+0.5f*k, 1.0f-k*0.5f); }
+    else if (t < 0.75f) { float k=(t-0.5f)/0.25f; return glm::vec3(0.3f+0.7f*k, 1.0f, 0.5f-k*0.5f); }
+    else { float k=(t-0.75f)/0.25f; return glm::vec3(1.0f, 1.0f-k*0.8f, k*0.2f); }
+}
+
+glm::vec3 getHelicityColor(float helicity) {
+    if (!std::isfinite(helicity)) return glm::vec3(0.5f);
+    // Helicity can be negative: -1 (blue) -> 0 (white) -> +1 (red)
+    float t = glm::clamp(helicity*0.5f + 0.5f, 0.0f, 1.0f);
+    if (t < 0.5f) {
+        float k = t*2.0f;
+        return glm::vec3(k, k, 1.0f);
+    } else {
+        float k = (t-0.5f)*2.0f;
+        return glm::vec3(1.0f, 1.0f-k, 1.0f-k);
+    }
+}
+
+glm::vec3 getTotalPressureColor(float pt, float ptInf) {
+    if (!std::isfinite(pt) || !std::isfinite(ptInf) || ptInf < 1e-6f) return glm::vec3(0.5f);
+    float ratio = pt / ptInf;
+    float t = glm::clamp(ratio, 0.0f, 1.2f) / 1.2f;
+    // High total pressure = red, low = blue (loss)
+    if (t < 0.3f) return glm::vec3(0, 0, 0.5f + 0.5f*(t/0.3f));
+    else if (t < 0.6f) { float k=(t-0.3f)/0.3f; return glm::vec3(k*0.5f, k, 1.0f-k*0.5f); }
+    else if (t < 0.85f) { float k=(t-0.6f)/0.25f; return glm::vec3(0.5f+0.5f*k, 1.0f, 0); }
+    else { float k=(t-0.85f)/0.35f; return glm::vec3(1.0f, 1.0f-k*0.5f, 0); }
+}
+
 void initLBM() {
     std::cout << "[LBM] Initializing v1.8.0 realistic..." << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -420,10 +455,12 @@ void shutdownLBM() {
 void stepLBMCPU(int steps) {
     if (!lbmInitialized) return;
     if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return;
-    int total = lbmNx * lbmNy * lbmNz;
-    if (total <= 0) return;
+    // v1.9.0 fix: use size_t for total to avoid overflow, validate
+    size_t totalSz = (size_t)lbmNx * (size_t)lbmNy * (size_t)lbmNz;
+    if (totalSz == 0 || totalSz > 20*1024*1024) return;
+    int total = (int)totalSz;
     if (total != (int)lbmRho.size()) return;
-    if (f.size() != (size_t)total*Q) return;
+    if (f.size() != totalSz * (size_t)Q) return;
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -465,9 +502,8 @@ void stepLBMCPU(int steps) {
         int nanCount = 0;
 
         #ifdef _OPENMP
-        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount)
+        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount) reduction(max:maxVelGlobal)
         {
-            float maxVelLocal = 0.0f;
             #pragma omp for nowait
         #endif
         for (int cell = 0; cell < total; ++cell) {
@@ -591,18 +627,12 @@ void stepLBMCPU(int steps) {
             tkePtr[cell] = tke;
 
             float velMag = std::sqrt(usqr);
-            #ifdef _OPENMP
-            if (velMag > maxVelLocal) maxVelLocal = velMag;
-            #else
             if (velMag > maxVelGlobal) maxVelGlobal = velMag;
-            #endif
             avgRhoAcc += rho;
             kineticAcc += usqr;
             tkeAcc += tke;
         }
         #ifdef _OPENMP
-            #pragma omp critical
-            { if (maxVelLocal > maxVelGlobal) maxVelGlobal = maxVelLocal; }
         }
         #endif
 
@@ -1117,6 +1147,70 @@ bool lbmValidateStability() {
     if (!std::isfinite(lbmMaxVelocityLB) || lbmMaxVelocityLB > 1.0f) return false;
     if (!std::isfinite(lbmAvgKineticEnergy) || lbmAvgKineticEnergy > 1.0f) return false;
     return true;
+}
+
+// v1.9.0 new LBM queries
+float getLBMMachWorld(const glm::vec3& worldPos) {
+    glm::vec3 v = getLBMVelocityWorld(worldPos);
+    float mag = glm::length(v);
+    if (!std::isfinite(mag)) return 0.0f;
+    float a = speedOfSound;
+    if (a < 1.0f) a = 340.0f;
+    return mag / a;
+}
+
+float getLBMHelicityWorld(const glm::vec3& worldPos) {
+    if (!lbmInitialized) return 0.0f;
+    float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
+    float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
+    float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
+    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+    if (ix <= 0 || ix >= lbmNx-1 || iy <= 0 || iy >= lbmNy-1 || iz <= 0 || iz >= lbmNz-1) return 0.0f;
+    int cell = (iz*lbmNy + iy)*lbmNx + ix;
+    if (cell < 0 || cell >= (int)lbmVorticityMag.size()) return 0.0f;
+    // Helicity = v · ω, approximate using vorticity magnitude and velocity alignment
+    glm::vec3 vel = getLBMVelocityWorld(worldPos);
+    // Compute vorticity vector quickly from neighbors
+    int xm = cell-1, xp = cell+1;
+    int ym = cell-lbmNx, yp = cell+lbmNx;
+    int zm = cell-lbmNx*lbmNy, zp = cell+lbmNx*lbmNy;
+    int total = lbmNx*lbmNy*lbmNz;
+    if (xm<0||xp>=total||ym<0||yp>=total||zm<0||zp>=total) return 0.0f;
+    float duz_dy = (lbmUzWorld[yp] - lbmUzWorld[ym]) * 0.5f;
+    float duy_dz = (lbmUyWorld[zp] - lbmUyWorld[zm]) * 0.5f;
+    float dux_dz = (lbmUxWorld[zp] - lbmUxWorld[zm]) * 0.5f;
+    float duz_dx = (lbmUzWorld[xp] - lbmUzWorld[xm]) * 0.5f;
+    float duy_dx = (lbmUyWorld[xp] - lbmUyWorld[xm]) * 0.5f;
+    float dux_dy = (lbmUxWorld[yp] - lbmUxWorld[ym]) * 0.5f;
+    glm::vec3 omega(duz_dy - duy_dz, dux_dz - duz_dx, duy_dx - dux_dy);
+    float helicity = glm::dot(vel, omega);
+    if (!std::isfinite(helicity)) return 0.0f;
+    // Normalize to [-1,1] range
+    float vMag = glm::length(vel);
+    float oMag = glm::length(omega);
+    if (vMag < 1e-6f || oMag < 1e-6f) return 0.0f;
+    return helicity / (vMag * oMag);
+}
+
+float getLBMTotalPressureWorld(const glm::vec3& worldPos) {
+    glm::vec3 v = getLBMVelocityWorld(worldPos);
+    float mag2 = glm::dot(v,v);
+    if (!std::isfinite(mag2)) return 101325.0f;
+    float rho = getLBMDensityWorld(worldPos);
+    float pStatic = airPressure + lbmPressure.empty() ? 0 : 0;
+    // Find pressure from LBM
+    float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
+    float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
+    float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
+    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+    if (ix>=0 && ix<lbmNx && iy>=0 && iy<lbmNy && iz>=0 && iz<lbmNz) {
+        int cell = (iz*lbmNy + iy)*lbmNx + ix;
+        if (cell>=0 && cell < (int)lbmPressure.size()) {
+            pStatic += lbmPressure[cell];
+        }
+    }
+    float pt = pStatic + 0.5f * rho * mag2;
+    return std::isfinite(pt) ? pt : airPressure;
 }
 
 void drawLBMUI() {}

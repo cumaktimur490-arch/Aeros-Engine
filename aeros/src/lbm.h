@@ -1,7 +1,7 @@
 #pragma once
 // =====================================================
 // LBM — Lattice Boltzmann Method D3Q19
-// v1.8.0 Realistic Aero — фотореалистичная аэродинамика + фиксы
+// v1.9.0 Ultra Realistic+ — фотореалистичная аэродинамика + новые режимы
 // =====================================================
 
 #include <glm/glm.hpp>
@@ -83,6 +83,12 @@ glm::vec3 getVelocityMagnitudeColor(float velMag, float maxVel);
 glm::vec3 getVorticityColor(float vortMag);
 glm::vec3 getQCriterionColor(float q);
 glm::vec3 getTKEColor(float tke);
+glm::vec3 getMachColor(float mach);
+glm::vec3 getHelicityColor(float helicity);
+glm::vec3 getTotalPressureColor(float pt, float ptInf);
+float getLBMMachWorld(const glm::vec3& worldPos);
+float getLBMHelicityWorld(const glm::vec3& worldPos);
+float getLBMTotalPressureWorld(const glm::vec3& worldPos);
 
 void drawLBMUI();
 

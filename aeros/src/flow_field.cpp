@@ -163,9 +163,12 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
     float vmag = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
     if (vmag < 1e-4f) vmag = 1e-4f;
 
-    // Ground effect — земля
+    // Ground effect — земля — v1.9.0 fix: validate g_voxMinY
     if (aeroGroundEffect) {
-        float groundY = g_voxMinY + aeroGroundHeight;
+        float groundY = 0.0f;
+        if (std::isfinite(g_voxMinY) && g_voxNx > 0) groundY = g_voxMinY + aeroGroundHeight;
+        else groundY = minBB.y - maxDim*0.1f + aeroGroundHeight;
+        if (!std::isfinite(groundY)) groundY = minBB.y;
         if (p.y < groundY + prm.cellSizeY) {
             // На земле — no-slip
             float distFromGround = p.y - groundY;
@@ -181,16 +184,15 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
                 v *= blFactor;
             }
         }
-        // Ускорение под днищем (Venturi) для авто
+        // Ускорение под днищем (Venturi) для авто — v1.9.0 improved
         if (p.y > groundY && p.y < center.y) {
-            float heightAboveGround = p.y - groundY;
             float carBottom = minBB.y;
             if (p.y > carBottom - maxDim*0.1f && p.y < carBottom + maxDim*0.5f) {
-                // Под днищем
                 float clearance = carBottom - groundY;
-                if (clearance > 1e-3f && clearance < maxDim) {
+                if (clearance > 1e-3f && clearance < maxDim && std::isfinite(clearance)) {
                     float venturi = 1.0f + 0.4f * (1.0f - clearance/maxDim);
-                    // Только если внутри проекции авто по X/Z
+                    if (venturi < 0.5f) venturi = 0.5f;
+                    if (venturi > 2.0f) venturi = 2.0f;
                     if (p.x >= minBB.x && p.x <= maxBB.x && p.z >= minBB.z && p.z <= maxBB.z) {
                         v *= venturi;
                     }

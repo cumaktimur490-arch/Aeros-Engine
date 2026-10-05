@@ -204,17 +204,22 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
 
     glm::vec3 rayDir(1,0,0);
 
-    #ifdef _OPENMP
-    #pragma omp parallel for collapse(2) schedule(dynamic)
-    #endif
-    for (int k = 0; k < g_voxNz; k++) {
-        for (int j = 0; j < g_voxNy; j++) {
-            for (int i = 0; i < g_voxNx; i++) {
-                glm::vec3 p(g_voxMinX + (i+0.5f)*csx,
-                            g_voxMinY + (j+0.5f)*csy,
-                            g_voxMinZ + (k+0.5f)*csz);
-                if (insideMeshOptimized(p, tris, rayDir))
-                    g_voxelData[(k*g_voxNy + j)*g_voxNx + i] = 1;
+    // v1.9.0 fix: use collapse(3) properly and add empty tris check
+    if (tris.empty()) {
+        std::cerr << "[Voxel] No valid triangles for voxelization" << std::endl;
+    } else {
+        #ifdef _OPENMP
+        #pragma omp parallel for collapse(3) schedule(dynamic)
+        #endif
+        for (int k = 0; k < g_voxNz; k++) {
+            for (int j = 0; j < g_voxNy; j++) {
+                for (int i = 0; i < g_voxNx; i++) {
+                    glm::vec3 p(g_voxMinX + (i+0.5f)*csx,
+                                g_voxMinY + (j+0.5f)*csy,
+                                g_voxMinZ + (k+0.5f)*csz);
+                    if (insideMeshOptimized(p, tris, rayDir))
+                        g_voxelData[(k*g_voxNy + j)*g_voxNx + i] = 1;
+                }
             }
         }
     }

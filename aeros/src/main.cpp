@@ -1,10 +1,12 @@
 // =====================================================
-// AeroS Engine — точка входа, главный цикл и рендер v1.8.0
+// AeroS Engine — точка входа, главный цикл и рендер v1.9.0 Ultra Realistic+
 // =====================================================
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#endif
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -21,6 +23,10 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 
 #include "globals.h"
 #include "shaders.h"
@@ -40,35 +46,206 @@
 #include <omp.h>
 #endif
 
+// GL debug callback — v1.9.0 fixed to use GLAD_GL_VERSION_4_3
 static void APIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
     (void)source; (void)id; (void)length; (void)userParam;
-    if (severity == 0x826B) return; // GL_DEBUG_SEVERITY_NOTIFICATION
-    std::cerr << "[GL Debug] type=" << type << " severity=" << severity << " msg=" << message << std::endl;
+    if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
+    const char* sevStr = "UNKNOWN";
+    if (severity == GL_DEBUG_SEVERITY_HIGH) sevStr = "HIGH";
+    else if (severity == GL_DEBUG_SEVERITY_MEDIUM) sevStr = "MEDIUM";
+    else if (severity == GL_DEBUG_SEVERITY_LOW) sevStr = "LOW";
+    if (type == GL_DEBUG_TYPE_ERROR) {
+        std::cerr << "[GL ERROR] [" << sevStr << "] " << message << std::endl;
+    } else {
+        std::cout << "[GL Debug] type=" << type << " severity=" << sevStr << " msg=" << message << std::endl;
+    }
+}
+
+// Screenshot BMP export — v1.9.0 new feature
+static bool saveScreenshotBMP(const std::string& path) {
+    if (display_w <= 0 || display_h <= 0) return false;
+    int w = display_w;
+    int h = display_h;
+    std::vector<unsigned char> pixels(3 * w * h);
+    glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+    // Flip vertically
+    std::vector<unsigned char> flipped(3 * w * h);
+    for (int y = 0; y < h; ++y) {
+        memcpy(flipped.data() + y * 3 * w, pixels.data() + (h - 1 - y) * 3 * w, 3 * w);
+    }
+    // BMP header
+    int filesize = 54 + 3 * w * h;
+    unsigned char header[54] = {0};
+    header[0] = 'B'; header[1] = 'M';
+    header[2] = filesize & 0xFF; header[3] = (filesize >> 8) & 0xFF; header[4] = (filesize >> 16) & 0xFF; header[5] = (filesize >> 24) & 0xFF;
+    header[10] = 54;
+    header[14] = 40;
+    header[18] = w & 0xFF; header[19] = (w >> 8) & 0xFF; header[20] = (w >> 16) & 0xFF; header[21] = (w >> 24) & 0xFF;
+    header[22] = h & 0xFF; header[23] = (h >> 8) & 0xFF; header[24] = (h >> 16) & 0xFF; header[25] = (h >> 24) & 0xFF;
+    header[26] = 1; header[28] = 24;
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    f.write((char*)header, 54);
+    f.write((char*)flipped.data(), 3 * w * h);
+    return f.good();
+}
+
+static std::string generateTimestampFilename(const std::string& prefix, const std::string& ext) {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm;
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << prefix << "_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ext;
+    return oss.str();
+}
+
+// Export forces to CSV — v1.9.0 new
+static bool exportForcesCSV(const std::string& path) {
+    std::ofstream f(path);
+    if (!f) return false;
+    f << "Parameter,Value,Unit\n";
+    f << "FlowSpeed," << flowSpeed << ",m/s\n";
+    f << "Altitude," << altitude << ",m\n";
+    f << "AirDensity," << airDensity << ",kg/m3\n";
+    f << "AirPressure," << airPressure << ",Pa\n";
+    f << "Temperature," << airTemperature << ",K\n";
+    f << "SpeedOfSound," << speedOfSound << ",m/s\n";
+    f << "Mach," << (flowSpeed / (speedOfSound + 1e-6f)) << ",\n";
+    f << "Reynolds," << aeroReNumber << ",\n";
+    f << "RefArea," << aeroRefArea << ",m2\n";
+    float q = 0.5f * airDensity * flowSpeed * flowSpeed;
+    f << "DynamicPressure," << q << ",Pa\n";
+    f << "Drag," << dragMagnitude << ",N\n";
+    f << "Lift," << liftMagnitude << ",N\n";
+    float Cd = (q > 1e-6f && aeroRefArea > 1e-6f) ? dragMagnitude / (q * aeroRefArea) : 0;
+    float Cl = (q > 1e-6f && aeroRefArea > 1e-6f) ? liftMagnitude / (q * aeroRefArea) : 0;
+    f << "Cd," << Cd << ",\n";
+    f << "Cl," << Cl << ",\n";
+    f << "L/D," << liftToDragRatio << ",\n";
+    f << "Moment," << momentMagnitude << ",Nm\n";
+    f << "CoP_X," << centerOfPressure.x << ",m\n";
+    f << "CoP_Y," << centerOfPressure.y << ",m\n";
+    f << "CoP_Z," << centerOfPressure.z << ",m\n";
+    f << "Azimuth," << flowAzimuth << ",deg\n";
+    f << "Elevation," << flowElevation << ",deg\n";
+    f << "LBM_Enabled," << (lbmParams.enabled ? 1 : 0) << ",\n";
+    f << "LBM_Steps," << lbmCurrentStep << ",\n";
+    f << "LBM_Reynolds," << lbmReynolds << ",\n";
+    f << "LBM_TKE," << lbmTKE << ",\n";
+    return f.good();
+}
+
+// Settings save/load — v1.9.0 new (non-static for UI)
+bool saveSettings(const std::string& path) {
+    std::ofstream f(path);
+    if (!f) return false;
+    f << "# Aeros Engine v1.9.0 Settings\n";
+    f << "flowSpeed=" << flowSpeed << "\n";
+    f << "flowAzimuth=" << flowAzimuth << "\n";
+    f << "flowElevation=" << flowElevation << "\n";
+    f << "altitude=" << altitude << "\n";
+    f << "timeScale=" << timeScale << "\n";
+    f << "strouhal=" << strouhal << "\n";
+    f << "wakeStrength=" << wakeStrength << "\n";
+    f << "wakeLength=" << wakeLength << "\n";
+    f << "aeroVisMode=" << (int)aeroVisMode << "\n";
+    f << "aeroColorMap=" << aeroColorMap << "\n";
+    f << "aeroGroundEffect=" << (aeroGroundEffect ? 1 : 0) << "\n";
+    f << "aeroGroundHeight=" << aeroGroundHeight << "\n";
+    f << "showParticles=" << (showParticles ? 1 : 0) << "\n";
+    f << "showStreamlines=" << (showStreamlines ? 1 : 0) << "\n";
+    f << "showPressure=" << (showPressure ? 1 : 0) << "\n";
+    f << "numParticles=" << numParticles << "\n";
+    f << "numStreamlines=" << numStreamlines << "\n";
+    f << "voxelResolution=" << voxelResolution << "\n";
+    f << "lbmEnabled=" << (lbmParams.enabled ? 1 : 0) << "\n";
+    f << "lbmTau=" << lbmParams.tau << "\n";
+    f << "lbmStepsPerFrame=" << lbmParams.stepsPerFrame << "\n";
+    return f.good();
+}
+
+bool loadSettings(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        auto pos = line.find('=');
+        if (pos == std::string::npos) continue;
+        std::string key = line.substr(0, pos);
+        std::string val = line.substr(pos + 1);
+        try {
+            if (key == "flowSpeed") flowSpeed = std::stof(val);
+            else if (key == "flowAzimuth") flowAzimuth = std::stof(val);
+            else if (key == "flowElevation") flowElevation = std::stof(val);
+            else if (key == "altitude") altitude = std::stof(val);
+            else if (key == "timeScale") timeScale = std::stof(val);
+            else if (key == "strouhal") strouhal = std::stof(val);
+            else if (key == "wakeStrength") wakeStrength = std::stof(val);
+            else if (key == "wakeLength") wakeLength = std::stof(val);
+            else if (key == "aeroVisMode") aeroVisMode = (AeroVisMode)std::stoi(val);
+            else if (key == "aeroColorMap") aeroColorMap = std::stoi(val);
+            else if (key == "aeroGroundEffect") aeroGroundEffect = (std::stoi(val) != 0);
+            else if (key == "aeroGroundHeight") aeroGroundHeight = std::stof(val);
+            else if (key == "showParticles") showParticles = (std::stoi(val) != 0);
+            else if (key == "showStreamlines") showStreamlines = (std::stoi(val) != 0);
+            else if (key == "showPressure") showPressure = (std::stoi(val) != 0);
+            else if (key == "numParticles") numParticles = std::stoi(val);
+            else if (key == "numStreamlines") numStreamlines = std::stoi(val);
+            else if (key == "voxelResolution") voxelResolution = std::stoi(val);
+            else if (key == "lbmEnabled") lbmParams.enabled = (std::stoi(val) != 0);
+            else if (key == "lbmTau") lbmParams.tau = std::stof(val);
+            else if (key == "lbmStepsPerFrame") lbmParams.stepsPerFrame = std::stoi(val);
+        } catch (...) { /* ignore parse errors */ }
+    }
+    return true;
 }
 
 int main() {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.9.0)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
 #endif
 
+    // Try load settings
+    if (aeroSaveSettings) {
+        loadSettings("aeros_settings.ini");
+        std::cout << "[Settings] Loaded aeros_settings.ini if exists" << std::endl;
+    }
+
     if (!glfwInit()) {
+#ifdef _WIN32
         MessageBoxA(nullptr, "Failed to init GLFW", "Error", MB_ICONERROR);
+#else
+        std::cerr << "Failed to init GLFW" << std::endl;
+#endif
         return -1;
     }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    glfwWindowHint(GLFW_SAMPLES, 4); // MSAA
+    glfwWindowHint(GLFW_SAMPLES, 4);
     glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_TRUE);
+#ifdef _DEBUG
+    glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+#endif
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.8.0 Realistic Aero+", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.9.0 Ultra Realistic+", nullptr, nullptr);
     if (!window) {
+#ifdef _WIN32
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
+#else
+        std::cerr << "Failed to create GLFW window" << std::endl;
+#endif
         glfwTerminate();
         return -1;
     }
@@ -80,13 +257,25 @@ int main() {
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+#ifdef _WIN32
         MessageBoxA(nullptr, "Failed to init GLAD", "Error", MB_ICONERROR);
+#else
+        std::cerr << "Failed to init GLAD" << std::endl;
+#endif
         glfwTerminate();
         return -1;
     }
 
-    // OpenGL debug if available (GLAD may not have KHR_debug) — disabled for compat
-    // if (GLAD_GL_KHR_debug) { glEnable(GL_DEBUG_OUTPUT); glDebugMessageCallback(glDebugCallback,nullptr); }
+    // OpenGL debug — v1.9.0 fixed: use GLAD_GL_VERSION_4_3
+    if (GLAD_GL_VERSION_4_3) {
+        glEnable(GL_DEBUG_OUTPUT);
+        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+        glDebugMessageCallback(glDebugCallback, nullptr);
+        glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
+        std::cout << "[GL] Debug output enabled (GL 4.3+)" << std::endl;
+    } else {
+        std::cout << "[GL] Debug output not available (GL < 4.3)" << std::endl;
+    }
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
@@ -94,18 +283,38 @@ int main() {
     glEnable(GL_MULTISAMPLE);
     glEnable(GL_PROGRAM_POINT_SIZE);
 
-    std::cout << "[GL] Vendor: " << glGetString(GL_VENDOR) << " Renderer: " << glGetString(GL_RENDERER) << " Version: " << glGetString(GL_VERSION) << std::endl;
+    // Check MSAA support
+    GLint msaaSamples = 0;
+    glGetIntegerv(GL_SAMPLES, &msaaSamples);
+    std::cout << "[GL] Vendor: " << glGetString(GL_VENDOR) << " Renderer: " << glGetString(GL_RENDERER) << " Version: " << glGetString(GL_VERSION) << " MSAA: " << msaaSamples << std::endl;
 
     createObstacleSphere(48, 48);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    // Docking disabled for old ImGui version (no DockingEnable flag)
-    // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.9.0 still compatible
+    // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // old ImGui doesn't have this
     ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init("#version 330 core");
+    // Improve ImGui style for v1.9.0
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 4.0f;
+    style.FrameRounding = 3.0f;
+    style.GrabRounding = 3.0f;
+    style.ScrollbarRounding = 3.0f;
+
+    if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
+        std::cerr << "[ImGui] Failed to init GLFW backend" << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+    if (!ImGui_ImplOpenGL3_Init("#version 330 core")) {
+        std::cerr << "[ImGui] Failed to init OpenGL3 backend" << std::endl;
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        glfwTerminate();
+        return -1;
+    }
 
     unsigned int modelShaderProgram    = compileProgram(vertexShaderSource, fragmentShaderSource);
     unsigned int particleShaderProgram = compileProgram(particleVertexShaderSource, particleFragmentShaderSource);
@@ -134,22 +343,27 @@ int main() {
         return 0;
     }
     if (!loadModel(modelPath)) {
+#ifdef _WIN32
         MessageBoxA(nullptr, ("Failed to load model: " + modelPath).c_str(), "Error", MB_ICONERROR);
+#else
+        std::cerr << "Failed to load model: " << modelPath << std::endl;
+#endif
     }
 
     glfwShowWindow(window);
 
-    static float prevSpeed = flowSpeed;
-    static float prevAz    = flowAzimuth;
-    static float prevEl    = flowElevation;
-    static float prevWake  = wakeStrength;
-    static float prevStro  = strouhal;
-    static float prevWL    = wakeLength;
-    static float prevAlt   = 0.0f;
-    static float prevGroundH = aeroGroundHeight;
-    static bool prevGroundEn = aeroGroundEffect;
+    float prevSpeed = flowSpeed;
+    float prevAz    = flowAzimuth;
+    float prevEl    = flowElevation;
+    float prevWake  = wakeStrength;
+    float prevStro  = strouhal;
+    float prevWL    = wakeLength;
+    float prevAlt   = altitude;
+    float prevGroundH = aeroGroundHeight;
+    bool prevGroundEn = aeroGroundEffect;
 
     float autoRotateAngle = 0.0f;
+    float lastInteractionTime = (float)glfwGetTime();
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = (float)glfwGetTime();
@@ -169,17 +383,37 @@ int main() {
         }
 
         if (autoRotate) {
-            autoRotateAngle += deltaTime * aeroAutoRotateSpeed;
-            if (autoRotateAngle > 360.0f) autoRotateAngle -= 360.0f;
-            flowAzimuth = autoRotateAngle;
+            // Pause auto-rotate if user interacted recently (v1.9.0 improvement)
+            float timeSinceInteraction = currentFrame - lastInteractionTime;
+            if (timeSinceInteraction > 2.0f) {
+                autoRotateAngle += deltaTime * aeroAutoRotateSpeed;
+                if (autoRotateAngle > 360.0f) autoRotateAngle -= 360.0f;
+                flowAzimuth = autoRotateAngle;
+            }
         }
 
         processInput(window);
+        // Detect interaction for auto-rotate pause
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
+            glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS ||
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
+            lastInteractionTime = currentFrame;
+        }
 
         auto frameStart = std::chrono::high_resolution_clock::now();
 
         auto tLBM0 = std::chrono::high_resolution_clock::now();
         if (lbmParams.enabled) {
+            // v1.9.0 adaptive LBM stepping
+            if (aeroAdaptiveLBM) {
+                // Adjust steps based on frame time
+                if (perfFrameMs > 33.0f && lbmParams.stepsPerFrame > 1) {
+                    lbmParams.stepsPerFrame = std::max(1, lbmParams.stepsPerFrame - 1);
+                } else if (perfFrameMs < 16.0f && lbmParams.stepsPerFrame < 20) {
+                    lbmParams.stepsPerFrame++;
+                }
+            }
             updateLBM(deltaTime);
         }
         auto tLBM1 = std::chrono::high_resolution_clock::now();
@@ -234,6 +468,28 @@ int main() {
 
         if (testContinuous) validateFrame();
 
+        // Handle screenshot and CSV export requests (v1.9.0)
+        if (aeroScreenshotRequested) {
+            aeroScreenshotRequested = false;
+            std::string fname = generateTimestampFilename("screenshot", ".bmp");
+            if (saveScreenshotBMP(fname)) {
+                aeroLastScreenshotPath = fname;
+                std::cout << "[Export] Screenshot saved: " << fname << std::endl;
+            } else {
+                std::cerr << "[Export] Failed to save screenshot" << std::endl;
+            }
+        }
+        if (aeroCSVExportRequested) {
+            aeroCSVExportRequested = false;
+            std::string fname = generateTimestampFilename("forces", ".csv");
+            if (exportForcesCSV(fname)) {
+                aeroLastCSVPath = fname;
+                std::cout << "[Export] CSV saved: " << fname << std::endl;
+            } else {
+                std::cerr << "[Export] Failed to save CSV" << std::endl;
+            }
+        }
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -244,8 +500,8 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
-        glm::mat4 projection = glm::perspective(glm::radians(fov),
-            (float)display_w/(float)display_h, 0.05f, maxDim*50.0f);
+        float aspect = (display_h > 0) ? (float)display_w/(float)display_h : 1.0f;
+        glm::mat4 projection = glm::perspective(glm::radians(fov), aspect, 0.05f, maxDim*50.0f);
         glm::mat4 model = glm::mat4(1.0f);
 
         glm::vec3 lightPos = center + glm::vec3(maxDim*2.0f, maxDim*2.5f, maxDim*2.0f);
@@ -253,6 +509,7 @@ int main() {
 
         if (showGroundPlane || aeroGroundEffect) {
             float groundY = g_voxMinY + aeroGroundHeight;
+            if (!std::isfinite(groundY)) groundY = minBB.y - maxDim*0.1f;
             glm::mat4 groundModel = glm::translate(glm::mat4(1.0f), glm::vec3(center.x, groundY, center.z));
             groundModel = glm::scale(groundModel, glm::vec3(maxDim*2.5f, 1.0f, maxDim*2.5f));
             glUseProgram(groundShaderProgram);
@@ -268,14 +525,14 @@ int main() {
             glDrawElements(GL_TRIANGLES, groundIndexCount, GL_UNSIGNED_INT, 0);
             glBindVertexArray(0);
 
-            // Grid
+            // Grid — v1.9.0 improved with better alpha
             if (gridVAO != 0) {
                 glUseProgram(lineShaderProgram);
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(groundModel));
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
                 glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
-                glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.15f);
+                glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.18f);
                 glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.3f, 0.3f, 0.35f);
                 glBindVertexArray(gridVAO);
                 glDrawArrays(GL_LINES, 0, 82*2);
@@ -431,8 +688,14 @@ int main() {
         }
     }
 
+    // Save settings on exit
+    if (aeroSaveSettings) {
+        saveSettings("aeros_settings.ini");
+        std::cout << "[Settings] Saved to aeros_settings.ini" << std::endl;
+    }
+
     // Cleanup
-    std::cout << "[Main] Cleaning up..." << std::endl;
+    std::cout << "[Main] Cleaning up v1.9.0..." << std::endl;
     glDeleteProgram(modelShaderProgram);
     glDeleteProgram(particleShaderProgram);
     glDeleteProgram(lineShaderProgram);
@@ -444,6 +707,6 @@ int main() {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwTerminate();
-    std::cout << "[Main] Exit OK" << std::endl;
+    std::cout << "[Main] Exit OK v1.9.0" << std::endl;
     return 0;
 }

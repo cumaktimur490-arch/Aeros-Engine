@@ -153,3 +153,26 @@ bool aeroUseRealisticLighting = true;
 int aeroColorMap = 0; // 0 rainbow
 bool aeroExportEnabled = false;
 float aeroAutoRotateSpeed = 10.0f;
+
+// v1.9.0 Ultra Realistic+
+bool aeroShowParticleTrails = false;
+float aeroTrailLength = 0.5f;
+bool aeroSurfaceStreamlines = false;
+bool aeroAdaptiveLBM = true;
+bool aeroShowHelicity = false;
+float aeroHelicityScale = 1.0f;
+bool aeroShowMach = false;
+bool aeroExportCSV = false;
+bool aeroSaveSettings = true;
+bool aeroShowPerfGraph = false;
+float aeroMachThreshold = 0.3f;
+bool aeroUseRK4Particles = true;
+bool aeroShowTotalPressure = false;
+int aeroScreenshotFormat = 0;
+bool aeroShowMemoryUsage = false;
+float aeroParticleTrailOpacity = 0.6f;
+
+bool aeroScreenshotRequested = false;
+bool aeroCSVExportRequested = false;
+std::string aeroLastScreenshotPath = "";
+std::string aeroLastCSVPath = "";

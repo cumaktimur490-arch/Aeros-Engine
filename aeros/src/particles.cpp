@@ -11,14 +11,42 @@
 #include "voxel_grid.h"
 #include "particles.h"
 #include "lbm.h"
+#include "atmosphere.h"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
 // =====================================================
-// Частицы — v1.8.0 Realistic Aero + фиксы
+// Частицы — v1.9.0 Ultra Realistic+ + RK4 + Trails
 // =====================================================
+
+// v1.9.0: RK4 step for particles
+static inline glm::vec3 particleRK4Step(const glm::vec3& p, float dt, const FlowParams& prm) {
+    if (!std::isfinite(p.x) || dt < 1e-8f) return p;
+    glm::vec3 v1 = computeVelocityFieldCPU(p, prm);
+    if (!std::isfinite(v1.x)) return p;
+    glm::vec3 k1 = v1 * dt;
+
+    glm::vec3 p2 = p + k1 * 0.5f;
+    glm::vec3 v2 = computeVelocityFieldCPU(p2, prm);
+    if (!std::isfinite(v2.x)) v2 = v1;
+    glm::vec3 k2 = v2 * dt;
+
+    glm::vec3 p3 = p + k2 * 0.5f;
+    glm::vec3 v3 = computeVelocityFieldCPU(p3, prm);
+    if (!std::isfinite(v3.x)) v3 = v2;
+    glm::vec3 k3 = v3 * dt;
+
+    glm::vec3 p4 = p + k3;
+    glm::vec3 v4 = computeVelocityFieldCPU(p4, prm);
+    if (!std::isfinite(v4.x)) v4 = v3;
+    glm::vec3 k4 = v4 * dt;
+
+    glm::vec3 res = p + (k1 + 2.0f*k2 + 2.0f*k3 + k4) * (1.0f/6.0f);
+    if (!std::isfinite(res.x)) return p + k1;
+    return res;
+}
 void initParticles() {
     updateFlowParams();
     if (numParticles <= 0) numParticles = 100;
@@ -150,7 +178,13 @@ void updateParticles(float dt) {
             glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
             if (!std::isfinite(v.x)) v = glm::vec3(vxInf, vyInf, vzInf);
 
-            glm::vec3 np = p + v * dt * timeScale;
+            // v1.9.0: RK4 option for more accurate advection
+            glm::vec3 np;
+            if (aeroUseRK4Particles) {
+                np = particleRK4Step(p, dt * timeScale, flowParams);
+            } else {
+                np = p + v * dt * timeScale;
+            }
             float surfDist = 1000.0f;
 
             if (useColl) {
@@ -232,6 +266,16 @@ void updateParticles(float dt) {
                     float s = getLBMStrainWorld(np);
                     float t = glm::clamp(s*0.5f, 0.0f, 1.0f);
                     c = glm::vec3(t, 1-t, 0.5f);
+                } else if (aeroVisMode == AeroVisMode::MachNumber) {
+                    float mach = getLBMMachWorld(np);
+                    c = getMachColor(mach);
+                } else if (aeroVisMode == AeroVisMode::Helicity) {
+                    float hel = getLBMHelicityWorld(np);
+                    c = getHelicityColor(hel);
+                } else if (aeroVisMode == AeroVisMode::TotalPressure) {
+                    float pt = getLBMTotalPressureWorld(np);
+                    float ptInf = airPressure + 0.5f*airDensity*vInfMag*vInfMag;
+                    c = getTotalPressureColor(pt, ptInf);
                 } else {
                     float velMag = glm::length(v);
                     c = getVelocityMagnitudeColor(velMag, maxSpeed);
