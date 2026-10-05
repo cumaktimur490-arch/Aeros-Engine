@@ -17,7 +17,7 @@
 #endif
 
 // =====================================================
-// Давление — v1.6.0 оптимизировано с OpenMP
+// Давление — v1.7.0 Realistic Aero как на фото
 // =====================================================
 void updateVertexColors() {
     updateFlowParams();
@@ -25,15 +25,15 @@ void updateVertexColors() {
     if (numVerts == 0) return;
     if (g_vertices.size() != g_normals.size()) return;
 
-    // LBM: если включен — используем LBM давление и скорость для Cp
+    // Референсная площадь
+    if (aeroAutoRefArea) aeroRefArea = computeLBMRefArea();
+
+    // LBM реалистичное окрашивание
     if (lbmParams.enabled && lbmInitialized) {
         try { g_vertexColors.resize(numVerts*3); } catch (...) { return; }
         float vinf = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
         if (!std::isfinite(vinf) || vinf < 1e-4f) vinf = 1e-4f;
         float invVinf2 = 1.0f / (vinf*vinf);
-        float maxCp = 1.0f, minCp = -3.0f;
-        float rangeCp = maxCp - minCp;
-        float invRange = 1.0f / rangeCp;
         float* vPtr = g_vertices.data();
         float* colPtr = g_vertexColors.data();
 
@@ -45,17 +45,47 @@ void updateVertexColors() {
             glm::vec3 v = getLBMVelocityWorld(p);
             if (!std::isfinite(v.x)) v = glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
             float speed2 = v.x*v.x + v.y*v.y + v.z*v.z;
+            float speed = sqrtf(speed2);
             float cp = 1.0f - speed2*invVinf2;
-            float lbmRho = getLBMDensityWorld(p);
-            cp += (lbmRho - 1.0f) * 0.5f;
-            if (cp > maxCp) cp = maxCp;
-            if (cp < minCp) cp = minCp;
-            float t = (cp - minCp) * invRange;
+
+            // LBM давление напрямую — более точно как на фото 4
+            float rho = getLBMDensityWorld(p);
+            float lbmPress = (rho - 1.0f) * 3.0f; // масштабированное
+            cp = cp * 0.7f + lbmPress * 0.5f; // комбинируем
+
+            // Для разных режимов визуализации
             glm::vec3 col;
-            if (t<0.25f) { float k=t*4.0f; col=glm::vec3(0,k,1); }
-            else if (t<0.5f) { float k=(t-0.25f)*4.0f; col=glm::vec3(0,1,1-k); }
-            else if (t<0.75f) { float k=(t-0.5f)*4.0f; col=glm::vec3(k,1,0); }
-            else { float k=(t-0.75f)*4.0f; col=glm::vec3(1,1-k,0); }
+            if (aeroVisMode == AeroVisMode::Pressure) {
+                col = getRealisticPressureColor(cp);
+            } else if (aeroVisMode == AeroVisMode::VelocityMagnitude) {
+                col = getVelocityMagnitudeColor(speed, vinf*1.5f);
+            } else if (aeroVisMode == AeroVisMode::Vorticity) {
+                float vort = getLBMVorticityWorld(p);
+                col = getVorticityColor(vort);
+            } else if (aeroVisMode == AeroVisMode::QCriterion) {
+                float q = getLBMQWorld(p);
+                // Q >0 вихрь (красный), Q<0 деформация (синий)
+                float t = glm::clamp(q*5.0f + 0.5f, 0.0f, 1.0f);
+                if (q > 0) col = glm::vec3(1, 1-t, 0); // желто-красный для вихрей
+                else col = glm::vec3(0, t, 1); // синий для деформации
+            } else if (aeroVisMode == AeroVisMode::TurbulentKE) {
+                float tke = getLBMTKEWorld(p);
+                float t = glm::clamp(tke*10.0f, 0.0f, 1.0f);
+                col = glm::vec3(t, t*0.5f, 1-t); // фиолетовый
+            } else {
+                col = getRealisticPressureColor(cp);
+            }
+
+            // Подсветка отрыва потока — как на фото где синие зоны отрыва
+            if (aeroShowSeparation) {
+                // Отрыв — где скорость очень низкая и завихренность высокая
+                float vort = getLBMVorticityWorld(p);
+                if (speed < vinf*0.3f && vort > 5.0f) {
+                    // Смешиваем с синим для подсветки отрыва
+                    col = col * 0.6f + glm::vec3(0.2f, 0.4f, 1.0f) * 0.4f;
+                }
+            }
+
             colPtr[3*i]=col.x; colPtr[3*i+1]=col.y; colPtr[3*i+2]=col.z;
         }
 
@@ -107,13 +137,12 @@ void updateVertexColors() {
             }
             if (cp > 1.0f) cp = 1.0f;
             if (cp < -3.0f) cp = -3.0f;
-            float t = (cp+1.0f)*0.5f;
-            t = glm::clamp(t, 0.0f, 1.0f);
+
             glm::vec3 col;
-            if (t<0.25f) { float k=t*4.0f; col=glm::vec3(0,k,1); }
-            else if (t<0.5f) { float k=(t-0.25f)*4.0f; col=glm::vec3(0,1,1-k); }
-            else if (t<0.75f) { float k=(t-0.5f)*4.0f; col=glm::vec3(k,1,0); }
-            else { float k=(t-0.75f)*4.0f; col=glm::vec3(1,1-k,0); }
+            if (aeroVisMode == AeroVisMode::Pressure) col = getRealisticPressureColor(cp);
+            else if (aeroVisMode == AeroVisMode::VelocityMagnitude) col = getVelocityMagnitudeColor(speed, vinf*1.5f);
+            else col = getRealisticPressureColor(cp);
+
             colPtr[3*i]=col.x; colPtr[3*i+1]=col.y; colPtr[3*i+2]=col.z;
         }
     }
@@ -133,7 +162,7 @@ void updateVertexColors() {
 }
 
 // =====================================================
-// Lift / Drag — v1.6.0 оптимизировано
+// Lift / Drag — v1.7.0 реалистичный с Cd/Cl как на фото
 // =====================================================
 void computeLiftDrag() {
     updateFlowParams();
@@ -157,6 +186,10 @@ void computeLiftDrag() {
     float q = 0.5f * rho * vinf * vinf;
     if (q < 1e-9f) q = 1e-6f;
 
+    if (aeroAutoRefArea) aeroRefArea = computeLBMRefArea();
+    float refArea = aeroRefArea;
+    if (refArea < 1e-6f) refArea = 1.0f;
+
     glm::vec3 totalForce(0.0f);
     glm::vec3 cpSum(0.0f);
     float areaSum = 0.0f;
@@ -170,7 +203,6 @@ void computeLiftDrag() {
     float cx = flowParams.centerX, cy = flowParams.centerY, cz = flowParams.centerZ;
     float fvx = flowParams.vx, fvy = flowParams.vy, fvz = flowParams.vz;
 
-    // Для OpenMP — ручная редукция для glm::vec3
     #ifdef _OPENMP
     #pragma omp parallel
     {
@@ -192,9 +224,20 @@ void computeLiftDrag() {
             float area = 0.5f * glm::length(cr);
             if (area < 1e-9f || area > 1e6f) continue;
 
-            glm::vec3 vel = computeVelocityFieldCPU(triCenter, flowParams);
-            float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
-            float cp = 1.0f - speed2 * (invVinf*invVinf);
+            glm::vec3 vel;
+            float cp;
+            if (lbmParams.enabled && lbmInitialized) {
+                vel = getLBMVelocityWorld(triCenter);
+                float rhoLBM = getLBMDensityWorld(triCenter);
+                float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
+                cp = 1.0f - speed2 * (invVinf*invVinf);
+                cp = cp * 0.7f + (rhoLBM-1.0f)*1.5f;
+            } else {
+                vel = computeVelocityFieldCPU(triCenter, flowParams);
+                float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
+                cp = 1.0f - speed2 * (invVinf*invVinf);
+            }
+
             float rx = triCenter.x - cx, ry = triCenter.y - cy, rz = triCenter.z - cz;
             float along = rx*(fvx*invVinf) + ry*(fvy*invVinf) + rz*(fvz*invVinf);
             if (along > D * 0.3f) {
@@ -237,9 +280,20 @@ void computeLiftDrag() {
         float area = 0.5f * glm::length(cr);
         if (area < 1e-9f || area > 1e6f) continue;
 
-        glm::vec3 vel = computeVelocityFieldCPU(triCenter, flowParams);
-        float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
-        float cp = 1.0f - speed2 * (invVinf*invVinf);
+        glm::vec3 vel;
+        float cp;
+        if (lbmParams.enabled && lbmInitialized) {
+            vel = getLBMVelocityWorld(triCenter);
+            float rhoLBM = getLBMDensityWorld(triCenter);
+            float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
+            cp = 1.0f - speed2 * (invVinf*invVinf);
+            cp = cp * 0.7f + (rhoLBM-1.0f)*1.5f;
+        } else {
+            vel = computeVelocityFieldCPU(triCenter, flowParams);
+            float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
+            cp = 1.0f - speed2 * (invVinf*invVinf);
+        }
+
         float rx = triCenter.x - cx, ry = triCenter.y - cy, rz = triCenter.z - cz;
         float along = rx*(fvx*invVinf) + ry*(fvy*invVinf) + rz*(fvz*invVinf);
         if (along > D * 0.3f) {

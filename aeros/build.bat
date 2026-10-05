@@ -121,6 +121,12 @@ if !errorlevel! neq 0 (
 if not exist bin mkdir bin
 set "LIBDIR=%~dp0..\libs"
 
+rem v1.7.0: Full rebuild always — clean old artifacts to ensure aerodynamics changes visible
+echo [Aeros] Cleaning previous build artifacts for full rebuild...
+del /Q bin\*.obj 2>nul
+del /Q bin\main-%OUT_ARCH%.exe 2>nul
+del /Q bin\main.exe 2>nul
+
 rem --- Проверка GLFW lib для выбранной архитектуры ---
 if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
     echo [WARN] GLFW lib not found: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib

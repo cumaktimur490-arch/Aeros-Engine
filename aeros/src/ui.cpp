@@ -13,45 +13,123 @@
 #include "atmosphere.h"
 #include "test_mode.h"
 #include "lbm.h"
+#include "forces.h"
 #include "ui.h"
 
 // =====================================================
-// Панель управления — v1.4.0: расширенный тест ошибок кода
+// Панель управления — v1.7.0 Realistic Aero
 // =====================================================
 void drawUI() {
 ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
-ImGui::SetNextWindowSize(ImVec2(450, 950), ImGuiCond_Once);
-ImGui::Begin("AeroS Control v1.6.0 Optimized");
-ImGui::Text("FPS: %.1f | Frame: %.2f ms", deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f, perfFrameMs);
+ImGui::SetNextWindowSize(ImVec2(480, 1000), ImGuiCond_Once);
+ImGui::Begin("AeroS Control v1.7.0 Realistic Aero");
+ImGui::Text("FPS: %.1f | Frame: %.2f ms | v1.7.0", deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f, perfFrameMs);
 ImGui::Text("Vertices: %d | Triangles: %d", modelVertexCount, modelVertexCount/3);
-ImGui::Text("Voxel Grid: %dx%dx%d", g_voxNx, g_voxNy, g_voxNz);
-ImGui::Text("OpenMP: %d threads | %s", perfOpenMPThreads,
+ImGui::Text("Voxel: %dx%dx%d | LBM: %dx%dx%d", g_voxNx, g_voxNy, g_voxNz, lbmNx, lbmNy, lbmNz);
+ImGui::Text("OpenMP: %d threads | %s | Realistic: %s",
+    perfOpenMPThreads,
 #ifdef _OPENMP
-    "Enabled"
+    "ON",
 #else
-    "Disabled"
+    "OFF",
 #endif
+    lbmParams.enabled ? "LBM" : "Potential"
 );
 ImGui::Separator();
-if (ImGui::CollapsingHeader("Performance (v1.6.0)", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+if (ImGui::CollapsingHeader("Performance (v1.7.0)", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("Frame: %.2f ms | FPS: %.1f", perfFrameMs, perfFrameMs > 1e-3f ? 1000.0f/perfFrameMs : 0.0f);
     ImGui::Text("LBM: %.2f ms | Particles: %.2f ms", perfLBMms, perfParticlesMs);
     ImGui::Text("Forces: %.2f ms | Streamlines: %.2f ms", perfForcesMs, perfStreamlinesMs);
+    ImGui::Text("Voxel: %.2f ms", perfVoxelMs);
     if (lbmInitialized) {
         int total = lbmNx*lbmNy*lbmNz;
         float mlups = (total * lbmParams.stepsPerFrame) / (lbmTimeMs > 0 ? lbmTimeMs : 1.0f) / 1000.0f;
-        ImGui::Text("LBM: %d cells | %.2f MLUPS | %.1f ms/step", total, mlups, lbmTimeMs);
+        ImGui::Text("LBM: %d cells | %.2f MLUPS | %.1f ms/step | TKE %.4f", total, mlups, lbmTimeMs, lbmTKE);
+        ImGui::Text("Re: %.0f | Converged: %s | Steps: %d", lbmReynolds, lbmConverged?"YES":"NO", lbmCurrentStep);
     }
     ImGui::Separator();
-    ImGui::Text("Optimizations active:");
-    ImGui::BulletText("OpenMP parallel for (LBM, voxels, particles, streamlines, forces)");
-    ImGui::BulletText("AVX2 + O2/Ot + LTCG + fast math");
-    ImGui::BulletText("Gather streaming (cache-friendly)");
-    ImGui::BulletText("AABB culling for voxelization");
-    ImGui::BulletText("Precomputed flow axis & inlet BC");
-    ImGui::BulletText("SoA layout + raw pointers");
+    ImGui::Text("Realistic Aero (as in photos):");
+    ImGui::BulletText("Pressure rainbow (NASCAR) + U Magnitude (UAV)");
+    ImGui::BulletText("Velocity-colored streamlines (car underbody)");
+    ImGui::BulletText("Vorticity & Q-criterion + wake");
+    ImGui::BulletText("Ground effect for cars (Cybertruck)");
+    ImGui::BulletText("Flow separation highlighting");
+    ImGui::BulletText("OpenMP + AVX2 + LTCG");
 }
 ImGui::Separator();
+
+if (ImGui::CollapsingHeader("Realistic Aero (v1.7.0) — Photo Mode", ImGuiTreeNodeFlags_DefaultOpen)) {
+    const char* visModes[] = { "Pressure Cp (NASCAR rainbow)", "Velocity |U| (UAV/Cybertruck)", "Vorticity |w|", "Q-Criterion (vortices)", "Turbulent TKE" };
+    int visIdx = (int)aeroVisMode;
+    if (ImGui::Combo("Visualization", &visIdx, visModes, IM_ARRAYSIZE(visModes))) {
+        aeroVisMode = (AeroVisMode)visIdx;
+        if (showPressure) updateVertexColors();
+    }
+    ImGui::Checkbox("Color Streamlines by Velocity (photo 2)", &aeroColorStreamlinesByVelocity);
+    ImGui::Checkbox("Highlight Flow Separation", &aeroShowSeparation);
+    ImGui::Checkbox("Ground Effect (for cars, photo 2/5)", &aeroGroundEffect);
+    if (aeroGroundEffect) {
+        ImGui::SliderFloat("Ground Height", &aeroGroundHeight, -2.0f, 2.0f, "%.2f");
+        lbmParams.useGround = aeroGroundEffect;
+        lbmParams.groundHeight = aeroGroundHeight;
+    }
+    ImGui::Separator();
+    ImGui::Text("Reference Area for Cd/Cl:");
+    ImGui::Checkbox("Auto Ref Area", &aeroAutoRefArea);
+    if (!aeroAutoRefArea) ImGui::SliderFloat("Ref Area", &aeroRefArea, 0.1f, 10.0f, "%.2f m2");
+    else ImGui::Text("Auto: %.3f m2 (from BB)", aeroRefArea);
+    ImGui::Separator();
+    ImGui::Text("Presets (like photos):");
+    if (ImGui::Button("Car Preset (NASCAR/Cybertruck)")) {
+        aeroVisMode = AeroVisMode::Pressure;
+        aeroGroundEffect = true;
+        aeroGroundHeight = 0.0f;
+        aeroColorStreamlinesByVelocity = true;
+        aeroShowSeparation = true;
+        lbmParams.enabled = true;
+        lbmParams.useGround = true;
+        lbmParams.stepsPerFrame = 5;
+        lbmParams.tau = 0.55f;
+        lbmParams.useTurbulence = true;
+        if (lbmInitialized) resetLBM(); else initLBM();
+        updateVertexColors(); computeStreamlines();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("UAV Preset (photo 1)")) {
+        aeroVisMode = AeroVisMode::VelocityMagnitude;
+        aeroGroundEffect = false;
+        aeroColorStreamlinesByVelocity = true;
+        lbmParams.enabled = true;
+        lbmParams.stepsPerFrame = 3;
+        lbmParams.tau = 0.6f;
+        if (lbmInitialized) resetLBM(); else initLBM();
+        updateVertexColors(); computeStreamlines();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Airfoil Preset (photo 3)")) {
+        aeroVisMode = AeroVisMode::Pressure;
+        aeroGroundEffect = false;
+        aeroColorStreamlinesByVelocity = false;
+        lbmParams.enabled = true;
+        lbmParams.stepsPerFrame = 4;
+        if (lbmInitialized) resetLBM(); else initLBM();
+        updateVertexColors(); computeStreamlines();
+    }
+    if (ImGui::Button("Enable Realistic LBM (Recommended)")) {
+        lbmParams.enabled = true;
+        lbmParams.useZouHeBC = true;
+        lbmParams.useConvectiveOutlet = true;
+        lbmParams.useTurbulence = true;
+        lbmParams.inletTurbulence = 0.02f;
+        if (!lbmInitialized) initLBM(); else resetLBM();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Disable LBM (Legacy)")) {
+        lbmParams.enabled = false;
+        shutdownLBM();
+    }
+}
 
 if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
     const char* unitItems[] = { "m/s (м/с)", "km/h (км/ч)", "mph (миль/ч)", "kts (узлы)", "ft/s (фут/с)" };
@@ -152,15 +230,21 @@ if (ImGui::CollapsingHeader("Streamlines", ImGuiTreeNodeFlags_DefaultOpen)) {
     if (ImGui::Button("Rebuild Streamlines")) computeStreamlines();
 }
 
-if (ImGui::CollapsingHeader("Pressure & Forces", ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader("Pressure & Forces (Realistic)", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Show Pressure Colors", &showPressure);
     ImGui::Checkbox("Show Lift/Drag Vectors", &showLiftDrag);
-    ImGui::Text("Drag:  %.3f N (scaled by rho)", dragMagnitude);
-    ImGui::Text("Lift:  %.3f N (scaled by rho)", liftMagnitude);
+    ImGui::Text("Drag:  %.3f N (scaled by rho) | Cd: %.3f", dragMagnitude, aeroRefArea>1e-6f ? dragMagnitude / (0.5f*airDensity*flowSpeed*flowSpeed*aeroRefArea) : 0);
+    ImGui::Text("Lift:  %.3f N (scaled by rho) | Cl: %.3f", liftMagnitude, aeroRefArea>1e-6f ? liftMagnitude / (0.5f*airDensity*flowSpeed*flowSpeed*aeroRefArea) : 0);
+    ImGui::Text("Ref Area: %.3f m2", aeroRefArea);
     float q = 0.5f * airDensity * flowSpeed * flowSpeed;
     if (q > 1e-6f) {
-        ImGui::Text("Cd (approx): %.3f", dragMagnitude / q);
-        ImGui::Text("Cl (approx): %.3f", liftMagnitude / q);
+        ImGui::Text("Cd (approx q): %.3f | Cl (approx q): %.3f", dragMagnitude / q, liftMagnitude / q);
+    }
+    ImGui::Text("CoP: (%.2f, %.2f, %.2f)", centerOfPressure.x, centerOfPressure.y, centerOfPressure.z);
+    if (lbmInitialized) {
+        ImGui::Text("LBM Pressure: min %.2f max %.2f", 
+            lbmPressure.empty()?0:*std::min_element(lbmPressure.begin(), lbmPressure.end()),
+            lbmPressure.empty()?0:*std::max_element(lbmPressure.begin(), lbmPressure.end()));
     }
 }
 
@@ -185,14 +269,14 @@ if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::ColorEdit3("Background", &bgColor[0]);
 }
 
-if (ImGui::CollapsingHeader("LBM - Lattice Boltzmann (v1.6.0 Optimized)", ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader("LBM - Lattice Boltzmann (v1.7.0 Realistic)", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Enable LBM (High-Accuracy Physics)", &lbmParams.enabled);
     if (lbmParams.enabled) {
-        ImGui::TextColored(ImVec4(0.2f,1,0.8f,1), "LBM Active — superior to potential flow");
+        ImGui::TextColored(ImVec4(0.2f,1,0.8f,1), "LBM Active — Navier-Stokes, realistic as photos");
     } else {
         ImGui::TextColored(ImVec4(1,0.8f,0.2f,1), "Using potential flow + wake (legacy)");
     }
-    ImGui::SliderInt("Steps per Frame", &lbmParams.stepsPerFrame, 1, 20);
+    ImGui::SliderInt("Steps per Frame", &lbmParams.stepsPerFrame, 1, 50);
     ImGui::SliderFloat("Tau (relaxation)", &lbmParams.tau, 0.51f, 1.5f, "%.3f");
     if (ImGui::IsItemDeactivatedAfterEdit()) { lbmParams.viscosity = (lbmParams.tau - 0.5f) * 0.333333f; }
     ImGui::SliderFloat("U0 (lattice speed)", &lbmParams.U0, 0.01f, 0.25f, "%.3f");
@@ -200,9 +284,15 @@ if (ImGui::CollapsingHeader("LBM - Lattice Boltzmann (v1.6.0 Optimized)", ImGuiT
     if (lbmParams.useTurbulence) {
         ImGui::SliderFloat("Smagorinsky C", &lbmParams.smagorinskyC, 0.01f, 0.3f, "%.3f");
     }
+    ImGui::Checkbox("MRT (High Re stability)", &lbmParams.useMRT);
+    ImGui::Checkbox("Zou/He Inlet BC (accurate)", &lbmParams.useZouHeBC);
+    ImGui::Checkbox("Convective Outlet", &lbmParams.useConvectiveOutlet);
+    ImGui::SliderFloat("Inlet Turbulence", &lbmParams.inletTurbulence, 0.0f, 0.1f, "%.3f");
+    ImGui::Checkbox("Ground (for cars)", &lbmParams.useGround);
+    if (lbmParams.useGround) ImGui::SliderFloat("Ground Height##lbm", &lbmParams.groundHeight, -2.0f, 2.0f, "%.2f");
     ImGui::Separator();
     ImGui::Text("LBM Grid: %dx%dx%d = %d cells", lbmNx, lbmNy, lbmNz, lbmNx*lbmNy*lbmNz);
-    ImGui::Text("Steps: %d | Converged: %s", lbmCurrentStep, lbmConverged ? "YES" : "NO");
+    ImGui::Text("Steps: %d | Converged: %s | TKE: %.4f", lbmCurrentStep, lbmConverged ? "YES" : "NO", lbmTKE);
     ImGui::Text("Avg Rho: %.4f | Kinetic: %.6f", lbmAvgRho, lbmAvgKineticEnergy);
     ImGui::Text("Max Vel LB: %.4f | World: %.2f m/s", lbmMaxVelocityLB, lbmMaxVelocityWorld);
     ImGui::Text("Reynolds: %.1f | Conv: %.2e | Time: %.1f ms", lbmReynolds, lbmConvergence, lbmTimeMs);
@@ -216,14 +306,14 @@ if (ImGui::CollapsingHeader("LBM - Lattice Boltzmann (v1.6.0 Optimized)", ImGuiT
     ImGui::SameLine();
     if (ImGui::Button("Step 100")) { stepLBMCPU(100); }
     ImGui::SameLine();
-    if (ImGui::Button("Compute Vorticity/Q")) { computeLBMVorticityAndQ(); }
+    if (ImGui::Button("Compute Vorticity/Q/TKE")) { computeLBMVorticityAndQ(); }
     ImGui::Separator();
-    ImGui::Text("LBM provides:");
-    ImGui::BulletText("True Navier-Stokes via Boltzmann");
-    ImGui::BulletText("Automatic flow separation & vortices");
-    ImGui::BulletText("No-slip bounce-back on surface");
-    ImGui::BulletText("LES turbulence (Smagorinsky)");
-    ImGui::BulletText("Vorticity & Q-criterion");
+    ImGui::Text("Realistic features:");
+    ImGui::BulletText("Zou/He inlet + convective outlet");
+    ImGui::BulletText("Ground effect for cars");
+    ImGui::BulletText("Inlet turbulence + TKE");
+    ImGui::BulletText("MRT for high Re");
+    ImGui::BulletText("Rainbow pressure & velocity (as photos)");
 }
 
 if (ImGui::CollapsingHeader("Compute")) {
@@ -234,22 +324,35 @@ if (ImGui::CollapsingHeader("Compute")) {
         std::string p = openFileDialog();
         if (!p.empty()) loadModel(p);
     }
+    ImGui::SameLine();
+    if (ImGui::Button("FULL REBUILD (Clean)")) {
+        // Подсказка пользователю — пересборка
+        ImGui::OpenPopup("Rebuild Info");
+    }
+    if (ImGui::BeginPopup("Rebuild Info")) {
+        ImGui::Text("For full rebuild run:");
+        ImGui::Text("aeros\\build.bat x64 clean && build.bat x64");
+        ImGui::Text("or tools\\rebuild-all.bat");
+        ImGui::Text("This ensures aerodynamics tests changes are visible");
+        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
-if (ImGui::CollapsingHeader("Test Mode (Physics + Code Errors)", ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader("Test Mode (Physics + Code + LBM + Optimization)", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Enable Test Mode", &testModeEnabled);
     ImGui::Checkbox("Continuous Validation", &testContinuous);
     ImGui::Text("Total: %d passed, %d failed", testsPassed, testsFailed);
-    ImGui::Text("  Physics: %d / Code: %d passed", testsPassed - codeTestsPassed, codeTestsPassed);
+    ImGui::Text("  Physics: %d / Code: %d / LBM: %d / Opt: %d passed", testsPassed - codeTestsPassed - lbmTestsPassed - 3, codeTestsPassed, lbmTestsPassed, 3);
     if (codeTestsFailed > 0) ImGui::Text("  Code failed: %d", codeTestsFailed);
     ImGui::Text("Last run: %.1f ms", lastTestTimeMs);
     if (lastGLError != 0) {
         ImGui::TextColored(ImVec4(1,0.3f,0.1f,1), "GL Error: %s", lastGLErrorStr.c_str());
     }
     if (testsFailed > 0) {
-        ImGui::TextColored(ImVec4(1,0.2f,0.2f,1), "!!! ERRORS DETECTED: Physics=%d Code=%d !!!", testsFailed - codeTestsFailed, codeTestsFailed);
+        ImGui::TextColored(ImVec4(1,0.2f,0.2f,1), "!!! ERRORS DETECTED: Physics=%d Code=%d LBM=%d !!!", testsFailed - codeTestsFailed - lbmTestsFailed, codeTestsFailed, lbmTestsFailed);
     } else if (testsPassed > 0) {
-        ImGui::TextColored(ImVec4(0.2f,1,0.2f,1), "All tests passed — physics & code OK");
+        ImGui::TextColored(ImVec4(0.2f,1,0.2f,1), "All tests passed — physics, code, LBM, optimization OK");
     }
 
     if (ImGui::Button("Run All Tests")) {
@@ -266,6 +369,10 @@ if (ImGui::CollapsingHeader("Test Mode (Physics + Code Errors)", ImGuiTreeNodeFl
         runCodeTests();
     }
     ImGui::SameLine();
+    if (ImGui::Button("Run Aero Tests")) {
+        lastTestResults.clear(); testLog.clear(); testsPassed=0; testsFailed=0; codeTestsPassed=0; codeTestsFailed=0;
+        runLBMTests(); runOptimizationTests();
+    }
     if (ImGui::Button("Clear Log")) {
         testLog.clear();
         lastTestResults.clear();
@@ -293,6 +400,30 @@ if (ImGui::CollapsingHeader("Test Mode (Physics + Code Errors)", ImGuiTreeNodeFl
         if (ImGui::TreeNode(("Code Action Tests (" + std::to_string(codePass) + "/" + std::to_string(codePass+codeFail) + ")").c_str())) {
             for (auto& r : lastTestResults) if (r.category=="Code") {
                 ImVec4 col = r.passed ? ImVec4(0.4f,0.8f,1.0f,1) : ImVec4(1,0.3f,0.1f,1);
+                ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                    ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                }
+            }
+            ImGui::TreePop();
+        }
+        int lbmPass = 0, lbmFail = 0;
+        for (auto& r : lastTestResults) if (r.category=="LBM") { if (r.passed) lbmPass++; else lbmFail++; }
+        if (ImGui::TreeNode(("LBM Tests (" + std::to_string(lbmPass) + "/" + std::to_string(lbmPass+lbmFail) + ")").c_str())) {
+            for (auto& r : lastTestResults) if (r.category=="LBM") {
+                ImVec4 col = r.passed ? ImVec4(0.2f,0.8f,1.0f,1) : ImVec4(1,0.5f,0.1f,1);
+                ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                    ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                }
+            }
+            ImGui::TreePop();
+        }
+        int optPass = 0, optFail = 0;
+        for (auto& r : lastTestResults) if (r.category=="Optimization") { if (r.passed) optPass++; else optFail++; }
+        if (ImGui::TreeNode(("Optimization Tests (" + std::to_string(optPass) + "/" + std::to_string(optPass+optFail) + ")").c_str())) {
+            for (auto& r : lastTestResults) if (r.category=="Optimization") {
+                ImVec4 col = r.passed ? ImVec4(0.8f,1.0f,0.2f,1) : ImVec4(1,0.2f,0.5f,1);
                 ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
                 if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
                     ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());

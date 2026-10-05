@@ -116,3 +116,14 @@ float perfStreamlinesMs = 0.0f;
 float perfForcesMs = 0.0f;
 float perfVoxelMs = 0.0f;
 int   perfOpenMPThreads = 0;
+
+AeroVisMode aeroVisMode = AeroVisMode::Pressure;
+bool aeroGroundEffect = false;
+float aeroGroundHeight = 0.0f;
+bool aeroShowSlice = false;
+int aeroSliceAxis = 1; // Y
+float aeroSlicePos = 0.5f;
+bool aeroColorStreamlinesByVelocity = true;
+bool aeroShowSeparation = true;
+float aeroRefArea = 1.0f;
+bool aeroAutoRefArea = true;

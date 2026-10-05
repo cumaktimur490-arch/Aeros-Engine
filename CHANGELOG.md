@@ -5,6 +5,68 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.7.0] - 2026-10-05
+
+### Realistic Aero — фотореалистичная аэродинамика как на фото
+
+#### Проблема пользователя
+- Аэродинамика должна быть похожей как на фото (UAV U Magnitude, car underbody velocity, airfoil lift/drag, NASCAR pressure rainbow, Cybertruck velocity slice)
+- При обновлении приложение должно пересобираться полностью, чтобы изменения в тестах аэродинамики были видны
+
+#### Решение — фотореалистичная физика
+- **Цветовые карты как на фото**:
+  - `getRealisticPressureColor(Cp)` — rainbow NASCAR: красный стагнация Cp~+1, желтый freestream, зеленый, синий разрежение Cp~-2..-3 (фото 4)
+  - `getVelocityMagnitudeColor(|U|)` — синий низкая скорость, красный высокая, как U Magnitude на фото 1 и car underbody на фото 2
+  - `getVorticityColor(|ω|)` — синий→белый→красный для завихренности
+  - Визуализация Q-criterion: Q>0 вихри (желто-красный), Q<0 деформация (синий)
+  - TKE фиолетовый
+- **LBM улучшения для реализма (lbm.h/cpp v1.7.0)**:
+  - Новые поля: `lbmTKEField`, `lbmStrainMag`, `lbmIsGround`, `lbmTKE` avg
+  - Ground effect: земля для авто как на фото 2,5 — `useGround`, `groundHeight`, `aeroGroundEffect`, `aeroGroundHeight`, bounce-back на земле
+  - Zou/He inlet BC: `useZouHeBC` — более точный inlet чем простое равновесие
+  - Convective outlet: `useConvectiveOutlet` — zero-gradient outlet для стабильности следа
+  - Inlet turbulence: `inletTurbulence 0-0.1` — синусоидальная турбулентность на входе для быстрого перехода к турбулентности
+  - MRT заготовка: `useMRT` для высоких Re
+  - TKE расчет: `tke = 0.5*usqr*(tauEff-tau0)/cs2` + vorticity/strain вклад в `computeLBMVorticityAndQ`
+  - Ref area: `computeLBMRefArea()` — авто расчет из BB `sizeY*sizeZ*0.6`
+  - Новые сэмплеры: `getLBMVorticityWorld`, `getLBMQWorld`, `getLBMTKEWorld`, `getLBMVelocityMagWorld`
+  - Валидация реалистичности: `lbmValidateRealisticAero()` — давление не астрономическое, TKE>=0, vorticity>=0
+- **Forces & Pressure (forces.cpp v1.7.0)**:
+  - Cp теперь комбинирует Bernoulli `1-|U|^2/Vinf^2` + LBM давление ` (rho-1)*1.5` — как на фото где давление из CFD
+  - Визуализация по режимам `aeroVisMode`: Pressure, VelocityMagnitude, Vorticity, QCriterion, TurbulentKE
+  - Подсветка отрыва потока: где `|U|<0.3*Vinf && |ω|>5` — смешивание с синим как на фото отрывных зон
+  - Cd/Cl с ref area: `Cd = Drag/(0.5*rho*V^2*RefArea)`, `Cl = Lift/(0.5*rho*V^2*RefArea)`
+  - LBM давление используется в `computeLiftDrag` для более точных сил
+- **Streamlines (streamlines.cpp v1.7.0)**:
+  - Окраска по скорости `aeroColorStreamlinesByVelocity` — как на фото 2 car underbody (зеленый→желтый→красный)
+  - Ускорение под днищем для ground effect `*1.2`
+  - Wake factor для следа как на фото 5
+- **Particles (particles.cpp v1.7.0)**:
+  - Окраска по velocity magnitude / vorticity / Q как на фото
+  - Ground effect отталкивание
+  - Ускорение под авто
+- **UI (ui.cpp v1.7.0)**:
+  - Новая секция **Realistic Aero (v1.7.0) — Photo Mode** с Combo Visualization (Pressure, Velocity, Vorticity, Q, TKE), чекбоксы Color Streamlines by Velocity, Highlight Separation, Ground Effect, Ref Area auto/manual, пресеты Car/UAV/Airfoil, кнопки Enable Realistic LBM / Disable LBM
+  - Пресеты: Car (NASCAR/Cybertruck) — Pressure + Ground + VelColor + Separation + LBM 5 steps tau 0.55 LES; UAV (photo1) — Velocity + LBM 3 steps; Airfoil (photo3) — Pressure + LBM 4 steps
+  - Pressure & Forces теперь показывает Cd/Cl с ref area, CoP, LBM pressure min/max
+  - Compute секция: кнопка FULL REBUILD (Clean) с popup подсказкой `build.bat x64 clean && build.bat x64` и `tools/rebuild-all.bat`
+  - Test Mode: добавлена категория Optimization + кнопка Run Aero Tests, отображение LBM и Opt тестов отдельно
+- **Globals (v1.7.0)**:
+  - `AeroVisMode` enum, `aeroVisMode`, `aeroGroundEffect`, `aeroGroundHeight`, `aeroShowSlice`, `aeroSliceAxis/Pos`, `aeroColorStreamlinesByVelocity`, `aeroShowSeparation`, `aeroRefArea`, `aeroAutoRefArea`
+- **Build — полная пересборка**:
+  - `build.bat`: теперь всегда чистит `bin/*.obj` и `main-*.exe` перед сборкой — гарантия что изменения аэродинамики видны
+  - `build-cpu.bat`: уже чистил, сохранено
+  - Новый `tools/rebuild-all.bat`: чистит все `bin/*.obj,*.exe,*.dll`, `build/`, `release/*` и собирает x64/x86/arm64 полностью
+  - CI: Build Check теперь использует `/openmp:llvm` для поддержки `max` редукции и `collapse`
+- **Тесты реалистичности**:
+  - Новый тест `testRealisticAero()` — проверяет Cp диапазон [-5,3], цветовые карты (красный для Cp=1, синий для Cp=-2, синий для low vel, красный для high vel), LBM realistic validation, max vorticity, ground effect
+  - Всего тестов теперь 27: 9 Physics +10 Code +4 LBM +4 Optimization (включая Realistic Aero)
+
+### Исправлено
+- Полная пересборка при обновлении — теперь `build.bat` чистит артефакты, добавлен `rebuild-all.bat`
+- Цветовые карты теперь соответствуют фото (NASCAR rainbow, U Magnitude, car underbody)
+- Lift/Drag теперь Cd/Cl с ref area как в реальной аэродинамике
+
 ## [1.6.0] - 2026-10-05
 
 ### Оптимизация — максимальное улучшение производительности

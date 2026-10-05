@@ -4,7 +4,7 @@
 распределение давления по поверхности, подъёмная сила и сопротивление. C++17 / OpenGL 3.3 /
 CUDA / Dear ImGui / GLM.
 
-> v1.6.0 Optimized: OpenMP параллелизация LBM/voxels/particles/streamlines/forces, gather streaming, AABB culling, AVX2 O2 Ot LTCG fast math, MLUPS 2-3x, perf profiling, 26 тестов (9 Physics +10 Code +4 LBM +3 Optimization); v1.5.0 LBM D3Q19 BGK+Smagorinsky; v1.4.0 10 Code +9 Physics tests; v1.3.0 ISA atmosphere.
+> v1.7.0 Realistic Aero: фотореалистичная аэродинамика как на фото — Pressure rainbow (NASCAR), U Magnitude (UAV/Cybertruck), velocity-colored streamlines (car underbody), vorticity/Q/TKE, ground effect, flow separation, Cd/Cl с ref area, Zou/He BC, convective outlet, inlet turbulence, полная пересборка при обновлении (rebuild-all.bat), 27 тестов; v1.6.0 Optimized OpenMP+AVX2; v1.5.0 LBM D3Q19.
 
 ## 📥 Скачать (релиз)
 

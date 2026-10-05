@@ -152,4 +152,23 @@ extern float perfForcesMs;
 extern float perfVoxelMs;
 extern int   perfOpenMPThreads;
 
+// --- Realistic Aero (v1.7.0) ---
+enum class AeroVisMode {
+    Pressure,           // Cp — как на фото 4 (NASCAR rainbow)
+    VelocityMagnitude,  // |U| — как на фото 1 (U Magnitude)
+    Vorticity,          // |ω| — завихренность
+    QCriterion,         // Q-критерий — вихревые структуры
+    TurbulentKE         // TKE — турбулентность
+};
+extern AeroVisMode aeroVisMode;
+extern bool aeroGroundEffect;       // земля для авто (фото 2,5)
+extern float aeroGroundHeight;      // высота земли относительно minBB
+extern bool aeroShowSlice;          // срез скорости как на фото 5 (Cybertruck)
+extern int aeroSliceAxis;           // 0=X,1=Y,2=Z
+extern float aeroSlicePos;          // позиция среза 0-1
+extern bool aeroColorStreamlinesByVelocity; // окраска линий тока по скорости как на фото 2
+extern bool aeroShowSeparation;     // подсветка отрыва потока
+extern float aeroRefArea;           // референсная площадь для Cd/Cl
+extern bool aeroAutoRefArea;        // авто расчет ref area
+
 #endif // GLOBALS_H

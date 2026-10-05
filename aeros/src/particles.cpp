@@ -9,13 +9,14 @@
 #include "flow_field.h"
 #include "voxel_grid.h"
 #include "particles.h"
+#include "lbm.h"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
 // =====================================================
-// Частицы — оптимизировано: OpenMP, кэширование, SoA-friendly
+// Частицы — v1.7.0 Realistic Aero как на фото
 // =====================================================
 void initParticles() {
     updateFlowParams();
@@ -94,7 +95,6 @@ void updateParticles(float dt) {
         try { updateParticlesCUDA(particlePositions, particleColors, n, flowParams, dt); }
         catch (...) {}
     } else {
-        // Кэшируем параметры для скорости
         float csx = flowParams.cellSizeX, csy = flowParams.cellSizeY, csz = flowParams.cellSizeZ;
         if (!std::isfinite(csx) || csx < 1e-8f) csx = 0.1f;
         if (!std::isfinite(csy) || csy < 1e-8f) csy = 0.1f;
@@ -108,6 +108,8 @@ void updateParticles(float dt) {
         float vxInf = flowParams.vx, vyInf = flowParams.vy, vzInf = flowParams.vz;
         float vInfMag = sqrtf(vxInf*vxInf + vyInf*vyInf + vzInf*vzInf);
         if (!std::isfinite(vInfMag) || vInfMag < 1e-4f) vInfMag = 1.0f;
+        float maxSpeed = maxSpeedForColor;
+        if (maxSpeed < 1e-3f) maxSpeed = vInfMag * 1.5f;
 
         float* posPtr = particlePositions.data();
         float* colPtr = particleColors.data();
@@ -117,7 +119,6 @@ void updateParticles(float dt) {
         bool useColl = useVoxelCollision && distField && voxNx > 0;
         int distSize = (int)g_distanceField.size();
 
-        // OpenMP параллельный апдейт — каждый поток работает со своими частицами
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
@@ -126,7 +127,7 @@ void updateParticles(float dt) {
             float py = posPtr[3*i+1];
             float pz = posPtr[3*i+2];
 
-            if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) {
+            if (!std::isfinite(px)) {
                 float r1 = fabsf(sinf(i*12.9898f + time*10.0f) * 43758.5453f); r1 -= floorf(r1);
                 float r2 = fabsf(cosf(i*39.346f + time*15.0f) * 24634.6345f); r2 -= floorf(r2);
                 px = minX + (maxX - minX)*(0.05f + 0.9f*r1);
@@ -136,7 +137,7 @@ void updateParticles(float dt) {
 
             glm::vec3 p(px, py, pz);
             glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
-            if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) v = glm::vec3(vxInf, vyInf, vzInf);
+            if (!std::isfinite(v.x)) v = glm::vec3(vxInf, vyInf, vzInf);
 
             glm::vec3 np = p + v * dt * timeScale;
             float surfDist = 1000.0f;
@@ -156,31 +157,38 @@ void updateParticles(float dt) {
                             if (!std::isfinite(nrm.x)) nrm = glm::vec3(0,1,0);
                             float push = fabsf(surfDist) + 0.5f * csx;
                             np += nrm * push;
+                            float vmag = vInfMag;
                             glm::vec3 Vinf(vxInf, vyInf, vzInf);
                             float vinf_n = glm::dot(Vinf, nrm);
                             glm::vec3 vinf_t = Vinf - vinf_n * nrm;
                             float vn = glm::dot(v, nrm);
                             v -= vn * nrm;
-                            float perpFactor = fabsf(vinf_n) / vInfMag;
+                            float perpFactor = fabsf(vinf_n) / vmag;
                             float slideBoost = 1.2f + 0.8f * perpFactor;
                             v += vinf_t * slideBoost * 0.6f;
                             float spd = glm::length(v);
-                            if (spd < 0.3f * vInfMag) v = vinf_t * slideBoost;
+                            if (spd < 0.3f * vmag) v = vinf_t * slideBoost;
                         }
                     }
                 }
             }
 
-            if (!std::isfinite(np.x) || !std::isfinite(np.y) || !std::isfinite(np.z) ||
-                np.x < minX || np.x > maxX ||
-                np.y < minY || np.y > maxY ||
-                np.z < minZ || np.z > maxZ) {
+            // Ground effect — отталкивание от земли
+            if (aeroGroundEffect) {
+                float groundY = g_voxMinY + aeroGroundHeight;
+                if (np.y < groundY + csy) {
+                    np.y = groundY + csy;
+                    v.y = fabsf(v.y) * 0.5f;
+                }
+            }
+
+            if (!std::isfinite(np.x) || np.x < minX || np.x > maxX ||
+                np.y < minY || np.y > maxY || np.z < minZ || np.z > maxZ) {
                 float r1 = fabsf(sinf(i*12.9898f + time*10.0f) * 43758.5453f); r1 -= floorf(r1);
                 float r2 = fabsf(cosf(i*39.346f + time*15.0f) * 24634.6345f); r2 -= floorf(r2);
                 if (!std::isfinite(r1)) r1 = 0.5f;
                 if (!std::isfinite(r2)) r2 = 0.5f;
-                float rangeX = maxX - minX;
-                float rangeY = maxY - minY;
+                float rangeX = maxX - minX, rangeY = maxY - minY;
                 if (!std::isfinite(rangeX) || rangeX < 1e-6f) rangeX = 10.0f;
                 if (!std::isfinite(rangeY) || rangeY < 1e-6f) rangeY = 10.0f;
                 np.x = minX + rangeX*(0.05f + 0.9f*r1);
@@ -188,14 +196,39 @@ void updateParticles(float dt) {
                 np.z = minZ + 0.05f;
             }
 
-            if (!std::isfinite(np.x) || !std::isfinite(np.y) || !std::isfinite(np.z)) continue;
-
+            if (!std::isfinite(np.x)) continue;
             posPtr[3*i] = np.x;
             posPtr[3*i+1] = np.y;
             posPtr[3*i+2] = np.z;
 
-            glm::vec3 c = colorForPoint(v, surfDist, flowParams);
-            if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z)) c = glm::vec3(0.3f,0.8f,1.0f);
+            // Реалистичная окраска как на фото
+            glm::vec3 c;
+            if (lbmParams.enabled && lbmInitialized) {
+                if (aeroVisMode == AeroVisMode::VelocityMagnitude || aeroColorStreamlinesByVelocity) {
+                    float velMag = glm::length(v);
+                    // Ускорение под днищем авто как на фото 2
+                    if (aeroGroundEffect && np.y < center.y) velMag *= 1.15f;
+                    c = getVelocityMagnitudeColor(velMag, maxSpeed);
+                } else if (aeroVisMode == AeroVisMode::Vorticity) {
+                    float vort = getLBMVorticityWorld(np);
+                    c = getVorticityColor(vort);
+                } else if (aeroVisMode == AeroVisMode::QCriterion) {
+                    float q = getLBMQWorld(np);
+                    if (q > 0) c = glm::vec3(1, 0.3f, 0); // вихрь — красный/оранжевый
+                    else c = glm::vec3(0, 0.5f, 1); // деформация — синий
+                } else {
+                    // По умолчанию — по скорости как на фото
+                    float velMag = glm::length(v);
+                    c = getVelocityMagnitudeColor(velMag, maxSpeed);
+                }
+            } else {
+                c = colorForPoint(v, surfDist, flowParams);
+                if (aeroColorStreamlinesByVelocity) {
+                    float velMag = glm::length(v);
+                    c = getVelocityMagnitudeColor(velMag, maxSpeed);
+                }
+            }
+            if (!std::isfinite(c.x)) c = glm::vec3(0.3f,0.8f,1.0f);
             colPtr[3*i] = c.x;
             colPtr[3*i+1] = c.y;
             colPtr[3*i+2] = c.z;

@@ -772,17 +772,68 @@ bool testOpenMP() {
 bool testMemoryLayout() {
     logTest("Testing memory layout...");
     bool ok = true;
-    // Проверяем что вектора contiguous и размеры совпадают
     if (!g_vertices.empty() && g_vertices.size() % 3 != 0) { logTestError("  FAIL: vertices not multiple of 3"); ok = false; }
     if (!g_normals.empty() && g_normals.size() != g_vertices.size()) { logTestError("  FAIL: normals size mismatch"); ok = false; }
     if (lbmInitialized) {
         int total = lbmNx*lbmNy*lbmNz;
         if ((int)lbmRho.size() != total) { logTestError("  FAIL: lbmRho size mismatch"); ok = false; }
         if ((int)lbmIsSolid.size() != total) { logTestError("  FAIL: lbmIsSolid size mismatch"); ok = false; }
-        // Проверяем что f размер = total*19
-        // f — static, проверяем косвенно через lbmRho
+        if ((int)lbmTKEField.size() != total) { logTestError("  FAIL: TKE field size mismatch"); ok = false; }
     }
     if (ok) logTest("  Memory layout OK");
+    return ok;
+}
+
+bool testRealisticAero() {
+    logTest("Testing realistic aerodynamics (photo-like)...");
+    bool ok = true;
+    // Проверка что визуализация как на фото работает
+    if (modelVertexCount == 0) { logTest("  SKIP: no model"); return true; }
+
+    // Проверка Cp диапазона — как на фото 4 NASCAR: Cp должен быть в [-3,1.5]
+    float vinf = sqrtf(flowParams.vx*flowParams.vx + flowParams.vy*flowParams.vy + flowParams.vz*flowParams.vz);
+    if (vinf < 1e-3f) vinf = 1.0f;
+    int checkVerts = std::min(200, (int)(g_vertices.size()/3));
+    float minCp = 1e9f, maxCp = -1e9f;
+    for (int i = 0; i < checkVerts; ++i) {
+        glm::vec3 p(g_vertices[3*i], g_vertices[3*i+1], g_vertices[3*i+2]);
+        glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
+        float speed = glm::length(v);
+        float cp = 1.0f - (speed*speed)/(vinf*vinf);
+        if (cp < minCp) minCp = cp;
+        if (cp > maxCp) maxCp = cp;
+    }
+    logTest("  Cp range: [" + std::to_string(minCp) + ", " + std::to_string(maxCp) + "] expected [-3,1.5]");
+    if (minCp < -5.0f || maxCp > 3.0f) { logTestError("  FAIL: Cp out of realistic range"); ok = false; }
+
+    // Проверка что цветовые карты работают
+    glm::vec3 c1 = getRealisticPressureColor(1.0f); // стагнация — красный
+    glm::vec3 c2 = getRealisticPressureColor(-2.0f); // разрежение — синий
+    if (c1.r < 0.8f) { logTestError("  FAIL: pressure color for Cp=1 should be red"); ok = false; }
+    if (c2.b < 0.5f) { logTestError("  FAIL: pressure color for Cp=-2 should be blue"); ok = false; }
+
+    glm::vec3 cv1 = getVelocityMagnitudeColor(0.0f, 10.0f); // низкая — синий
+    glm::vec3 cv2 = getVelocityMagnitudeColor(10.0f, 10.0f); // высокая — красный
+    if (cv1.b < 0.3f) { logTestError("  FAIL: vel color low should be blue"); ok = false; }
+    if (cv2.r < 0.8f) { logTestError("  FAIL: vel color high should be red"); ok = false; }
+
+    // Проверка LBM реалистичности если включен
+    if (lbmParams.enabled && lbmInitialized) {
+        if (!lbmValidateRealisticAero()) { logTestError("  FAIL: LBM realistic aero validation"); ok = false; }
+        // Проверка что есть вихри (как на фото 5 — след)
+        float maxVort = 0;
+        for (float v : lbmVorticityMag) if (v > maxVort) maxVort = v;
+        logTest("  Max vorticity: " + std::to_string(maxVort));
+        if (maxVort < 1e-6f) logTestWarn("  WARN: no vorticity detected — may need more LBM steps");
+    }
+
+    // Проверка ground effect
+    if (aeroGroundEffect) {
+        logTest("  Ground effect enabled at " + std::to_string(aeroGroundHeight));
+        if (!std::isfinite(aeroGroundHeight)) { logTestError("  FAIL: ground height NaN"); ok = false; }
+    }
+
+    if (ok) logTest("  Realistic aero OK — like photos");
     return ok;
 }
 
@@ -857,6 +908,7 @@ void runOptimizationTests() {
         {"Optimization", testOptimization},
         {"OpenMP", testOpenMP},
         {"Memory Layout", testMemoryLayout},
+        {"Realistic Aero (Photo)", testRealisticAero},
     };
     for (auto& tc : tests) {
         bool passed = false; std::string msg = "";

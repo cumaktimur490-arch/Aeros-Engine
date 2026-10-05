@@ -65,6 +65,9 @@ bool testOptimization();
 bool testOpenMP();
 bool testMemoryLayout();
 
+// ===== Realistic Aero (v1.7.0) =====
+bool testRealisticAero();
+
 // Утилиты
 bool checkGLErrors(const char* where);
 std::string getGLErrorString(int err);
