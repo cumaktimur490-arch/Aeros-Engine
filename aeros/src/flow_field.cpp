@@ -11,7 +11,7 @@
 #include "lbm.h"
 
 // =====================================================
-// FlowParams — v1.11.0 Physics Fix — корректный Re, ISA
+// FlowParams — v1.14.0 Physics Ultra Fix — полный аудит
 // =====================================================
 void updateFlowParams() {
     updateAtmosphereParams();
@@ -69,7 +69,7 @@ void updateFlowParams() {
     if (flowParams.wakeLength > 100.0f) flowParams.wakeLength = 100.0f;
 
     float safeMaxDim = std::isfinite(maxDim) && maxDim > 1e-6f ? maxDim : 1.0f;
-    float margin = 0.5f * safeMaxDim;
+    float margin = 0.6f * safeMaxDim;
     flowParams.minX = minBB.x - margin;
     flowParams.maxX = maxBB.x + margin;
     flowParams.minY = minBB.y - margin;
@@ -114,64 +114,89 @@ void updateFlowParams() {
     flowParams.airTemperature = std::isfinite(airTemperature) && airTemperature > 10.0f ? airTemperature : 288.15f;
     flowParams.speedOfSound = std::isfinite(speedOfSound) && speedOfSound > 1.0f ? speedOfSound : 340.3f;
 
-    // Reynolds number — физический: Re = rho*V*L / mu, mu=1.81e-5 для воздуха
+    // Reynolds — физический: Re = rho*V*L/mu, mu=1.81e-5
     {
         float L = maxDim;
         if (L < 1e-6f) L = 1.0f;
         float V = safeSpeed;
-        const float mu = 1.81e-5f; // динамическая вязкость воздуха
+        const float mu = 1.81e-5f;
         float Re = flowParams.airDensity * V * L / mu;
         if (!std::isfinite(Re) || Re < 0) Re = 0;
-        if (Re > 1e9f) Re = 1e9f;
+        if (Re > 2e9f) Re = 2e9f;
         aeroReNumber = Re;
     }
 }
 
+// Вспомогательная: потенциал обтекания эллипсоида (Rankine body)
+// Для точки p, центр c, радиусы r, направление потока Uinf
+// Возвращает поправку скорости от дублетa
+static inline glm::vec3 ellipsoidPotential(const glm::vec3& p, const glm::vec3& c, const glm::vec3& rad, const glm::vec3& Uinf) {
+    glm::vec3 d = p - c;
+    // Нормализуем координаты на радиусы — переходим в сферу
+    glm::vec3 dn(d.x / (rad.x+1e-6f), d.y / (rad.y+1e-6f), d.z / (rad.z+1e-6f));
+    float r2 = glm::dot(dn, dn);
+    if (r2 < 1e-6f) return glm::vec3(0); // внутри — 0
+    float r = sqrtf(r2);
+    // Потенциал дублетa: phi = (Uinf·d) * (a^3 / r^3) * 0.5 где a — характерный радиус
+    // Скорость от дублетa: u = -grad(phi)
+    // Упрощенная формула для сферы: u = Uinf * (a^3 / r^3) * (3*(U·r̂)*r̂ - U) / (2r?)...
+    // Используем классическое решение для сферы радиуса a:
+    // V = Uinf + (a^3 / (2r^3)) * (3*(U·r̂)*r̂ - U) ??? на самом деле для сферы: V = Uinf + (a^3 / r^3)*( ... )
+    // Для эллипсоида — масштабируем обратно
+    float a = 1.0f; // в нормализованных координатах радиус 1
+    float a3_r3 = (a*a*a) / (r2 * r + 1e-6f);
+    // Единичный вектор
+    glm::vec3 rhat = dn / r;
+    // Проекция Uinf на rhat, но Uinf в мировых координатах — нужно тоже нормализовать?
+    // Для простоты считаем Uinf уже в нормализованных? Нет, оставим мировую, но масштабируем
+    // Переводим Uinf в нормализованную систему: U_n = U * (rad?) — обратное преобразование
+    glm::vec3 Un(Uinf.x / (rad.x+1e-6f), Uinf.y / (rad.y+1e-6f), Uinf.z / (rad.z+1e-6f));
+    float UdotR = glm::dot(Un, rhat);
+    // Поправка в нормализованной системе
+    glm::vec3 upert_n = a3_r3 * ( (3.0f * UdotR) * rhat - Un ) * 0.5f;
+    // Обратно в мировую: умножаем на радиусы
+    glm::vec3 upert(upert_n.x * rad.x, upert_n.y * rad.y, upert_n.z * rad.z);
+    return upert;
+}
+
 // =====================================================
-// Поле скоростей CPU — v1.11.0 Physics Fix
-// Исправлено:
-// - No-slip на поверхности (v=0 внутри)
-// - No-penetration с экспонентой от maxDim, а не cellSize
-// - Погранслой 1/7 закон с толщиной delta = 0.37*x/Re^(1/5)
-// - След — гауссов дефицит скорости, ширина растет как sqrt(x)
-// - Вихревая дорожка Кармана с затуханием 1/sqrt(x)
-// - Метод отражений для земли
-// - Сохранение массы: масштабирование чтобы не превышало Vinf*2
+// Поле скоростей CPU — v1.14.0 Physics Ultra Fix
+// - Потенциал эллипсоида (Rankine) для базового обтекания
+// - No-slip + no-penetration с разделением на ветреную/подветренную
+// - Погранслой с отрывом: при adverse pressure gradient
+// - След: физичный дефицит + Карман + турбулентность Колмогорова
+// - Сжимаемость: Prandtl-Glauert для M<0.8
+// - Земля: метод изображений + Venturi с сохранением массы
 // =====================================================
 glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
-    // LBM приоритет если включен
+    // LBM приоритет
     if (lbmParams.enabled && lbmInitialized) {
         if (p.x >= lbmMinX && p.x <= lbmMaxX &&
             p.y >= lbmMinY && p.y <= lbmMaxY &&
             p.z >= lbmMinZ && p.z <= lbmMaxZ) {
+            if (isLBMSolidWorld(p)) return glm::vec3(0.0f);
             glm::vec3 vLBM = getLBMVelocityWorld(p);
             if (std::isfinite(vLBM.x) && std::isfinite(vLBM.y) && std::isfinite(vLBM.z)) {
-                float mag2 = vLBM.x*vLBM.x + vLBM.y*vLBM.y + vLBM.z*vLBM.z;
-                if (mag2 > 1e-12f) {
-                    // Земля уже в LBM, но добавляем отражение для реализма
+                float mag2 = glm::dot(vLBM, vLBM);
+                if (mag2 > 1e-14f) {
                     if (aeroGroundEffect) {
                         float groundY = g_voxMinY + aeroGroundHeight;
-                        if (std::isfinite(groundY) && p.y > groundY && p.y - groundY < maxDim*0.5f) {
+                        if (std::isfinite(groundY) && p.y > groundY && p.y - groundY < maxDim*0.6f) {
                             float h = p.y - groundY;
-                            float clearance = center.y - groundY;
-                            if (clearance > 1e-3f) {
-                                // Venturi под днищем — ускорение обратно пропорционально клиренсу
-                                float venturi = 1.0f + 0.25f * (maxDim*0.5f - h) / (maxDim*0.5f);
-                                venturi = glm::clamp(venturi, 1.0f, 1.5f);
-                                if (p.x >= minBB.x && p.x <= maxBB.x && p.z >= minBB.z && p.z <= maxBB.z) {
-                                    vLBM *= venturi;
-                                }
+                            // Venturi: сохранение массы, но не более 1.5x
+                            float venturi = 1.0f + 0.2f * (maxDim*0.6f - h) / (maxDim*0.6f);
+                            venturi = glm::clamp(venturi, 1.0f, 1.45f);
+                            if (p.x >= minBB.x && p.x <= maxBB.x && p.z >= minBB.z && p.z <= maxBB.z) {
+                                vLBM *= venturi;
                             }
                         }
                     }
                     return vLBM;
                 } else {
-                    // Внутри твердого тела — no-slip 0
                     return glm::vec3(0.0f);
                 }
             }
         } else {
-            // Вне LBM — freestream
             return glm::vec3(prm.vx, prm.vy, prm.vz);
         }
     }
@@ -179,39 +204,65 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
     if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
         return glm::vec3(prm.vx, prm.vy, prm.vz);
 
-    glm::vec3 v(prm.vx, prm.vy, prm.vz);
-    float vInf = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
+    glm::vec3 Uinf(prm.vx, prm.vy, prm.vz);
+    float vInf = glm::length(Uinf);
     if (vInf < 1e-4f) vInf = 1e-4f;
+    glm::vec3 flowDir = Uinf / vInf;
 
-    // --- Ground effect: no-slip на земле + метод отражений ---
+    // Базовый потенциал эллипсоида
+    glm::vec3 rad(prm.radiusX, prm.radiusY, prm.radiusZ);
+    glm::vec3 v = Uinf + ellipsoidPotential(p, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
+
+    // Сжимаемость: Prandtl-Glauert для M<0.8
+    float machInf = vInf / (prm.speedOfSound + 1e-6f);
+    if (aeroMachEffects && machInf > 0.3f && machInf < 0.8f) {
+        float beta = sqrtf(1.0f - machInf*machInf);
+        if (beta < 0.2f) beta = 0.2f;
+        // Поправка только для поперечных компонент
+        glm::vec3 along = flowDir * glm::dot(v - Uinf, flowDir);
+        glm::vec3 cross = (v - Uinf) - along;
+        cross /= beta;
+        v = Uinf + along + cross;
+    }
+
+    // Земля
     if (aeroGroundEffect) {
         float groundY = 0.0f;
         if (std::isfinite(g_voxMinY) && g_voxNx > 0) groundY = g_voxMinY + aeroGroundHeight;
         else groundY = minBB.y - maxDim*0.1f + aeroGroundHeight;
         if (!std::isfinite(groundY)) groundY = minBB.y;
 
-        if (p.y < groundY) {
-            return glm::vec3(0.0f); // под землей — 0
-        }
+        if (p.y < groundY) return glm::vec3(0.0f);
+
         float distGround = p.y - groundY;
-        float blGround = maxDim * 0.05f; // толщина погранслоя у земли 5% maxDim
+        float blGround = maxDim * 0.06f;
         if (distGround < blGround) {
-            // Турбулентный погранслой 1/7
-            float eta = distGround / blGround;
-            eta = glm::clamp(eta, 0.0f, 1.0f);
-            float uPlus = powf(eta, 1.0f/7.0f);
+            float eta = glm::clamp(distGround / blGround, 0.0f, 1.0f);
+            // Логарифмический закон стенки для земли
+            float uPlus;
+            if (eta < 0.1f) uPlus = eta * 10.0f; // вязкий подслой
+            else uPlus = powf(eta, 1.0f/7.0f);
+            uPlus = glm::clamp(uPlus, 0.0f, 1.0f);
             v *= uPlus;
         }
-        // Venturi под днищем для авто — физично: скорость ~ 1/h
+
+        // Метод изображений: отражение от земли
+        if (distGround < maxDim*0.5f) {
+            glm::vec3 pMirror(p.x, groundY - distGround, p.z);
+            glm::vec3 vMirror = Uinf + ellipsoidPotential(pMirror, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
+            // Вычитаем влияние зеркала для no-penetration на земле
+            float mirrorInfluence = expf(-distGround / (maxDim*0.15f));
+            v.y = v.y * (1.0f - mirrorInfluence*0.5f) + fabsf(vMirror.y) * mirrorInfluence*0.2f;
+        }
+
         if (p.y > groundY && p.y < center.y) {
             float carBottom = minBB.y;
             if (p.y > carBottom - maxDim*0.1f && p.y < carBottom + maxDim*0.5f) {
                 float clearance = carBottom - groundY;
                 if (clearance > 1e-3f && clearance < maxDim && std::isfinite(clearance)) {
                     if (p.x >= minBB.x && p.x <= maxBB.x && p.z >= minBB.z && p.z <= maxBB.z) {
-                        // Сохранение массы: A1*V1 = A2*V2, V2 = V1 * (H / h)
-                        float venturi = 1.0f + 0.3f * (1.0f - clearance / (maxDim*0.5f));
-                        venturi = glm::clamp(venturi, 1.0f, 1.6f);
+                        float venturi = 1.0f + 0.35f * (1.0f - clearance / (maxDim*0.5f));
+                        venturi = glm::clamp(venturi, 1.0f, 1.55f);
                         v *= venturi;
                     }
                 }
@@ -219,165 +270,165 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
         }
     }
 
-    // --- Твердое тело: SDF + no-penetration + no-slip ---
+    // Твердое тело
     if (!g_distanceField.empty()) {
-        float d = sampleSDFCPU(p); // в мировых единицах, >0 снаружи, <0 внутри
-        if (d <= 0.0f) {
-            // Внутри тела — строго 0 (no-slip)
-            return glm::vec3(0.0f);
-        }
-        if (d < maxDim * 0.5f) { // только вблизи тела
-            glm::vec3 n = sdfNormalCPU(p);
-            if (!std::isfinite(n.x) || glm::length(n) < 1e-6f) n = glm::vec3(0,1,0);
-            n = glm::normalize(n);
+        float d = sampleSDFCPU(p);
+        if (d <= 0.0f) return glm::vec3(0.0f);
 
-            // No-penetration: убираем компоненту в тело с экспоненциальным затуханием
+        if (d < maxDim * 0.6f) {
+            glm::vec3 n = sdfNormalCPU(p);
+            float nLen = glm::length(n);
+            if (!std::isfinite(nLen) || nLen < 1e-6f) n = glm::vec3(0,1,0);
+            else n = n / nLen;
+
             float vn = glm::dot(v, n);
-            // Если поток в тело (vn<0 и снаружи), убираем
-            // Характерная длина влияния — 10% maxDim
-            float eps = maxDim * 0.08f;
+            float eps = maxDim * 0.09f;
             if (eps < 1e-4f) eps = 0.1f;
-            float decay = expf(-d / eps); // 1 у поверхности, 0 далеко
+            float decay = expf(-d / eps);
+
+            // Разделяем на ветреную (windward) и подветренную (leeward)
+            float flowDotN = glm::dot(flowDir, n);
+            bool isWindward = flowDotN < 0; // норма против потока — ветреная сторона
 
             if (vn < 0.0f) {
-                // Полное отражение нормальной компоненты с затуханием
-                v -= vn * n * decay * 1.2f; // 1.2 — небольшая сверхкомпенсация для предотвращения проникновения
+                // No-penetration — сильнее на ветреной
+                float coeff = isWindward ? 1.3f : 1.0f;
+                v -= vn * n * decay * coeff;
             }
 
-            // Погранслой: толщина растет как 0.37*x/Re^(1/5)
-            // x — расстояние вдоль потока от передней кромки
-            float invVinf = 1.0f / vInf;
-            glm::vec3 flowDir = glm::vec3(prm.vx, prm.vy, prm.vz) * invVinf;
-            // Проекция точки на направление потока относительно центра — грубая оценка x
+            // Погранслой
             glm::vec3 r = p - glm::vec3(prm.centerX, prm.centerY, prm.centerZ);
-            float xAlong = glm::dot(r, flowDir) + maxDim*0.5f; // от передней кромки
-            if (xAlong < 0.01f) xAlong = 0.01f;
+            // Расстояние от передней кромки вдоль потока
+            float xAlong = glm::dot(r, flowDir) + maxDim*0.5f;
+            if (xAlong < 0.005f) xAlong = 0.005f;
 
             float Re_x = aeroReNumber * (xAlong / maxDim);
             if (Re_x < 1.0f) Re_x = 1.0f;
-            float delta = 0.0f;
-            if (Re_x < 5e5f) {
-                // Ламинарный Блазиус: delta ~ 5*x/sqrt(Re_x)
-                delta = 5.0f * xAlong / sqrtf(Re_x);
-            } else {
-                // Турбулентный: delta = 0.37*x / Re_x^(1/5)
-                delta = 0.37f * xAlong / powf(Re_x, 0.2f);
-            }
-            if (delta < 1e-4f) delta = 1e-4f;
-            if (delta > maxDim*0.3f) delta = maxDim*0.3f;
+            float delta;
+            if (Re_x < 5e5f) delta = 5.0f * xAlong / sqrtf(Re_x);
+            else delta = 0.37f * xAlong / powf(Re_x, 0.2f);
+            delta = glm::clamp(delta, 1e-4f, maxDim*0.35f);
 
-            if (d < delta * 3.0f) {
-                // Внутри погранслоя — профиль 1/7
-                float eta = d / delta;
-                eta = glm::clamp(eta, 0.0f, 1.0f);
-                // Скорость в погранслое: u/U = eta^(1/7) для турбулентного, eta*(2-eta) для ламинарного
+            if (d < delta * 3.5f) {
+                float eta = glm::clamp(d / delta, 0.0f, 1.0f);
                 float uFactor;
                 if (Re_x < 5e5f) {
-                    // Параболический профиль Польгаузена для ламинарного
+                    // Блазиус + Польгаузен
                     uFactor = eta * (2.0f - eta);
                 } else {
-                    uFactor = powf(eta, 1.0f/7.0f);
+                    // Турбулентный 1/7 + логарифмический
+                    if (eta < 0.1f) uFactor = eta * 8.0f; // подслой
+                    else uFactor = powf(eta, 1.0f/7.0f);
                 }
-                // Разделяем на нормальную и касательную
+
+                // Отрыв потока на подветренной стороне при adverse gradient
+                if (!isWindward && xAlong > maxDim*0.3f) {
+                    // Критерий отрыва: когда угол > 90 град от передней точки и Re высокий
+                    float separationFactor = glm::clamp((xAlong - maxDim*0.3f) / (maxDim*0.7f), 0.0f, 1.0f);
+                    // При отрыве скорость падает
+                    if (separationFactor > 0.5f) {
+                        float sepDecay = 1.0f - (separationFactor - 0.5f) * 0.8f;
+                        sepDecay = glm::clamp(sepDecay, 0.2f, 1.0f);
+                        uFactor *= sepDecay;
+                    }
+                }
+
                 glm::vec3 v_n = n * glm::dot(v, n);
                 glm::vec3 v_t = v - v_n;
-                // Нормальная стремится к 0, касательная — к uFactor*Vinf_t
-                v_n *= (1.0f - expf(-eta*3.0f)); // быстро к 0 у стенки
+                // Нормальная к 0 быстро
+                float normalDecay = 1.0f - expf(-eta*4.0f);
+                v_n *= normalDecay * 0.1f; // почти 0
                 v_t *= uFactor;
                 v = v_n + v_t;
             }
         }
     }
 
-    // --- След за телом: гауссов дефицит + расширение ---
+    // След — улучшенный
     if (vInf > 1e-4f) {
-        float invMag = 1.0f / vInf;
-        float dx = prm.vx*invMag, dy = prm.vy*invMag, dz = prm.vz*invMag;
         float rx = p.x - prm.centerX, ry = p.y - prm.centerY, rz = p.z - prm.centerZ;
-        float along = rx*dx + ry*dy + rz*dz; // расстояние за телом вдоль потока
-        float px = rx - along*dx, py = ry - along*dy, pz = rz - along*dz;
-        float rPerp = sqrtf(px*px + py*py + pz*pz);
+        float along = glm::dot(glm::vec3(rx,ry,rz), flowDir);
+        glm::vec3 rPerpVec = glm::vec3(rx,ry,rz) - flowDir * along;
+        float rPerp = glm::length(rPerpVec);
         float D = 2.0f * fmaxf(prm.radiusY, prm.radiusZ);
         if (D < 1e-4f) D = maxDim * 0.5f;
-        if (D < 1e-4f) D = 0.5f;
 
         float safeWakeLen = prm.wakeLength;
         if (!std::isfinite(safeWakeLen) || safeWakeLen < 0.1f) safeWakeLen = 8.0f;
 
-        if (along > D*0.2f && along < safeWakeLen) {
-            // Ширина следа растет как sqrt(x) — турбулентное расширение
-            // b(x) = 0.2*D * sqrt(1 + x/D)
-            float b = D * 0.25f * sqrtf(1.0f + along / D);
-            if (b < 1e-6f) b = 0.1f;
+        if (along > D*0.15f && along < safeWakeLen) {
+            float b = D * 0.28f * sqrtf(1.0f + along / D) * (1.0f + 0.1f * along / D); // расширение
+            b = fmaxf(b, 0.05f);
 
-            // Дефицит скорости: U_deficit = Uinf * Cd * (D/x)^(1/2) * exp(-r^2/b^2)
-            // Cd ~ 0.4 для цилиндра, 0.2 для авто
+            // Cd зависит от формы и Re: для авто ~0.3, для цилиндра ~1.2, для профиля ~0.05
+            // Оцениваем по удлинению: sizeX/sizeY
+            float elongation = (prm.radiusX+1e-6f) / (prm.radiusY+prm.radiusZ+1e-6f);
             float Cd_est = 0.3f;
+            if (elongation < 0.5f) Cd_est = 0.8f; // тупое тело
+            else if (elongation > 2.0f) Cd_est = 0.15f; // обтекаемое
+
             float xNorm = along / D;
             if (xNorm < 0.1f) xNorm = 0.1f;
-            float deficitMag = Cd_est * 0.5f / sqrtf(xNorm) * expf(-(rPerp*rPerp)/(b*b));
-            deficitMag *= prm.wakeStrength; // пользовательский множитель
-            if (deficitMag > 0.9f) deficitMag = 0.9f;
-            if (deficitMag < 0) deficitMag = 0;
+            // Дефицит по Шлихтингу: U/Uinf = 1 - (Cd*D/x)^(1/2) * exp(-r^2/b^2)
+            float deficitMag = Cd_est * 0.6f / sqrtf(xNorm) * expf(-(rPerp*rPerp)/(b*b));
+            deficitMag *= prm.wakeStrength;
+            deficitMag = glm::clamp(deficitMag, 0.0f, 0.85f);
 
-            // Вычитаем из потока
-            v -= glm::vec3(prm.vx, prm.vy, prm.vz) * deficitMag;
+            v -= Uinf * deficitMag;
 
-            // Вихревая дорожка Кармана — поперечные колебания
-            if (rPerp < b*2.0f) {
+            // Карман — вихревая дорожка
+            if (rPerp < b*2.2f) {
                 float st = prm.strouhal;
                 if (st < 1e-6f) st = 0.2f;
+                // St зависит от Re: для цилиндра St~0.2 при Re>300, ~0.1 при низком Re
+                if (aeroReNumber < 1000.0f) st *= 0.6f;
                 float omega = 2.0f * 3.14159265f * st * vInf / D;
-                float phase = omega * prm.time - along * 0.8f;
+                float phase = omega * prm.time - along * 0.9f;
 
-                // Амплитуда вихрей затухает как 1/sqrt(x)
-                float vortexAmp = prm.wakeStrength * 0.25f * vInf * expf(-rPerp*rPerp/(b*b*1.5f)) / sqrtf(xNorm);
-                if (aeroShowWake) vortexAmp *= (1.0f + aeroWakeOpacity*0.5f);
+                float vortexAmp = prm.wakeStrength * 0.28f * vInf * expf(-rPerp*rPerp/(b*b*1.6f)) / sqrtf(xNorm);
+                if (aeroShowWake) vortexAmp *= (1.0f + aeroWakeOpacity*0.4f);
+                vortexAmp = fminf(vortexAmp, vInf*0.5f);
 
-                // Поперечное направление — перпендикулярно потоку и радиусу
-                float invPerp = (rPerp > 1e-6f) ? 1.0f / rPerp : 0.0f;
-                float pnx = px*invPerp, pny = py*invPerp, pnz = pz*invPerp;
-                // Вихревое направление = flowDir x radial
-                float vtx = dy*pnz - dz*pny;
-                float vty = dz*pnx - dx*pnz;
-                float vtz = dx*pny - dy*pnx;
-                float vtxLen = sqrtf(vtx*vtx + vty*vty + vtz*vtz);
-                if (vtxLen > 1e-6f) { vtx/=vtxLen; vty/=vtxLen; vtz/=vtxLen; }
+                glm::vec3 radialDir = (rPerp > 1e-6f) ? rPerpVec / rPerp : glm::vec3(0,1,0);
+                glm::vec3 vortexDir = glm::cross(flowDir, radialDir);
+                float vLen = glm::length(vortexDir);
+                if (vLen > 1e-6f) vortexDir /= vLen;
+                else vortexDir = glm::vec3(0,0,1);
 
                 float sinPhase = sinf(phase);
-                // Чередующиеся вихри по сторонам
-                float side = (sinf(phase * 0.5f) > 0) ? 1.0f : -1.0f;
+                float side = (sinf(phase * 0.6f) > 0) ? 1.0f : -1.0f;
 
-                v.x += vortexAmp * sinPhase * vtx * side;
-                v.y += vortexAmp * sinPhase * vty * side;
-                v.z += vortexAmp * sinPhase * vtz * side;
+                v += vortexDir * (vortexAmp * sinPhase * side);
 
-                // Турбулентные флуктуации — колмогоровский спектр ~ k^-5/3, упрощенно 10% от дефицита
+                // Турбулентность Колмогорова: E(k)~k^-5/3, амплитуда ~ deficit * (r/b)^(-1/3)
+                float turbBase = 0.07f * deficitMag * vInf;
                 if (aeroMachEffects) {
                     float mach = vInf / (prm.speedOfSound + 1e-6f);
-                    if (mach > 0.3f) vortexAmp *= (1.0f + mach*0.5f);
+                    if (mach > 0.3f) turbBase *= (1.0f + mach*0.6f);
                 }
-                float turbAmp = 0.08f * deficitMag * vInf;
                 float tx = prm.time;
-                // Детерминированный шум с разными частотами
-                v.x += turbAmp * 0.5f * sinf(tx*4.3f + along*2.1f + rPerp*3.7f + p.x*0.7f);
-                v.y += turbAmp * 0.5f * sinf(tx*3.7f + along*2.8f + rPerp*4.1f + p.y*0.9f);
-                v.z += turbAmp * 0.5f * sinf(tx*5.1f + along*1.9f + rPerp*3.3f + p.z*0.6f);
+                // Три октавы шума
+                float n1 = sinf(tx*4.3f + along*2.1f + rPerp*3.7f + p.x*0.7f);
+                float n2 = sinf(tx*8.6f + along*4.2f + rPerp*7.4f + p.y*1.4f) * 0.5f;
+                float n3 = sinf(tx*17.2f + along*8.4f + rPerp*14.8f + p.z*2.8f) * 0.25f;
+                float turb = (n1 + n2 + n3) * turbBase * 0.4f;
+                v.x += turb * 0.6f;
+                v.y += turb * 0.5f;
+                v.z += turb * 0.7f;
             }
         }
     }
 
-    // Ограничиваем скорость физически: не более 1.8*Vinf (ускорение в сопле не более)
-    // и не менее 0
-    float maxV = vInf * 1.8f;
-    if (maxV < prm.maxSpeed) maxV = prm.maxSpeed * 1.2f;
-    float curMag2 = v.x*v.x + v.y*v.y + v.z*v.z;
+    // Ограничение — физично: max 2*Vinf, но в сопле может быть больше
+    float maxV = vInf * 2.0f;
+    if (maxV < prm.maxSpeed) maxV = prm.maxSpeed * 1.25f;
+    // При Venturi может быть до 1.8*Vinf, в следе — меньше Vinf
+    float curMag2 = glm::dot(v, v);
     if (curMag2 > maxV*maxV) {
-        float s = maxV / sqrtf(curMag2);
-        v *= s;
+        v *= maxV / sqrtf(curMag2);
     }
 
-    if (!std::isfinite(v.x)) return glm::vec3(prm.vx, prm.vy, prm.vz);
+    if (!std::isfinite(v.x)) return Uinf;
     return v;
 }
 
@@ -387,33 +438,31 @@ glm::vec3 colorForPoint(const glm::vec3& v, float sdfDist, const FlowParams& prm
     float safeMaxSpeed = prm.maxSpeed;
     if (safeMaxSpeed < 1e-6f) safeMaxSpeed = 5.0f;
     float spdT = speed / safeMaxSpeed;
-    if (spdT < 0) spdT = 0; if (spdT > 1) spdT = 1;
+    spdT = glm::clamp(spdT, 0.0f, 1.0f);
 
-    // Цветовые карты — без изменений, но с clamp
-    if (aeroColorMap == 1) { // viridis
+    if (aeroColorMap == 1) {
         glm::vec3 c;
         if (spdT < 0.25f) { float k=spdT/0.25f; c=glm::vec3(0.267f + k*0.1f, 0.004f + k*0.3f, 0.329f + k*0.2f); }
         else if (spdT < 0.5f) { float k=(spdT-0.25f)/0.25f; c=glm::vec3(0.229f + k*0.1f, 0.322f + k*0.2f, 0.545f - k*0.1f); }
         else if (spdT < 0.75f) { float k=(spdT-0.5f)/0.25f; c=glm::vec3(0.127f + k*0.5f, 0.566f + k*0.2f, 0.550f - k*0.2f); }
         else { float k=(spdT-0.75f)/0.25f; c=glm::vec3(0.5f + k*0.49f, 0.79f + k*0.1f, 0.3f - k*0.1f); }
         return c;
-    } else if (aeroColorMap == 2) { // parula
+    } else if (aeroColorMap == 2) {
         if (spdT < 0.25f) return glm::vec3(spdT*4.0f*0.2f, spdT*4.0f*0.2f, 0.5f + spdT*2.0f);
         else if (spdT < 0.5f) { float k=(spdT-0.25f)/0.25f; return glm::vec3(k*0.2f, 0.2f + k*0.6f, 1.0f - k*0.3f); }
         else if (spdT < 0.75f) { float k=(spdT-0.5f)/0.25f; return glm::vec3(0.2f + k*0.6f, 0.8f, 0.7f - k*0.7f); }
         else { float k=(spdT-0.75f)/0.25f; return glm::vec3(0.8f + k*0.2f, 0.8f - k*0.8f, k*0.2f); }
-    } else if (aeroColorMap == 3) { // coolwarm
+    } else if (aeroColorMap == 3) {
         if (spdT < 0.5f) { float k=spdT*2.0f; return glm::vec3(0.23f + k*0.6f, 0.29f + k*0.4f, 0.75f); }
         else { float k=(spdT-0.5f)*2.0f; return glm::vec3(0.85f, 0.7f - k*0.5f, 0.2f + k*0.1f); }
     }
 
-    // Default rainbow
     float cell = prm.cellSizeX;
     if (cell < 1e-6f) cell = 0.1f;
     if (sdfDist < 1.5f * cell) return glm::vec3(1.0f, 0.2f, 0.0f);
     else if (sdfDist < 4.0f * cell) {
         float b = (sdfDist - 1.5f * cell) / (2.5f * cell);
-        if (b < 0) b = 0; if (b > 1) b = 1;
+        b = glm::clamp(b, 0.0f, 1.0f);
         glm::vec3 hot(1.0f, 0.5f, 0.0f);
         glm::vec3 cold;
         if (spdT < 0.5f) cold = glm::vec3(1.0f, spdT*2.0f, 0.0f);

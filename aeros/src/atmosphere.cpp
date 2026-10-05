@@ -14,7 +14,6 @@ bool useRealDensity = true;
 
 static const float T0 = 288.15f;
 static const float P0 = 101325.0f;
-static const float L = 0.0065f;
 static const float R = 287.05f;
 static const float g0 = 9.80665f;
 static const float gamma_air = 1.4f;
@@ -69,60 +68,80 @@ const char* speedUnitShort(SpeedUnit unit) {
     }
 }
 
-AtmosphereParams calculateAtmosphere(float h) {
+// v1.14.0 Physics Ultra — полная ISA атмосфера до 80км с 7 слоями
+// Источник: International Standard Atmosphere (ICAO)
+// Слои: 0-11км тропосфера L=-6.5K/km, 11-20км тропопауза, 20-32км стратосфера L=+1K/km,
+// 32-47км L=+2.8K/km, 47-51км L=0, 51-71км L=-2.8K/km, 71-80км L=-2K/km
+struct ISALayer {
+    float hBase;   // м
+    float tBase;   // K
+    float pBase;   // Pa
+    float lapse;   // K/m
+};
+
+static AtmosphereParams calculateISA(float h) {
     AtmosphereParams atm;
     atm.altitude = h;
     if (!std::isfinite(h)) h = 0;
     h = std::max(0.0f, std::min(h, 80000.0f));
 
-    if (h <= 11000.0f) {
-        atm.temperature = T0 - L * h;
-        if (atm.temperature < 10.0f) atm.temperature = 10.0f;
-        float exponent = g0 / (L * R);
-        if (!std::isfinite(exponent)) exponent = 5.255f;
-        float ratio = atm.temperature / T0;
-        if (ratio < 1e-6f) ratio = 1e-6f;
-        atm.pressure = P0 * powf(ratio, exponent);
-    } else if (h <= 20000.0f) {
-        float T11 = T0 - L * 11000.0f;
-        float P11 = P0 * powf(T11 / T0, g0 / (L * R));
-        atm.temperature = T11;
-        float expArg = -g0 * (h - 11000.0f) / (R * T11);
-        if (expArg < -50.0f) expArg = -50.0f;
-        if (expArg > 50.0f) expArg = 50.0f;
-        atm.pressure = P11 * expf(expArg);
-    } else if (h <= 32000.0f) {
-        float T11 = 216.65f;
-        float P11 = P0 * powf(T11 / T0, g0 / (L * R)) * expf(-g0 * (20000.0f - 11000.0f) / (R * T11));
-        const float L2 = 0.001f;
-        const float T20 = T11;
-        atm.temperature = T20 + L2 * (h - 20000.0f);
-        float ratio = atm.temperature / T20;
-        if (ratio < 1e-6f) ratio = 1e-6f;
-        atm.pressure = P11 * powf(ratio, -g0 / (L2 * R));
-    } else {
-        atm.temperature = 228.65f + 0.0028f * (h - 32000.0f);
-        if (atm.temperature < 150.0f) atm.temperature = 150.0f;
-        if (atm.temperature > 500.0f) atm.temperature = 500.0f;
-        const float P32 = 868.02f;
-        float expArg = -g0 * (h - 32000.0f) / (R * atm.temperature);
-        if (expArg < -50.0f) expArg = -50.0f;
-        atm.pressure = P32 * expf(expArg);
+    // Предварительно рассчитанные базовые значения по ISA
+    // Рассчитаны по формулам, но для стабильности захардкожены
+    const ISALayer layers[] = {
+        {0.0f,     288.15f, 101325.0f, -0.0065f},
+        {11000.0f, 216.65f, 22632.1f,   0.0f},
+        {20000.0f, 216.65f, 5474.89f,   0.001f},
+        {32000.0f, 228.65f, 868.02f,    0.0028f},
+        {47000.0f, 270.65f, 110.91f,    0.0f},
+        {51000.0f, 270.65f, 66.94f,    -0.0028f},
+        {71000.0f, 214.65f, 3.96f,     -0.002f},
+    };
+    const int numLayers = sizeof(layers)/sizeof(layers[0]);
+
+    // Находим слой
+    int idx = 0;
+    for (int i = numLayers-1; i >=0; --i) {
+        if (h >= layers[i].hBase) { idx = i; break; }
     }
 
-    if (!std::isfinite(atm.temperature) || atm.temperature < 10.0f) atm.temperature = 216.65f;
+    const ISALayer& L = layers[idx];
+    float dh = h - L.hBase;
+
+    if (fabsf(L.lapse) < 1e-8f) {
+        // Изотермический слой: P = Pb * exp(-g0*dh/(R*Tb))
+        atm.temperature = L.tBase;
+        float expArg = -g0 * dh / (R * L.tBase);
+        expArg = std::max(-50.0f, std::min(expArg, 50.0f));
+        atm.pressure = L.pBase * expf(expArg);
+    } else {
+        // Градиентный слой: T = Tb + L*dh, P = Pb * (T/Tb)^(-g0/(L*R))
+        atm.temperature = L.tBase + L.lapse * dh;
+        if (atm.temperature < 50.0f) atm.temperature = 50.0f;
+        float ratio = atm.temperature / L.tBase;
+        if (ratio < 1e-6f) ratio = 1e-6f;
+        float exponent = -g0 / (L.lapse * R);
+        if (!std::isfinite(exponent)) exponent = 5.255f;
+        atm.pressure = L.pBase * powf(ratio, exponent);
+    }
+
+    if (!std::isfinite(atm.temperature) || atm.temperature < 50.0f) atm.temperature = 216.65f;
     if (!std::isfinite(atm.pressure) || atm.pressure < 0.01f) atm.pressure = 0.01f;
 
     atm.density = atm.pressure / (R * atm.temperature);
     if (!std::isfinite(atm.density) || atm.density < 1e-6f) atm.density = 1e-6f;
     atm.speedOfSound = sqrtf(gamma_air * R * atm.temperature);
-    if (!std::isfinite(atm.speedOfSound) || atm.speedOfSound < 1.0f) atm.speedOfSound = 340.3f;
+    if (!std::isfinite(atm.speedOfSound) || atm.speedOfSound < 50.0f) atm.speedOfSound = 340.3f;
 
-    if (atm.density < 0.00001f) atm.density = 0.00001f;
-    if (atm.pressure < 0.1f) atm.pressure = 0.1f;
-    if (atm.density > 5.0f) atm.density = 5.0f;
+    // Ограничения физически разумные
+    atm.density = std::max(0.00001f, std::min(atm.density, 5.0f));
+    atm.pressure = std::max(0.1f, atm.pressure);
+    atm.temperature = std::max(50.0f, std::min(atm.temperature, 350.0f));
 
     return atm;
+}
+
+AtmosphereParams calculateAtmosphere(float h) {
+    return calculateISA(h);
 }
 
 float getAirDensity(float altitudeMeters) {
@@ -132,15 +151,14 @@ float getAirDensity(float altitudeMeters) {
 
 void updateAtmosphereParams() {
     if (!std::isfinite(altitude)) altitude = 0.0f;
-    if (altitude < 0) altitude = 0;
-    if (altitude > 80000.0f) altitude = 80000.0f;
+    altitude = std::max(0.0f, std::min(altitude, 80000.0f));
     AtmosphereParams atm = calculateAtmosphere(altitude);
     airDensity = atm.density;
     airTemperature = atm.temperature;
     airPressure = atm.pressure;
     speedOfSound = atm.speedOfSound;
-    if (!std::isfinite(airDensity)) {
-        std::cerr << "[Atmosphere] Invalid density, resetting" << std::endl;
+    if (!std::isfinite(airDensity) || airDensity < 1e-6f) {
+        std::cerr << "[Atmosphere] Invalid density, resetting to sea level" << std::endl;
         airDensity = 1.225f;
         airTemperature = 288.15f;
         airPressure = 101325.0f;

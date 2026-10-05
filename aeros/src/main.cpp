@@ -1,5 +1,5 @@
 // =====================================================
-// AeroS Engine — точка входа, главный цикл и рендер v1.13.0 GoGonam AoS.
+// AeroS Engine — точка входа, главный цикл и рендер v1.14.0 GoGonam AoS.
 // =====================================================
 
 #ifdef _WIN32
@@ -47,7 +47,7 @@
 #include <omp.h>
 #endif
 
-// GL debug callback — v1.13.0 fixed to use GLAD_GL_VERSION_4_3
+// GL debug callback — v1.14.0 fixed to use GLAD_GL_VERSION_4_3
 static void APIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
     (void)source; (void)id; (void)length; (void)userParam;
     if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
@@ -141,11 +141,11 @@ static bool exportForcesCSV(const std::string& path) {
     return f.good();
 }
 
-// Settings save/load — v1.13.0 Multilingual (non-static for UI)
+// Settings save/load — v1.14.0 Multilingual (non-static for UI)
 bool saveSettings(const std::string& path) {
     std::ofstream f(path);
     if (!f) return false;
-    f << "# Aeros Engine v1.13.0 Settings\n";
+    f << "# Aeros Engine v1.14.0 Settings\n";
     f << "flowSpeed=" << flowSpeed << "\n";
     f << "flowAzimuth=" << flowAzimuth << "\n";
     f << "flowElevation=" << flowElevation << "\n";
@@ -218,7 +218,7 @@ bool loadSettings(const std::string& path) {
 int main() {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.13.0 Multilingual)" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.14.0 Multilingual)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
@@ -248,7 +248,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.13.0 GoGonam AoS.", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.14.0 GoGonam AoS.", nullptr, nullptr);
     if (!window) {
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
@@ -259,7 +259,7 @@ int main() {
         return -1;
     }
 
-    // v1.13.0: Set window icon — AoS ENG.
+    // v1.14.0: Set window icon — AoS ENG.
     {
         #include "icon_data.h"
         GLFWimage iconImg;
@@ -314,14 +314,14 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.13.0 still compatible
+    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.14.0 still compatible
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // old ImGui doesn't have this
 
-    // v1.13.0: Initialize localization with Cyrillic font support
+    // v1.14.0: Initialize localization with Cyrillic font support
     initLocalization();
 
     ImGui::StyleColorsDark();
-    // Improve ImGui style for v1.13.0
+    // Improve ImGui style for v1.14.0
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 4.0f;
     style.FrameRounding = 3.0f;

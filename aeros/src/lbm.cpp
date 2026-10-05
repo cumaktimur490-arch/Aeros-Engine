@@ -423,26 +423,59 @@ void initLBM() {
         }
     }
 
-    if (!std::isfinite(lbmParams.tau) || lbmParams.tau < 0.51f) lbmParams.tau = 0.55f; // повышен минимум для стабильности
-    if (lbmParams.tau > 1.5f) lbmParams.tau = 1.5f; // снижен максимум — меньше вязкость, точнее
+    // v1.14.0 Physics Ultra — Sutherland + физически корректный tau
+    // Sutherland: mu = mu0 * (T/T0)^{3/2} * (T0+S)/(T+S)
+    float T = airTemperature + 273.15f;
+    if (!std::isfinite(T) || T < 50.0f) T = 288.15f;
+    const float T0 = 273.15f;
+    const float S = 110.4f;
+    const float mu0 = 1.716e-5f;
+    float muSuth = mu0 * powf(T/T0, 1.5f) * (T0+S)/(T+S);
+    if (!std::isfinite(muSuth) || muSuth < 1e-6f) muSuth = 1.81e-5f;
+
+    float L = maxDim;
+    if (L < 1e-6f) L = 1.0f;
+    float rho = airDensity;
+    if (!std::isfinite(rho) || rho < 0.01f) rho = 1.225f;
+    float nuPhys = muSuth / rho; // физическая кинематическая вязкость
+
+    // tau из физического Re: tau = nu_LB/cs2 + 0.5, где nu_LB = (U_LB * L_LB)/Re
+    // L_LB ~ Nx характерный, U_LB = U0
+    float U0tmp = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
+    if (!std::isfinite(U0tmp) || U0tmp < 1e-6f) U0tmp = 0.08f;
+    float RePhys = rho * flowSpeed * L / muSuth;
+    if (!std::isfinite(RePhys) || RePhys < 1.0f) RePhys = 1e4f;
+    float L_LB = (float)lbmNx; // характерный размер в решеточных единицах
+    if (L_LB < 1.0f) L_LB = 32.0f;
+    float nuLB_fromRe = (U0tmp * L_LB) / RePhys;
+    // Смешиваем с пользовательским tau, но ограничиваем физически
+    float tauFromPhys = nuLB_fromRe / cs2 + 0.5f;
+    // Если tau из физики в разумных пределах, используем его, иначе пользовательский
+    float tauUser = lbmParams.tau;
+    if (!std::isfinite(tauUser) || tauUser < 0.51f) tauUser = 0.55f;
+    if (tauUser > 1.5f) tauUser = 1.5f;
+    // Выбираем более стабильный: max физического и пользовательского, но в пределах
+    float tauFinal = tauFromPhys;
+    if (tauFinal < 0.51f) tauFinal = 0.51f;
+    if (tauFinal > 1.5f) tauFinal = 1.5f;
+    // Если физический дает слишком маленькую вязкость (высокий Re), используем пользовательский для стабильности
+    if (tauFromPhys < 0.52f) tauFinal = tauUser;
+
+    lbmParams.tau = tauFinal;
     lbmParams.viscosity = (lbmParams.tau - 0.5f) * cs2;
-    lbmParams.U0 = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
-    if (!std::isfinite(lbmParams.U0) || lbmParams.U0 < 1e-6f) lbmParams.U0 = 0.08f;
+    lbmParams.U0 = U0tmp;
 
     lbmCurrentStep = 0;
     lbmConverged = false;
     lbmInitialized = true;
 
-    // Физический Re, не решеточный
-    const float mu = 1.81e-5f;
-    float L = maxDim;
-    if (L < 1e-6f) L = 1.0f;
-    lbmReynolds = airDensity * flowSpeed * L / mu;
+    lbmReynolds = RePhys;
     aeroReNumber = lbmReynolds;
 
     auto t1 = std::chrono::high_resolution_clock::now();
     lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
-    std::cout << "[LBM] Initialized Physics Fix v1.11.0: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
+    std::cout << "[LBM] Initialized Physics Ultra v1.14.0: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
+              << " mu=" << muSuth << " nuPhys=" << nuPhys
               << " cells, tau=" << lbmParams.tau << " nu=" << lbmParams.viscosity
               << " Re_phys=" << lbmReynolds << " in " << lbmTimeMs << " ms"
 #ifdef _OPENMP

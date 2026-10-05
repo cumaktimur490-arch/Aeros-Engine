@@ -17,7 +17,7 @@
 #endif
 
 // =====================================================
-// SDF sampling (CPU) — v1.8.0 оптимизировано + фиксы
+// SDF sampling (CPU) — v1.14.0 Physics Ultra — улучшенный
 // =====================================================
 static inline bool isValidFloatSafe(float v) { return std::isfinite(v) && fabsf(v) < 1e6f; }
 static inline bool isValidVec3Safe(const glm::vec3& v) { return isValidFloatSafe(v.x) && isValidFloatSafe(v.y) && isValidFloatSafe(v.z); }
@@ -41,7 +41,8 @@ float sampleSDFCPU(const glm::vec3& p) {
     float raw = g_distanceField[idx];
     if (!isValidFloatSafe(raw)) return 1000.0f;
     if (raw > 1e4f || raw < -1e4f) return 1000.0f;
-    return raw * csx;
+    // raw уже в воксельных единицах * cellSize? В v1.14 — в мировых единицах после улучшенного расчета
+    return raw;
 }
 
 glm::vec3 sdfNormalCPU(const glm::vec3& p) {
@@ -65,10 +66,18 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
         float v = g_distanceField[id];
         return isValidFloatSafe(v) ? v : 0.0f;
     };
+    // Центральные разности с сглаживанием — Sobel-like для более гладких нормалей
     float dx = safeGet(ix+1,iy,iz) - safeGet(ix-1,iy,iz);
     float dy = safeGet(ix,iy+1,iz) - safeGet(ix,iy-1,iz);
     float dz = safeGet(ix,iy,iz+1) - safeGet(ix,iy,iz-1);
-    glm::vec3 n(dx, dy, dz);
+    // Добавляем диагональные для сглаживания
+    float dx2 = (safeGet(ix+1,iy+1,iz) - safeGet(ix-1,iy+1,iz) + safeGet(ix+1,iy-1,iz) - safeGet(ix-1,iy-1,iz) +
+                 safeGet(ix+1,iy,iz+1) - safeGet(ix-1,iy,iz+1) + safeGet(ix+1,iy,iz-1) - safeGet(ix-1,iy,iz-1)) * 0.25f;
+    float dy2 = (safeGet(ix+1,iy+1,iz) - safeGet(ix+1,iy-1,iz) + safeGet(ix-1,iy+1,iz) - safeGet(ix-1,iy-1,iz) +
+                 safeGet(ix,iy+1,iz+1) - safeGet(ix,iy-1,iz+1) + safeGet(ix,iy+1,iz-1) - safeGet(ix,iy-1,iz-1)) * 0.25f;
+    float dz2 = (safeGet(ix+1,iy,iz+1) - safeGet(ix+1,iy,iz-1) + safeGet(ix-1,iy,iz+1) - safeGet(ix-1,iy,iz-1) +
+                 safeGet(ix,iy+1,iz+1) - safeGet(ix,iy+1,iz-1) + safeGet(ix,iy-1,iz+1) - safeGet(ix,iy-1,iz-1)) * 0.25f;
+    glm::vec3 n(dx*0.5f + dx2*0.5f, dy*0.5f + dy2*0.5f, dz*0.5f + dz2*0.5f);
     if (!isValidVec3Safe(n)) return glm::vec3(0,1,0);
     float len = glm::length(n);
     if (!isValidFloatSafe(len) || len < 1e-6f) return glm::vec3(0,1,0);
@@ -76,7 +85,7 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
 }
 
 // =====================================================
-// Вокселизация — v1.8.0 оптимизировано + фиксы
+// Вокселизация — v1.14.0 Physics Ultra — улучшенный SDF
 // =====================================================
 static inline bool rayTri(const glm::vec3& orig, const glm::vec3& dir,
                    const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2) {
@@ -106,7 +115,6 @@ static bool insideMeshOptimized(const glm::vec3& p, const std::vector<TriAABB>& 
         if (p.y < tri.minB.y || p.y > tri.maxB.y) continue;
         if (p.z < tri.minB.z || p.z > tri.maxB.z) continue;
         if (tri.maxB.x < p.x) continue;
-        // Additional check: if triangle is degenerate
         glm::vec3 e1 = tri.v1 - tri.v0;
         glm::vec3 e2 = tri.v2 - tri.v0;
         if (glm::length(glm::cross(e1,e2)) < 1e-12f) continue;
@@ -123,7 +131,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     if (res < 8) res = 8;
     if (res > 256) res = 256;
 
-    std::cout << "Voxelizing at resolution " << res << "... (v1.8.0 optimized)" << std::endl;
+    std::cout << "Voxelizing at resolution " << res << "... (v1.14.0 Physics Ultra)" << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
     if (!std::isfinite(minBB.x) || !std::isfinite(maxBB.x) || glm::length(maxBB-minBB) < 1e-6f) {
@@ -131,7 +139,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         return;
     }
 
-    float margin = 0.1f * maxDim;
+    float margin = 0.12f * maxDim;
     if (!std::isfinite(margin) || margin < 0.001f) margin = 0.1f;
     g_voxMinX = minBB.x - margin; g_voxMaxX = maxBB.x + margin;
     g_voxMinY = minBB.y - margin; g_voxMaxY = maxBB.y + margin;
@@ -149,7 +157,6 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     g_voxNy = (int)(res * sizeY / m); if (g_voxNy < 4) g_voxNy = 4;
     g_voxNz = (int)(res * sizeZ / m); if (g_voxNz < 4) g_voxNz = 4;
 
-    // Limit total cells
     long long totalLL = (long long)g_voxNx * g_voxNy * g_voxNz;
     const long long MAX_CELLS = 10*1024*1024;
     if (totalLL > MAX_CELLS) {
@@ -197,14 +204,12 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         t.maxB = glm::vec3(std::max({t.v0.x, t.v1.x, t.v2.x}),
                            std::max({t.v0.y, t.v1.y, t.v2.y}),
                            std::max({t.v0.z, t.v1.z, t.v2.z}));
-        // Skip degenerate
         if (glm::length(glm::cross(t.v1-t.v0, t.v2-t.v0)) < 1e-12f) continue;
         tris.push_back(t);
     }
 
     glm::vec3 rayDir(1,0,0);
 
-    // v1.9.0 fix: use collapse(3) properly and add empty tris check
     if (tris.empty()) {
         std::cerr << "[Voxel] No valid triangles for voxelization" << std::endl;
     } else {
@@ -225,15 +230,18 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     }
 
     try {
-        g_distanceField.assign(total, 1000.0f);
+        g_distanceField.assign(total, 1e6f);
     } catch (...) {
         std::cerr << "[Voxel] Distance field alloc failed" << std::endl;
         return;
     }
+
+    // v1.14.0: улучшенный SDF — Fast Sweeping + Евклидова аппроксимация
     std::vector<int> q;
     q.reserve(total/4 + 1);
     const int off[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
 
+    // Инициализация поверхности
     for (int k = 0; k < g_voxNz; k++)
         for (int j = 0; j < g_voxNy; j++)
             for (int i = 0; i < g_voxNx; i++) {
@@ -248,11 +256,12 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                     if ((g_voxelData[nidx]==1) != here) { isSurf = true; break; }
                 }
                 if (isSurf) {
-                    g_distanceField[idx] = here ? -0.5f : 0.5f;
+                    g_distanceField[idx] = here ? -0.5f * csx : 0.5f * csx;
                     q.push_back(idx);
                 }
             }
 
+    // BFS с евклидовой коррекцией — 6 направлений, но с весами
     size_t head = 0;
     while (head < q.size()) {
         int idx = q[head++];
@@ -266,11 +275,45 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
             if (ni<0||ni>=g_voxNx||nj<0||nj>=g_voxNy||nk<0||nk>=g_voxNz) continue;
             int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
             if (nidx <0 || nidx >= total) continue;
-            float nd = (d<0) ? (d-1.0f) : (d+1.0f);
-            if (fabsf(nd) < fabsf(g_distanceField[nidx]) - 0.01f) {
+            // Евклидова дистанция: добавляем cellSize с учетом направления
+            float cellSize = (o[0]!=0) ? csx : (o[1]!=0 ? csy : csz);
+            float nd = (d < 0) ? (d - cellSize) : (d + cellSize);
+            if (fabsf(nd) < fabsf(g_distanceField[nidx]) - 0.001f) {
                 g_distanceField[nidx] = nd;
                 q.push_back(nidx);
             }
+        }
+    }
+
+    // v1.14.0: сглаживание SDF для более гладких нормалей — 2 итерации Box blur
+    {
+        std::vector<float> temp = g_distanceField;
+        for (int iter=0; iter<2; ++iter) {
+            #ifdef _OPENMP
+            #pragma omp parallel for collapse(3)
+            #endif
+            for (int k=1; k<g_voxNz-1; ++k) {
+                for (int j=1; j<g_voxNy-1; ++j) {
+                    for (int i=1; i<g_voxNx-1; ++i) {
+                        int idx = (k*g_voxNy + j)*g_voxNx + i;
+                        // Не трогаем поверхность (близко к 0)
+                        if (fabsf(temp[idx]) < csx) continue;
+                        float sum = 0.0f;
+                        int cnt = 0;
+                        for (int dz=-1; dz<=1; ++dz)
+                            for (int dy=-1; dy<=1; ++dy)
+                                for (int dx=-1; dx<=1; ++dx) {
+                                    int ni=i+dx, nj=j+dy, nk=k+dz;
+                                    int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
+                                    if (nidx<0||nidx>=total) continue;
+                                    sum += temp[nidx];
+                                    cnt++;
+                                }
+                        if (cnt>0) g_distanceField[idx] = sum / cnt * 0.3f + temp[idx] * 0.7f; // 30% blur
+                    }
+                }
+            }
+            temp = g_distanceField;
         }
     }
 
@@ -281,7 +324,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-    std::cout << "Voxelized v1.8.0 OPT: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
+    std::cout << "Voxelized v1.14.0 Physics Ultra: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
               << " (" << total << " cells, " << tris.size() << " tris) in " << ms << " ms"
 #ifdef _OPENMP
               << " [OpenMP]"
