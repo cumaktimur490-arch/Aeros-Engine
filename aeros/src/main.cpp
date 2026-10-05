@@ -1,5 +1,5 @@
 // =====================================================
-// AeroS Engine — точка входа, главный цикл и рендер
+// AeroS Engine — точка входа, главный цикл и рендер v1.8.0
 // =====================================================
 
 #define WIN32_LEAN_AND_MEAN
@@ -21,6 +21,7 @@
 #include <thread>
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 
 #include "globals.h"
 #include "shaders.h"
@@ -40,6 +41,12 @@
 #include <omp.h>
 #endif
 
+static void APIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
+    (void)source; (void)id; (void)length; (void)userParam;
+    if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
+    std::cerr << "[GL Debug] type=" << type << " severity=" << severity << " msg=" << message << std::endl;
+}
+
 int main() {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
@@ -57,15 +64,17 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_SAMPLES, 4); // MSAA
+    glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_TRUE);
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "AeroS Engine", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.8.0 Realistic Aero+", nullptr, nullptr);
     if (!window) {
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
         glfwTerminate();
         return -1;
     }
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
+    glfwSwapInterval(vsyncEnabled ? 1 : 0);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetCursorPosCallback(window, mouse_callback);
     glfwSetScrollCallback(window, scroll_callback);
@@ -76,15 +85,27 @@ int main() {
         glfwTerminate();
         return -1;
     }
+
+    // OpenGL debug if available
+    if (GLAD_GL_KHR_debug) {
+        glEnable(GL_DEBUG_OUTPUT);
+        glDebugMessageCallback(glDebugCallback, nullptr);
+    }
+
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_MULTISAMPLE);
+    glEnable(GL_PROGRAM_POINT_SIZE);
+
+    std::cout << "[GL] Vendor: " << glGetString(GL_VENDOR) << " Renderer: " << glGetString(GL_RENDERER) << " Version: " << glGetString(GL_VERSION) << std::endl;
 
     createObstacleSphere(48, 48);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330 core");
@@ -92,7 +113,9 @@ int main() {
     unsigned int modelShaderProgram    = compileProgram(vertexShaderSource, fragmentShaderSource);
     unsigned int particleShaderProgram = compileProgram(particleVertexShaderSource, particleFragmentShaderSource);
     unsigned int lineShaderProgram     = compileProgram(lineVertexShaderSource, lineFragmentShaderSource);
-    if (modelShaderProgram == 0 || particleShaderProgram == 0 || lineShaderProgram == 0) {
+    unsigned int groundShaderProgram   = compileProgram(groundVertexShaderSource, groundFragmentShaderSource);
+    if (modelShaderProgram == 0 || particleShaderProgram == 0 || lineShaderProgram == 0 || groundShaderProgram == 0) {
+        std::cerr << "[Main] Shader compile failed" << std::endl;
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -102,6 +125,11 @@ int main() {
 
     std::string modelPath = openFileDialog();
     if (modelPath.empty()) {
+        std::cout << "[Main] No file selected, exiting" << std::endl;
+        glDeleteProgram(modelShaderProgram);
+        glDeleteProgram(particleShaderProgram);
+        glDeleteProgram(lineShaderProgram);
+        glDeleteProgram(groundShaderProgram);
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -109,7 +137,7 @@ int main() {
         return 0;
     }
     if (!loadModel(modelPath)) {
-        MessageBoxA(nullptr, "Failed to load model.", "Error", MB_ICONERROR);
+        MessageBoxA(nullptr, ("Failed to load model: " + modelPath).c_str(), "Error", MB_ICONERROR);
     }
 
     glfwShowWindow(window);
@@ -121,27 +149,38 @@ int main() {
     static float prevStro  = strouhal;
     static float prevWL    = wakeLength;
     static float prevAlt   = 0.0f;
+    static float prevGroundH = aeroGroundHeight;
+    static bool prevGroundEn = aeroGroundEffect;
+
+    float autoRotateAngle = 0.0f;
 
     while (!glfwWindowShouldClose(window)) {
-        float currentFrame = glfwGetTime();
+        float currentFrame = (float)glfwGetTime();
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
-        // Ограничиваем dt: на первом кадре (после диалога/вокселизации) он может
-        // исчисляться секундами, что телепортирует все частицы.
         if (deltaTime > 0.1f)   deltaTime = 0.1f;
         if (deltaTime <= 0.0f)  deltaTime = 0.0001f;
+        if (!std::isfinite(deltaTime)) deltaTime = 0.016f;
 
         if (limitFPS) {
             double target = 1.0 / maxFPS;
-            while (glfwGetTime() - currentFrame < target)
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            double elapsed = glfwGetTime() - currentFrame;
+            if (elapsed < target) {
+                int sleepMs = (int)((target - elapsed)*1000.0);
+                if (sleepMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+            }
+        }
+
+        if (autoRotate) {
+            autoRotateAngle += deltaTime * aeroAutoRotateSpeed;
+            if (autoRotateAngle > 360.0f) autoRotateAngle -= 360.0f;
+            flowAzimuth = autoRotateAngle;
         }
 
         processInput(window);
 
         auto frameStart = std::chrono::high_resolution_clock::now();
 
-        // LBM обновление — до частиц и сил, чтобы поле было свежим
         auto tLBM0 = std::chrono::high_resolution_clock::now();
         if (lbmParams.enabled) {
             updateLBM(deltaTime);
@@ -162,19 +201,22 @@ int main() {
         auto tForce1 = std::chrono::high_resolution_clock::now();
         perfForcesMs = std::chrono::duration<float, std::milli>(tForce1-tForce0).count();
 
-        auto frameEnd = std::chrono::high_resolution_clock::now();
-        perfFrameMs = std::chrono::duration<float, std::milli>(frameEnd-frameStart).count();
-
-        // Test mode continuous validation
-        if (testContinuous) validateFrame();
-
-        if (showStreamlines && (fabs(prevSpeed-flowSpeed) > 1e-3f ||
-                                fabs(prevAz-flowAzimuth) > 1e-3f ||
-                                fabs(prevEl-flowElevation) > 1e-3f ||
-                                fabs(prevWake-wakeStrength) > 1e-3f ||
-                                fabs(prevStro-strouhal) > 1e-3f ||
-                                fabs(prevWL-wakeLength) > 1e-3f ||
-                                fabs(prevAlt-altitude) > 10.0f)) {
+        // Streamlines need recompute on flow change or ground change
+        bool needStreamlines = false;
+        if (showStreamlines) {
+            if (fabs(prevSpeed-flowSpeed) > 1e-3f ||
+                fabs(prevAz-flowAzimuth) > 0.5f ||
+                fabs(prevEl-flowElevation) > 0.5f ||
+                fabs(prevWake-wakeStrength) > 1e-3f ||
+                fabs(prevStro-strouhal) > 1e-3f ||
+                fabs(prevWL-wakeLength) > 1e-3f ||
+                fabs(prevAlt-altitude) > 10.0f ||
+                fabs(prevGroundH-aeroGroundHeight) > 1e-3f ||
+                prevGroundEn != aeroGroundEffect) {
+                needStreamlines = true;
+            }
+        }
+        if (needStreamlines) {
             auto tSL0 = std::chrono::high_resolution_clock::now();
             prevSpeed = flowSpeed;
             prevAz = flowAzimuth;
@@ -183,10 +225,17 @@ int main() {
             prevStro = strouhal;
             prevWL = wakeLength;
             prevAlt = altitude;
+            prevGroundH = aeroGroundHeight;
+            prevGroundEn = aeroGroundEffect;
             computeStreamlines();
             auto tSL1 = std::chrono::high_resolution_clock::now();
             perfStreamlinesMs = std::chrono::duration<float, std::milli>(tSL1-tSL0).count();
         }
+
+        auto frameEnd = std::chrono::high_resolution_clock::now();
+        perfFrameMs = std::chrono::duration<float, std::milli>(frameEnd-frameStart).count();
+
+        if (testContinuous) validateFrame();
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -205,6 +254,38 @@ int main() {
         glm::vec3 lightPos = center + glm::vec3(maxDim*2.0f, maxDim*2.5f, maxDim*2.0f);
         glm::vec3 lightColor(1.0f);
 
+        if (showGroundPlane || aeroGroundEffect) {
+            float groundY = g_voxMinY + aeroGroundHeight;
+            glm::mat4 groundModel = glm::translate(glm::mat4(1.0f), glm::vec3(center.x, groundY, center.z));
+            groundModel = glm::scale(groundModel, glm::vec3(maxDim*2.5f, 1.0f, maxDim*2.5f));
+            glUseProgram(groundShaderProgram);
+            glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(groundModel));
+            glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+            glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+            glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightPos"), 1, &lightPos[0]);
+            glUniform3fv(glGetUniformLocation(groundShaderProgram, "viewPos"), 1, &cameraPos[0]);
+            glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightColor"), 1, &lightColor[0]);
+            glUniform3fv(glGetUniformLocation(groundShaderProgram, "groundColor"), 1, &groundColor[0]);
+            glUniform1f(glGetUniformLocation(groundShaderProgram, "alpha"), groundAlpha);
+            glBindVertexArray(groundVAO);
+            glDrawElements(GL_TRIANGLES, groundIndexCount, GL_UNSIGNED_INT, 0);
+            glBindVertexArray(0);
+
+            // Grid
+            if (gridVAO != 0) {
+                glUseProgram(lineShaderProgram);
+                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(groundModel));
+                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
+                glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.15f);
+                glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.3f, 0.3f, 0.35f);
+                glBindVertexArray(gridVAO);
+                glDrawArrays(GL_LINES, 0, 82*2);
+                glBindVertexArray(0);
+            }
+        }
+
         if (showModel) {
             glUseProgram(modelShaderProgram);
             glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
@@ -216,6 +297,7 @@ int main() {
             glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &modelColor[0]);
             glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), lightingEnabled ? 1 : 0);
             glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), showPressure ? 1 : 0);
+            glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), aeroUseRealisticLighting ? 1 : 0);
             glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), 1.0f);
             glBindVertexArray(modelVAO);
             glDrawArrays(GL_TRIANGLES, 0, modelVertexCount);
@@ -236,11 +318,29 @@ int main() {
             glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &obstacleColor[0]);
             glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), 1);
             glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), 0);
+            glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), 0);
             glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), obstacleAlpha);
             glBindVertexArray(obstacleVAO);
             glDrawElements(GL_TRIANGLES, obstacleIndexCount, GL_UNSIGNED_INT, 0);
             glBindVertexArray(0);
             glDepthMask(GL_TRUE);
+        }
+
+        // Slice plane
+        if (showSlicePlane && aeroShowSlice) {
+            createSlicePlane(aeroSliceAxis, aeroSlicePos);
+            glUseProgram(lineShaderProgram);
+            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+            glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
+            glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.4f);
+            glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.2f, 0.8f, 1.0f);
+            glLineWidth(2.0f);
+            glBindVertexArray(sliceVAO);
+            glDrawArrays(GL_LINE_LOOP, 0, 4);
+            glBindVertexArray(0);
+            glLineWidth(1.0f);
         }
 
         glUseProgram(lineShaderProgram);
@@ -286,11 +386,10 @@ int main() {
             glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
             glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-            glPointSize(particleSize);
+            glUniform1f(glGetUniformLocation(particleShaderProgram, "pointSize"), particleSize);
             glBindVertexArray(particleVAO);
             glDrawArrays(GL_POINTS, 0, particleDrawCount);
             glBindVertexArray(0);
-            glPointSize(1.0f);
         }
 
         if (showLiftDrag) {
@@ -313,6 +412,12 @@ int main() {
                 glDrawArrays(GL_LINES, 2, 2);
                 glBindVertexArray(0);
             }
+            if (fabs(momentMagnitude) > 1e-9f) {
+                glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.8f,0.3f,1.0f);
+                glBindVertexArray(liftDragVAO);
+                glDrawArrays(GL_LINES, 4, 2);
+                glBindVertexArray(0);
+            }
             glLineWidth(1.0f);
         }
 
@@ -320,11 +425,28 @@ int main() {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
         glfwPollEvents();
+
+        // VSync toggle handling
+        static bool lastVsync = vsyncEnabled;
+        if (lastVsync != vsyncEnabled) {
+            glfwSwapInterval(vsyncEnabled ? 1 : 0);
+            lastVsync = vsyncEnabled;
+        }
     }
+
+    // Cleanup
+    std::cout << "[Main] Cleaning up..." << std::endl;
+    glDeleteProgram(modelShaderProgram);
+    glDeleteProgram(particleShaderProgram);
+    glDeleteProgram(lineShaderProgram);
+    glDeleteProgram(groundShaderProgram);
+    cleanupGLResources();
+    shutdownLBM();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwTerminate();
+    std::cout << "[Main] Exit OK" << std::endl;
     return 0;
 }

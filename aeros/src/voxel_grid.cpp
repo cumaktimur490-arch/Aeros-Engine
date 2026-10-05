@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <vector>
+#include <algorithm>
+#include <limits>
 
 #include "globals.h"
 #include "cuda_api.h"
@@ -15,26 +17,30 @@
 #endif
 
 // =====================================================
-// SDF sampling (CPU) — оптимизировано с кэшированием
+// SDF sampling (CPU) — v1.8.0 оптимизировано + фиксы
 // =====================================================
-static inline bool isValidFloatSafe(float v) { return std::isfinite(v); }
-static inline bool isValidVec3Safe(const glm::vec3& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+static inline bool isValidFloatSafe(float v) { return std::isfinite(v) && fabsf(v) < 1e6f; }
+static inline bool isValidVec3Safe(const glm::vec3& v) { return isValidFloatSafe(v.x) && isValidFloatSafe(v.y) && isValidFloatSafe(v.z); }
 
 float sampleSDFCPU(const glm::vec3& p) {
     if (g_distanceField.empty() || g_voxNx <= 0 || g_voxNy <= 0 || g_voxNz <= 0) return 1000.0f;
     if (!isValidVec3Safe(p)) return 1000.0f;
     float csx = flowParams.cellSizeX;
+    float csy = flowParams.cellSizeY;
+    float csz = flowParams.cellSizeZ;
     if (!isValidFloatSafe(csx) || fabsf(csx) < 1e-8f) return 1000.0f;
-    // Используем одинаковый cellSize для всех осей — быстрее
+    if (!isValidFloatSafe(csy) || fabsf(csy) < 1e-8f) csy = csx;
+    if (!isValidFloatSafe(csz) || fabsf(csz) < 1e-8f) csz = csx;
     int ix = (int)((p.x - g_voxMinX) / csx);
-    int iy = (int)((p.y - g_voxMinY) / flowParams.cellSizeY);
-    int iz = (int)((p.z - g_voxMinZ) / flowParams.cellSizeZ);
+    int iy = (int)((p.y - g_voxMinY) / csy);
+    int iz = (int)((p.z - g_voxMinZ) / csz);
     if (ix < 0 || ix >= g_voxNx || iy < 0 || iy >= g_voxNy || iz < 0 || iz >= g_voxNz)
         return 1000.0f;
     int idx = (iz * g_voxNy + iy) * g_voxNx + ix;
     if (idx < 0 || idx >= (int)g_distanceField.size()) return 1000.0f;
     float raw = g_distanceField[idx];
     if (!isValidFloatSafe(raw)) return 1000.0f;
+    if (raw > 1e4f || raw < -1e4f) return 1000.0f;
     return raw * csx;
 }
 
@@ -45,8 +51,8 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
     float csy = flowParams.cellSizeY;
     float csz = flowParams.cellSizeZ;
     if (!isValidFloatSafe(csx) || fabsf(csx) < 1e-8f) return glm::vec3(0,1,0);
-    if (!isValidFloatSafe(csy) || fabsf(csy) < 1e-8f) return glm::vec3(0,1,0);
-    if (!isValidFloatSafe(csz) || fabsf(csz) < 1e-8f) return glm::vec3(0,1,0);
+    if (!isValidFloatSafe(csy) || fabsf(csy) < 1e-8f) csy = csx;
+    if (!isValidFloatSafe(csz) || fabsf(csz) < 1e-8f) csz = csx;
     int ix = (int)((p.x - g_voxMinX) / csx);
     int iy = (int)((p.y - g_voxMinY) / csy);
     int iz = (int)((p.z - g_voxMinZ) / csz);
@@ -70,7 +76,7 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
 }
 
 // =====================================================
-// Вокселизация — оптимизировано с OpenMP и AABB
+// Вокселизация — v1.8.0 оптимизировано + фиксы
 // =====================================================
 static inline bool rayTri(const glm::vec3& orig, const glm::vec3& dir,
                    const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2) {
@@ -89,7 +95,6 @@ static inline bool rayTri(const glm::vec3& orig, const glm::vec3& dir,
     return t > 1e-6f;
 }
 
-// Быстрая проверка AABB для треугольника
 struct TriAABB {
     glm::vec3 v0,v1,v2;
     glm::vec3 minB, maxB;
@@ -98,20 +103,36 @@ struct TriAABB {
 static bool insideMeshOptimized(const glm::vec3& p, const std::vector<TriAABB>& tris, const glm::vec3& dir) {
     int hits = 0;
     for (const auto& tri : tris) {
-        // AABB ранний отсев по YZ — луч идет вдоль X
         if (p.y < tri.minB.y || p.y > tri.maxB.y) continue;
         if (p.z < tri.minB.z || p.z > tri.maxB.z) continue;
-        if (tri.maxB.x < p.x) continue; // треугольник позади точки
+        if (tri.maxB.x < p.x) continue;
+        // Additional check: if triangle is degenerate
+        glm::vec3 e1 = tri.v1 - tri.v0;
+        glm::vec3 e2 = tri.v2 - tri.v0;
+        if (glm::length(glm::cross(e1,e2)) < 1e-12f) continue;
         if (rayTri(p, dir, tri.v0, tri.v1, tri.v2)) hits++;
     }
     return (hits % 2) == 1;
 }
 
 void buildVoxelGrid(const std::vector<float>& verts, int res) {
-    std::cout << "Voxelizing at resolution " << res << "... (optimized)" << std::endl;
+    if (verts.empty()) {
+        std::cerr << "[Voxel] Empty vertices" << std::endl;
+        return;
+    }
+    if (res < 8) res = 8;
+    if (res > 256) res = 256;
+
+    std::cout << "Voxelizing at resolution " << res << "... (v1.8.0 optimized)" << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
+    if (!std::isfinite(minBB.x) || !std::isfinite(maxBB.x) || glm::length(maxBB-minBB) < 1e-6f) {
+        std::cerr << "[Voxel] Invalid BB" << std::endl;
+        return;
+    }
+
     float margin = 0.1f * maxDim;
+    if (!std::isfinite(margin) || margin < 0.001f) margin = 0.1f;
     g_voxMinX = minBB.x - margin; g_voxMaxX = maxBB.x + margin;
     g_voxMinY = minBB.y - margin; g_voxMaxY = maxBB.y + margin;
     g_voxMinZ = minBB.z - margin; g_voxMaxZ = maxBB.z + margin;
@@ -119,41 +140,72 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     float sizeX = g_voxMaxX - g_voxMinX;
     float sizeY = g_voxMaxY - g_voxMinY;
     float sizeZ = g_voxMaxZ - g_voxMinZ;
+    if (sizeX < 1e-6f) sizeX = 1.0f;
+    if (sizeY < 1e-6f) sizeY = 1.0f;
+    if (sizeZ < 1e-6f) sizeZ = 1.0f;
     float m = fmaxf(sizeX, fmaxf(sizeY, sizeZ));
 
     g_voxNx = res;
     g_voxNy = (int)(res * sizeY / m); if (g_voxNy < 4) g_voxNy = 4;
     g_voxNz = (int)(res * sizeZ / m); if (g_voxNz < 4) g_voxNz = 4;
 
+    // Limit total cells
+    long long totalLL = (long long)g_voxNx * g_voxNy * g_voxNz;
+    const long long MAX_CELLS = 10*1024*1024;
+    if (totalLL > MAX_CELLS) {
+        float scale = powf((float)MAX_CELLS / totalLL, 1.0f/3.0f);
+        g_voxNx = (int)(g_voxNx*scale); if (g_voxNx < 4) g_voxNx = 4;
+        g_voxNy = (int)(g_voxNy*scale); if (g_voxNy < 4) g_voxNy = 4;
+        g_voxNz = (int)(g_voxNz*scale); if (g_voxNz < 4) g_voxNz = 4;
+        std::cout << "[Voxel] Clamped to " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz << std::endl;
+    }
+
     float csx = sizeX / g_voxNx;
     float csy = sizeY / g_voxNy;
     float csz = sizeZ / g_voxNz;
+    if (csx < 1e-6f) csx = 0.1f;
+    if (csy < 1e-6f) csy = 0.1f;
+    if (csz < 1e-6f) csz = 0.1f;
 
     int total = g_voxNx * g_voxNy * g_voxNz;
-    g_voxelData.assign(total, 0);
+    if (total <= 0 || total > 20*1024*1024) {
+        std::cerr << "[Voxel] Invalid total: " << total << std::endl;
+        return;
+    }
 
-    // Предвычисляем треугольники с AABB
+    try {
+        g_voxelData.assign(total, 0);
+    } catch (const std::bad_alloc& e) {
+        std::cerr << "[Voxel] Alloc failed: " << e.what() << std::endl;
+        return;
+    }
+
     std::vector<TriAABB> tris;
-    tris.reserve(verts.size()/9);
+    tris.reserve(verts.size()/9 + 1);
     for (size_t i = 0; i + 8 < verts.size(); i += 9) {
+        float x0=verts[i], y0=verts[i+1], z0=verts[i+2];
+        float x1=verts[i+3], y1=verts[i+4], z1=verts[i+5];
+        float x2=verts[i+6], y2=verts[i+7], z2=verts[i+8];
+        if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(z0)) continue;
         TriAABB t;
-        t.v0 = glm::vec3(verts[i], verts[i+1], verts[i+2]);
-        t.v1 = glm::vec3(verts[i+3], verts[i+4], verts[i+5]);
-        t.v2 = glm::vec3(verts[i+6], verts[i+7], verts[i+8]);
+        t.v0 = glm::vec3(x0,y0,z0);
+        t.v1 = glm::vec3(x1,y1,z1);
+        t.v2 = glm::vec3(x2,y2,z2);
         t.minB = glm::vec3(std::min({t.v0.x, t.v1.x, t.v2.x}),
                            std::min({t.v0.y, t.v1.y, t.v2.y}),
                            std::min({t.v0.z, t.v1.z, t.v2.z}));
         t.maxB = glm::vec3(std::max({t.v0.x, t.v1.x, t.v2.x}),
                            std::max({t.v0.y, t.v1.y, t.v2.y}),
                            std::max({t.v0.z, t.v1.z, t.v2.z}));
+        // Skip degenerate
+        if (glm::length(glm::cross(t.v1-t.v0, t.v2-t.v0)) < 1e-12f) continue;
         tris.push_back(t);
     }
 
     glm::vec3 rayDir(1,0,0);
 
-    // Параллельная вокселизация по Z
     #ifdef _OPENMP
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(dynamic)
     #endif
     for (int k = 0; k < g_voxNz; k++) {
         for (int j = 0; j < g_voxNy; j++) {
@@ -167,9 +219,14 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         }
     }
 
-    g_distanceField.assign(total, 1000.0f);
+    try {
+        g_distanceField.assign(total, 1000.0f);
+    } catch (...) {
+        std::cerr << "[Voxel] Distance field alloc failed" << std::endl;
+        return;
+    }
     std::vector<int> q;
-    q.reserve(total/4);
+    q.reserve(total/4 + 1);
     const int off[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
 
     for (int k = 0; k < g_voxNz; k++)
@@ -182,6 +239,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                     int ni=i+o[0], nj=j+o[1], nk=k+o[2];
                     if (ni<0||ni>=g_voxNx||nj<0||nj>=g_voxNy||nk<0||nk>=g_voxNz) continue;
                     int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
+                    if (nidx <0 || nidx >= total) continue;
                     if ((g_voxelData[nidx]==1) != here) { isSurf = true; break; }
                 }
                 if (isSurf) {
@@ -197,10 +255,12 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         int j = (idx / g_voxNx) % g_voxNy;
         int k = idx / (g_voxNx * g_voxNy);
         float d = g_distanceField[idx];
+        if (!isValidFloatSafe(d)) continue;
         for (auto& o : off) {
             int ni=i+o[0], nj=j+o[1], nk=k+o[2];
             if (ni<0||ni>=g_voxNx||nj<0||nj>=g_voxNy||nk<0||nk>=g_voxNz) continue;
             int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
+            if (nidx <0 || nidx >= total) continue;
             float nd = (d<0) ? (d-1.0f) : (d+1.0f);
             if (fabsf(nd) < fabsf(g_distanceField[nidx]) - 0.01f) {
                 g_distanceField[nidx] = nd;
@@ -216,7 +276,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-    std::cout << "Voxelized OPT: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
+    std::cout << "Voxelized v1.8.0 OPT: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
               << " (" << total << " cells, " << tris.size() << " tris) in " << ms << " ms"
 #ifdef _OPENMP
               << " [OpenMP]"

@@ -5,6 +5,138 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.8.0] - 2026-10-05
+
+### Realistic Aero+ — полный аудит и исправление всего возможного
+
+#### Что добавлено (по запросу "добавь еще что-то и исправь все")
+- **Новые глобальные фичи (globals.h/cpp v1.8.0)**:
+  - `showGroundPlane`, `groundVAO/VBO/EBO`, `groundColor`, `groundAlpha`, `groundIndexCount` — визуализация земли для авто
+  - `showSlicePlane`, `sliceVAO/VBO`, `gridVAO/VBO` — срез как на фото 5 Cybertruck
+  - `showColorLegend`, `autoRotate`, `aeroAutoRotateSpeed` — легенда цветов и авто-вращение для showcase
+  - `liftToDragRatio`, `momentVector/Magnitude` — L/D и момент
+  - `AeroVisMode` расширен: `SkinFriction`, `BoundaryLayer`
+  - Новые: `aeroShowBoundaryLayer`, `aeroBoundaryLayerScale`, `aeroMachEffects`, `aeroReNumber`, `aeroShowWake`, `aeroWakeOpacity`, `aeroShowVortices`, `aeroUseRealisticLighting`, `aeroColorMap` (0 rainbow,1 viridis,2 parula,3 coolwarm), `aeroExportEnabled`
+- **LBM v1.8.0 — стабильность + реализм**:
+  - Clamp сетки до 8M cells, проверка на 20M лимит, защита от bad_alloc
+  - `computeEquilibriumFast` теперь clamps velocity и cu для стабильности, проверка feq на NaN и ограничения
+  - Инициализация с Perlin-like турбулентностью (двойной sin с разными частотами) + clamping usqr
+  - `stepLBMCPU`: проверка `f` размера, nanCount подсчет, divergence detection по rho, soft reset на inlet при расходимости, clamping fi, rho, velocity, TKE, Q, vorticity
+  - `getLBMVelocityLB`: clamp tx/ty/tz, проверка границ total, проверка isfinite
+  - `getLBMVelocityWorld`: clamping world velocity до 3*Vinf, проверка isfinite
+  - `getLBMDensityWorld`: clamp rho [0.5,1.5]
+  - Все геттеры теперь проверяют isfinite и размеры
+  - `computeLBMVorticityAndQ`: проверка границ xm/xp и т.д., проверка isfinite du, clamping vortMag до 1000, Q до 1e6, strain, TKE до 10
+  - `computeLBMRe`: использует maxDim для физического Re, а не только решетку
+  - `computeLBMRefArea`: проверки isfinite
+  - Новые цветовые карты: `getQCriterionColor`, `getTKEColor`, поддержка `aeroColorMap` в `getRealisticPressureColor` и `getVelocityMagnitudeColor` (viridis/parula/coolwarm)
+  - Новые валидации: `lbmValidateStability()` — проверка rho, maxVel, kineticEnergy
+  - Ground handling улучшен: gy0 вычисляется и цикл 0..gy0
+  - Voxel size mismatch handling — nearest mapping если размеры не совпадают
+- **Flow Field v1.8.0**:
+  - Ground effect: no-slip на земле, пограничный слой 1/7 степенной закон, Venturi ускорение под днищем авто (clearance check + проекция X/Z)
+  - Wake: учет `aeroShowWake` и `aeroWakeOpacity`, Mach effects (compressibility) — turbScale увеличивается с Mach
+  - Clamping скорости до 2*maxSpeed
+  - `colorForPoint`: поддержка viridis/parula/coolwarm карт
+  - Re вычисляется в `updateFlowParams`
+- **Forces v1.8.0**:
+  - Проверки isfinite везде, размеры %3, размеры векторов
+  - Skin friction зависит от Re (1/Re^0.2)
+  - Момент `momentSum` считается, `liftToDragRatio`, `momentVector`
+  - `updateLiftDragArrows`: проверка maxDim, isfinite centerOfPressure, e
+  - Новые режимы: SkinFriction, BoundaryLayer
+  - Fallback с CUDA на CPU при ошибке
+- **Particles/Streamlines v1.8.0**:
+  - Проверки isfinite везде, clamping, ground collision
+  - Поддержка новых режимов Q/TKE/Cf
+  - Streamlines: `rk4StepOpt` с проверками isfinite для всех шагов, ground collision, проверка bigMargin isfinite
+  - Логирование количества
+- **GL Utils v1.8.0**:
+  - Все создания VAO проверяют isfinite size, clamping divisions, size
+  - `createGroundPlane`, `createGrid`, `createSlicePlane` — новые
+  - `cleanupGLResources()` — полное удаление всех VAO/VBO
+  - `createBoundingBoxVAO`: проверка BB isfinite
+- **Shaders v1.8.0**:
+  - Улучшенное PBR-like освещение с Fresnel, Blinn-Phong specular, rim lighting для силуэта как на фото
+  - Particle shader: круглая частица с мягкими краями, `pointSize` uniform
+  - Ground shader: шахматная земля + туман по расстоянию
+  - Поддержка `useRealisticLighting`
+- **Model v1.8.0**:
+  - Исправлен баг: `g_vertexColors.assign(vertices.size(), 0.75f)` теперь правильно, но добавили вариацию sin/cos для интереса
+  - Проверка vertices/normals size mismatch, %9, isfinite
+  - Пересчет нормалей если NaN или длина ~0
+  - Логирование BB, maxDim, ref area, Re
+  - Создание ground plane и grid
+  - Auto ref area и Re расчет
+- **Voxel Grid v1.8.0**:
+  - Проверка empty verts, res clamp 8..256, BB isfinite
+  - Limit total cells 10M, clamping scale
+  - Try/catch для alloc
+  - Skip degenerate triangles (cross <1e-12)
+  - `sampleSDFCPU`/`sdfNormalCPU`: проверки isfinite, fallback csy/csz=csx, clamp raw
+  - `insideMeshOptimized`: skip degenerate
+- **Atmosphere v1.8.0**:
+  - Все функции проверяют isfinite, clamp altitude 0..80km, speed 0..1e6, expArg -50..50
+  - `calculateAtmosphere`: проверки ratio, temperature, pressure isfinite, clamp density 1e-6..5, pressure, temperature
+  - Логирование при invalid density
+- **STL Loader v1.8.0**:
+  - Проверка fileSize <10, nt >10M -> ASCII, isfinite вершин и нормалей, clamp fabs>1e6
+  - Нормализация нормалей, skip non-finite
+  - Trim строк, tolower, проверка isfinite, skip degenerate
+  - Логирование
+  - `openFileDialog`: initialDir, title, defExt
+- **Input v1.8.0**:
+  - Проверка ImGui WantCaptureMouse
+  - firstMouse handling, isfinite checks, clamp yaw/pitch/fov
+  - `processInput`: clamp cameraSpeed, check isfinite, right vector isfinite, Q/E для вертикали, F1/F2 быстрые клавиши
+  - Scroll: *2.0f, проверка isfinite
+- **Main v1.8.0**:
+  - MSAA 4x, doublebuffer, title v1.8.0, vendor/renderer/version лог
+  - GL debug callback если KHR_debug
+  - ImGui docking enable, GL_MULTISAMPLE, PROGRAM_POINT_SIZE
+  - Ground shader program
+  - Проверка shader compile fail
+  - No file selected — cleanup и exit 0
+  - Auto rotate logic, ground height change detection для streamlines
+  - Ground plane + grid rendering, slice plane rendering
+  - VSync toggle handling
+  - Cleanup: delete programs, cleanupGLResources(), shutdownLBM()
+- **UI v1.8.0**:
+  - Полностью переписан: Performance показывает LBM pressure, MLUPS, Re, conv, TKE
+  - Realistic Aero: Combo Visualization 7 режимов, Color Map 4 режима, Wake Opacity, Vortices, BL, PBR lighting, Ground Plane + alpha/color, Slice Plane + axis/pos, Mach effects, Ref Area Re, 5 пресетов (Car/UAV/Airfoil/Turbulent Wake/Viridis)
+  - Flow: maxDisplay увеличен до 30 m/s (108 km/h), clamp azimuth 0..360, auto rotate speed
+  - Atmosphere: Re, Mach с подписями compressible/subsonic/incompressible, q*RefArea
+  - Particles: кнопки 5k/15k/50k
+  - Streamlines: кнопки Low/Med/High
+  - Pressure & Forces: Cd/Cl/L/D/Moment/CoP/q/Re, color legend для каждого режима
+  - Voxel: показывает cells и ms
+  - Display: VSync, Limit FPS, Camera Speed, Mouse Sens, Model Color, Controls hint
+  - LBM: Regularized checkbox, Step 500, все параметры с проверками isfinite
+  - Compute: CUDA/CPU radio, Open Model, FULL REBUILD, Screenshot
+  - Test Mode: 5 категорий (Physics/Code/LBM/Opt/Realistic), 6 тестов realistic, кнопки LBM Only/Realistic Only/Opt Only, drawCategory lambda
+  - Frame validation: проверка aeroRefArea, buffers, SDF finite count, mem, particles/streamlines VAOs
+- **Tests v1.8.0**:
+  - Новые: `testGroundEffect`, `testColorMaps` (все 4 карты, NaN, range [0,1]), `testStability` (LBM stability, conservation, NaN, global state), `testRefArea` (auto/manual, Cd/Cl), `testReynolds` (Re меняется со скоростью, LBM Re)
+  - `testRealisticAero`: проверки isfinite
+  - `runRealisticTests()` — 6 тестов, `runAllTests()` теперь 5 категорий, 27+ тестов
+  - Всего тестов: 9 Physics +10 Code +4 LBM +3 Opt +6 Realistic = 32 теста
+- **Build**:
+  - `build.bat` уже чистит obj/exe, `tools/rebuild-all.bat` есть
+  - Версия bump 1.7.0->1.8.0
+
+#### Исправлено
+- Множество NaN/Inf багов: везде проверки isfinite, clamping, fallback
+- LBM divergence: soft reset, clamping, nanCount detection
+- Voxel overflow: limit 10M cells
+- Model color bug: теперь правильно assign + вариация
+- Camera NaN: проверки, clamp
+- FlowParams: Re расчет, Mach effects
+- Particles/Streamlines: ground collision, isfinite
+- SDF: проверки raw, isfinite
+- STL: degenerate triangles skip, fileSize check
+- OpenGL: VAO/VBO cleanup, MSAA, debug callback
+- UI: color legend, L/D, moment, Re, Mach
+
 ## [1.7.0] - 2026-10-05
 
 ### Realistic Aero — фотореалистичная аэродинамика как на фото

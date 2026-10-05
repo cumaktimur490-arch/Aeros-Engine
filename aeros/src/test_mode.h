@@ -1,7 +1,7 @@
 #pragma once
 // =====================================================
 // Режим теста для проверки ошибок вычислений и кода
-// v1.6.0 — физика + код + LBM + perf
+// v1.8.0 — физика + код + LBM + perf + realistic + stability
 // =====================================================
 
 #include <string>
@@ -9,7 +9,7 @@
 
 struct TestResult {
     std::string name;
-    std::string category; // "Physics", "Code", "LBM"
+    std::string category; // "Physics", "Code", "LBM", "Optimization", "Realistic"
     bool passed;
     std::string message;
     float value;
@@ -65,8 +65,13 @@ bool testOptimization();
 bool testOpenMP();
 bool testMemoryLayout();
 
-// ===== Realistic Aero (v1.7.0) =====
+// ===== Realistic Aero (v1.7.0+) =====
 bool testRealisticAero();
+bool testGroundEffect();
+bool testColorMaps();
+bool testStability();
+bool testRefArea();
+bool testReynolds();
 
 // Утилиты
 bool checkGLErrors(const char* where);
@@ -76,6 +81,7 @@ void runPhysicsTests();
 void runCodeTests();
 void runLBMTests();
 void runOptimizationTests();
+void runRealisticTests();
 void validateFrame();
 void validateFrameCode();
 void drawTestModeUI();

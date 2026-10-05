@@ -2,6 +2,7 @@
 #define GLOBALS_H
 // =====================================================
 // Общее состояние приложения (единый источник для всех модулей).
+// v1.8.0 — расширено реалистичной аэродинамикой + улучшениями
 // Определения — в globals.cpp.
 // =====================================================
 
@@ -41,14 +42,20 @@ extern bool showStreamlines;
 extern bool showPressure;
 extern bool showLiftDrag;
 extern bool showObstacle;
+extern bool showGroundPlane;
+extern bool showSlicePlane;
+extern bool showColorLegend;
+extern bool autoRotate;
 
 extern glm::vec3 bgColor;
 extern glm::vec3 bboxColor;
 extern glm::vec3 obstacleColor;
+extern glm::vec3 groundColor;
 extern float obstacleAlpha;
 extern float streamlineAlpha;
 extern float streamlineWidth;
 extern glm::vec3 modelColor;
+extern float groundAlpha;
 
 extern bool  vsyncEnabled;
 extern bool  limitFPS;
@@ -77,8 +84,6 @@ extern unsigned int particleVBO_pos;
 extern unsigned int particleVBO_col;
 extern std::vector<float> particlePositions;
 extern std::vector<float> particleColors;
-// Сколько частиц реально аллоцировано в буферах/векторах.
-// Слайдер Count меняет numParticles, но буферы перевыделяются только в initParticles().
 extern int particleDrawCount;
 
 // --- Линии тока ---
@@ -108,12 +113,23 @@ extern unsigned int obstacleVAO;
 extern unsigned int obstacleVBO;
 extern unsigned int obstacleEBO;
 extern int   obstacleIndexCount;
+extern unsigned int groundVAO;
+extern unsigned int groundVBO;
+extern unsigned int groundEBO;
+extern int   groundIndexCount;
+extern unsigned int sliceVAO;
+extern unsigned int sliceVBO;
+extern unsigned int gridVAO;
+extern unsigned int gridVBO;
 
 // --- Подъёмная сила / сопротивление ---
 extern glm::vec3 liftVector;
 extern glm::vec3 dragVector;
 extern float liftMagnitude;
 extern float dragMagnitude;
+extern float liftToDragRatio;
+extern float momentMagnitude;
+extern glm::vec3 momentVector;
 extern glm::vec3 centerOfPressure;
 extern unsigned int liftDragVAO;
 extern unsigned int liftDragVBO;
@@ -143,7 +159,7 @@ extern float g_voxMaxZ;
 extern int   voxelResolution;
 extern bool  useVoxelCollision;
 
-// --- Performance metrics (v1.6.0) ---
+// --- Performance metrics (v1.6.0+) ---
 extern float perfFrameMs;
 extern float perfLBMms;
 extern float perfParticlesMs;
@@ -152,13 +168,15 @@ extern float perfForcesMs;
 extern float perfVoxelMs;
 extern int   perfOpenMPThreads;
 
-// --- Realistic Aero (v1.7.0) ---
+// --- Realistic Aero (v1.7.0+) ---
 enum class AeroVisMode {
     Pressure,           // Cp — как на фото 4 (NASCAR rainbow)
     VelocityMagnitude,  // |U| — как на фото 1 (U Magnitude)
     Vorticity,          // |ω| — завихренность
     QCriterion,         // Q-критерий — вихревые структуры
-    TurbulentKE         // TKE — турбулентность
+    TurbulentKE,        // TKE — турбулентность
+    SkinFriction,       // Cf — трение
+    BoundaryLayer       // толщина погранслоя
 };
 extern AeroVisMode aeroVisMode;
 extern bool aeroGroundEffect;       // земля для авто (фото 2,5)
@@ -170,5 +188,18 @@ extern bool aeroColorStreamlinesByVelocity; // окраска линий ток�
 extern bool aeroShowSeparation;     // подсветка отрыва потока
 extern float aeroRefArea;           // референсная площадь для Cd/Cl
 extern bool aeroAutoRefArea;        // авто расчет ref area
+extern bool aeroShowBoundaryLayer;
+extern float aeroBoundaryLayerScale;
+extern bool aeroMachEffects;
+extern float aeroReNumber;          // Reynolds number (вычисляется)
+
+// --- v1.8.0 новые ---
+extern bool aeroShowWake;
+extern float aeroWakeOpacity;
+extern bool aeroShowVortices;
+extern bool aeroUseRealisticLighting;
+extern int aeroColorMap;            // 0=rainbow,1=viridis,2=parula,3=coolwarm
+extern bool aeroExportEnabled;
+extern float aeroAutoRotateSpeed;
 
 #endif // GLOBALS_H

@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <vector>
+#include <iostream>
 
 #include "globals.h"
 #include "cuda_api.h"
@@ -16,7 +17,7 @@
 #endif
 
 // =====================================================
-// Частицы — v1.7.0 Realistic Aero как на фото
+// Частицы — v1.8.0 Realistic Aero + фиксы
 // =====================================================
 void initParticles() {
     updateFlowParams();
@@ -28,8 +29,13 @@ void initParticles() {
 
     particleDrawCount = numParticles;
     if (useCUDA == 1) {
-        initParticlesCUDA(particlePositions, particleColors, numParticles, flowParams);
-    } else {
+        try {
+            initParticlesCUDA(particlePositions, particleColors, numParticles, flowParams);
+        } catch (...) {
+            useCUDA = 0;
+        }
+    }
+    if (useCUDA == 0) {
         try {
             particlePositions.resize(numParticles*3);
             particleColors.resize(numParticles*3);
@@ -82,6 +88,7 @@ void initParticles() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+    std::cout << "[Particles] Initialized " << numParticles << std::endl;
 }
 
 void updateParticles(float dt) {
@@ -93,8 +100,9 @@ void updateParticles(float dt) {
     if (particlePositions.size() != particleColors.size()) return;
     if (useCUDA == 1) {
         try { updateParticlesCUDA(particlePositions, particleColors, n, flowParams, dt); }
-        catch (...) {}
-    } else {
+        catch (...) { useCUDA = 0; }
+    }
+    if (useCUDA == 0) {
         float csx = flowParams.cellSizeX, csy = flowParams.cellSizeY, csz = flowParams.cellSizeZ;
         if (!std::isfinite(csx) || csx < 1e-8f) csx = 0.1f;
         if (!std::isfinite(csy) || csy < 1e-8f) csy = 0.1f;
@@ -109,7 +117,7 @@ void updateParticles(float dt) {
         float vInfMag = sqrtf(vxInf*vxInf + vyInf*vyInf + vzInf*vzInf);
         if (!std::isfinite(vInfMag) || vInfMag < 1e-4f) vInfMag = 1.0f;
         float maxSpeed = maxSpeedForColor;
-        if (maxSpeed < 1e-3f) maxSpeed = vInfMag * 1.5f;
+        if (!std::isfinite(maxSpeed) || maxSpeed < 1e-3f) maxSpeed = vInfMag * 1.5f;
 
         float* posPtr = particlePositions.data();
         float* colPtr = particleColors.data();
@@ -118,6 +126,7 @@ void updateParticles(float dt) {
         float voxMinX = g_voxMinX, voxMinY = g_voxMinY, voxMinZ = g_voxMinZ;
         bool useColl = useVoxelCollision && distField && voxNx > 0;
         int distSize = (int)g_distanceField.size();
+        float groundY = g_voxMinY + aeroGroundHeight;
 
         #ifdef _OPENMP
         #pragma omp parallel for
@@ -130,6 +139,8 @@ void updateParticles(float dt) {
             if (!std::isfinite(px)) {
                 float r1 = fabsf(sinf(i*12.9898f + time*10.0f) * 43758.5453f); r1 -= floorf(r1);
                 float r2 = fabsf(cosf(i*39.346f + time*15.0f) * 24634.6345f); r2 -= floorf(r2);
+                if (!std::isfinite(r1)) r1 = 0.5f;
+                if (!std::isfinite(r2)) r2 = 0.5f;
                 px = minX + (maxX - minX)*(0.05f + 0.9f*r1);
                 py = minY + (maxY - minY)*(0.05f + 0.9f*r2);
                 pz = minZ + 0.05f;
@@ -151,34 +162,34 @@ void updateParticles(float dt) {
                     if (idx >=0 && idx < distSize) {
                         float rawDist = distField[idx];
                         if (!std::isfinite(rawDist)) rawDist = 1000.0f;
+                        if (rawDist > 1e4f || rawDist < -1e4f) rawDist = 1000.0f;
                         surfDist = rawDist * csx;
                         if (rawDist < 0.0f) {
                             glm::vec3 nrm = sdfNormalCPU(np);
                             if (!std::isfinite(nrm.x)) nrm = glm::vec3(0,1,0);
                             float push = fabsf(surfDist) + 0.5f * csx;
+                            if (push > 10.0f) push = csx;
                             np += nrm * push;
-                            float vmag = vInfMag;
                             glm::vec3 Vinf(vxInf, vyInf, vzInf);
                             float vinf_n = glm::dot(Vinf, nrm);
                             glm::vec3 vinf_t = Vinf - vinf_n * nrm;
                             float vn = glm::dot(v, nrm);
                             v -= vn * nrm;
-                            float perpFactor = fabsf(vinf_n) / vmag;
+                            float perpFactor = fabsf(vinf_n) / vInfMag;
                             float slideBoost = 1.2f + 0.8f * perpFactor;
                             v += vinf_t * slideBoost * 0.6f;
                             float spd = glm::length(v);
-                            if (spd < 0.3f * vmag) v = vinf_t * slideBoost;
+                            if (!std::isfinite(spd) || spd < 0.3f * vInfMag) v = vinf_t * slideBoost;
                         }
                     }
                 }
             }
 
-            // Ground effect — отталкивание от земли
             if (aeroGroundEffect) {
-                float groundY = g_voxMinY + aeroGroundHeight;
                 if (np.y < groundY + csy) {
                     np.y = groundY + csy;
                     v.y = fabsf(v.y) * 0.5f;
+                    if (v.y < 1e-3f) v.y = 0;
                 }
             }
 
@@ -201,12 +212,11 @@ void updateParticles(float dt) {
             posPtr[3*i+1] = np.y;
             posPtr[3*i+2] = np.z;
 
-            // Реалистичная окраска как на фото
             glm::vec3 c;
             if (lbmParams.enabled && lbmInitialized) {
                 if (aeroVisMode == AeroVisMode::VelocityMagnitude || aeroColorStreamlinesByVelocity) {
                     float velMag = glm::length(v);
-                    // Ускорение под днищем авто как на фото 2
+                    if (!std::isfinite(velMag)) velMag = vInfMag;
                     if (aeroGroundEffect && np.y < center.y) velMag *= 1.15f;
                     c = getVelocityMagnitudeColor(velMag, maxSpeed);
                 } else if (aeroVisMode == AeroVisMode::Vorticity) {
@@ -214,10 +224,15 @@ void updateParticles(float dt) {
                     c = getVorticityColor(vort);
                 } else if (aeroVisMode == AeroVisMode::QCriterion) {
                     float q = getLBMQWorld(np);
-                    if (q > 0) c = glm::vec3(1, 0.3f, 0); // вихрь — красный/оранжевый
-                    else c = glm::vec3(0, 0.5f, 1); // деформация — синий
+                    c = getQCriterionColor(q);
+                } else if (aeroVisMode == AeroVisMode::TurbulentKE) {
+                    float tke = getLBMTKEWorld(np);
+                    c = getTKEColor(tke);
+                } else if (aeroVisMode == AeroVisMode::SkinFriction) {
+                    float s = getLBMStrainWorld(np);
+                    float t = glm::clamp(s*0.5f, 0.0f, 1.0f);
+                    c = glm::vec3(t, 1-t, 0.5f);
                 } else {
-                    // По умолчанию — по скорости как на фото
                     float velMag = glm::length(v);
                     c = getVelocityMagnitudeColor(velMag, maxSpeed);
                 }
@@ -225,6 +240,7 @@ void updateParticles(float dt) {
                 c = colorForPoint(v, surfDist, flowParams);
                 if (aeroColorStreamlinesByVelocity) {
                     float velMag = glm::length(v);
+                    if (!std::isfinite(velMag)) velMag = vInfMag;
                     c = getVelocityMagnitudeColor(velMag, maxSpeed);
                 }
             }

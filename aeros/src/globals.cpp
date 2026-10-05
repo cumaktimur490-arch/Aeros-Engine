@@ -30,13 +30,19 @@ bool showStreamlines = true;
 bool showPressure    = false;
 bool showLiftDrag    = true;
 bool showObstacle    = false;
+bool showGroundPlane = false;
+bool showSlicePlane  = false;
+bool showColorLegend = true;
+bool autoRotate      = false;
 
 glm::vec3 bgColor        = glm::vec3(0.05f, 0.06f, 0.09f);
 glm::vec3 bboxColor      = glm::vec3(0.3f, 0.3f, 0.3f);
 glm::vec3 obstacleColor  = glm::vec3(0.2f, 0.5f, 0.9f);
+glm::vec3 groundColor    = glm::vec3(0.15f, 0.15f, 0.18f);
 float obstacleAlpha    = 0.12f;
 float streamlineAlpha  = 0.85f;
 float streamlineWidth  = 1.5f;
+float groundAlpha      = 0.6f;
 
 bool  vsyncEnabled = true;
 bool  limitFPS     = false;
@@ -65,8 +71,6 @@ unsigned int particleVAO = 0;
 unsigned int particleVBO_pos = 0, particleVBO_col = 0;
 std::vector<float> particlePositions;
 std::vector<float> particleColors;
-// Сколько частиц реально аллоцировано в буферах/векторах.
-// Слайдер Count меняет numParticles, но буферы перевыделяются только в initParticles().
 int particleDrawCount = 0;
 
 int   numStreamlines     = 24;
@@ -88,10 +92,19 @@ unsigned int axesVAO = 0, axesVBO = 0;
 unsigned int obstacleVAO = 0, obstacleVBO = 0, obstacleEBO = 0;
 int obstacleIndexCount = 0;
 
+unsigned int groundVAO = 0, groundVBO = 0, groundEBO = 0;
+int groundIndexCount = 0;
+
+unsigned int sliceVAO = 0, sliceVBO = 0;
+unsigned int gridVAO = 0, gridVBO = 0;
+
 glm::vec3 liftVector(0.0f);
 glm::vec3 dragVector(0.0f);
 float liftMagnitude = 0.0f;
 float dragMagnitude = 0.0f;
+float liftToDragRatio = 0.0f;
+float momentMagnitude = 0.0f;
+glm::vec3 momentVector(0.0f);
 glm::vec3 centerOfPressure(0.0f);
 unsigned int liftDragVAO = 0, liftDragVBO = 0;
 bool liftDragDirty = true;
@@ -127,3 +140,16 @@ bool aeroColorStreamlinesByVelocity = true;
 bool aeroShowSeparation = true;
 float aeroRefArea = 1.0f;
 bool aeroAutoRefArea = true;
+bool aeroShowBoundaryLayer = false;
+float aeroBoundaryLayerScale = 1.0f;
+bool aeroMachEffects = false;
+float aeroReNumber = 0.0f;
+
+// v1.8.0
+bool aeroShowWake = true;
+float aeroWakeOpacity = 0.5f;
+bool aeroShowVortices = true;
+bool aeroUseRealisticLighting = true;
+int aeroColorMap = 0; // 0 rainbow
+bool aeroExportEnabled = false;
+float aeroAutoRotateSpeed = 10.0f;

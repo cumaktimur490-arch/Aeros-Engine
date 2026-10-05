@@ -11,7 +11,7 @@
 #include "lbm.h"
 
 // =====================================================
-// FlowParams — v1.6.0 оптимизировано с кэшированием
+// FlowParams — v1.8.0 оптимизировано + ground + Re
 // =====================================================
 void updateFlowParams() {
     updateAtmosphereParams();
@@ -113,10 +113,20 @@ void updateFlowParams() {
     flowParams.airPressure = std::isfinite(airPressure) && airPressure > 0.1f ? airPressure : 101325.0f;
     flowParams.airTemperature = std::isfinite(airTemperature) && airTemperature > 10.0f ? airTemperature : 288.15f;
     flowParams.speedOfSound = std::isfinite(speedOfSound) && speedOfSound > 1.0f ? speedOfSound : 340.3f;
+
+    // Reynolds number
+    {
+        float L = maxDim;
+        if (L < 1e-6f) L = 1.0f;
+        float V = safeSpeed;
+        float mu = 1.81e-5f;
+        float nu = mu / flowParams.airDensity;
+        aeroReNumber = V * L / (nu + 1e-9f);
+    }
 }
 
 // =====================================================
-// Поле скоростей CPU — v1.6.0 LBM + оптимизация
+// Поле скоростей CPU — v1.8.0 LBM + ground + BL
 // =====================================================
 glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
     // LBM приоритет если включен — быстрый путь
@@ -128,7 +138,18 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
             glm::vec3 vLBM = getLBMVelocityWorld(p);
             if (std::isfinite(vLBM.x)) {
                 float mag2 = vLBM.x*vLBM.x + vLBM.y*vLBM.y + vLBM.z*vLBM.z;
-                if (mag2 > 1e-12f) return vLBM;
+                if (mag2 > 1e-12f) {
+                    // Ground effect для LBM уже в LBM, но добавим доп ускорение под днищем
+                    if (aeroGroundEffect) {
+                        float groundY = g_voxMinY + aeroGroundHeight;
+                        if (p.y > groundY && p.y < center.y && p.y - groundY < maxDim*0.5f) {
+                            // Venturi под днищем — ускорение
+                            float underFactor = 1.0f + 0.3f * (1.0f - (p.y-groundY)/(maxDim*0.5f));
+                            vLBM *= underFactor;
+                        }
+                    }
+                    return vLBM;
+                }
             }
         } else {
             // Вне LBM — сразу freestream
@@ -141,6 +162,42 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
     glm::vec3 v(prm.vx, prm.vy, prm.vz);
     float vmag = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
     if (vmag < 1e-4f) vmag = 1e-4f;
+
+    // Ground effect — земля
+    if (aeroGroundEffect) {
+        float groundY = g_voxMinY + aeroGroundHeight;
+        if (p.y < groundY + prm.cellSizeY) {
+            // На земле — no-slip
+            float distFromGround = p.y - groundY;
+            if (distFromGround < 0) {
+                v = glm::vec3(0);
+                return v;
+            } else if (distFromGround < prm.cellSizeY*3.0f) {
+                // Пограничный слой у земли
+                float t = distFromGround / (prm.cellSizeY*3.0f);
+                t = glm::clamp(t, 0.0f, 1.0f);
+                // 1/7 степенной закон для турбулентного погранслоя
+                float blFactor = powf(t, 1.0f/7.0f);
+                v *= blFactor;
+            }
+        }
+        // Ускорение под днищем (Venturi) для авто
+        if (p.y > groundY && p.y < center.y) {
+            float heightAboveGround = p.y - groundY;
+            float carBottom = minBB.y;
+            if (p.y > carBottom - maxDim*0.1f && p.y < carBottom + maxDim*0.5f) {
+                // Под днищем
+                float clearance = carBottom - groundY;
+                if (clearance > 1e-3f && clearance < maxDim) {
+                    float venturi = 1.0f + 0.4f * (1.0f - clearance/maxDim);
+                    // Только если внутри проекции авто по X/Z
+                    if (p.x >= minBB.x && p.x <= maxBB.x && p.z >= minBB.z && p.z <= maxBB.z) {
+                        v *= venturi;
+                    }
+                }
+            }
+        }
+    }
 
     if (!g_distanceField.empty()) {
         float d = sampleSDFCPU(p);
@@ -165,6 +222,8 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
                         float dTmp = (distNorm - 0.3f) * 2.5f;
                         float boostProfile = expf(-dTmp * dTmp);
                         float tangentialBoost = boostProfile * 0.6f;
+                        // Для высокого Re — больше ускорение на кривизне (Coanda)
+                        if (aeroReNumber > 1e5f) tangentialBoost *= 1.2f;
                         v_t *= (1.0f + tangentialBoost);
                         v = v_n * boundaryFactor + v_t;
                     } else {
@@ -204,6 +263,7 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
             float omega = 6.2831853f * st * vmag / D;
             float phase = omega * prm.time - along * 1.5f;
             float amp = prm.wakeStrength * decay * width * vmag * 0.8f;
+            if (aeroShowWake) amp *= (1.0f + aeroWakeOpacity);
             float sinPhase = sinf(phase);
             float side = (sinf(phase * 0.5f) > 0) ? 1.0f : -1.0f;
             v.x += amp * sinPhase * vtx * side;
@@ -216,12 +276,26 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
             v.y += lat * pny;
             v.z += lat * pnz;
             float turbScale = 0.15f * amp;
+            // Mach effects — сжимаемость
+            if (aeroMachEffects) {
+                float mach = vmag / (prm.speedOfSound + 1e-6f);
+                if (mach > 0.3f) turbScale *= (1.0f + mach);
+            }
             float tx = prm.time;
             v.x += turbScale * sinf(tx*4.3f + along*2.1f + perp*3.7f + p.x*1.3f);
             v.y += turbScale * sinf(tx*3.7f + along*2.8f + perp*4.1f + p.y*1.7f);
             v.z += turbScale * sinf(tx*5.1f + along*1.9f + perp*3.3f + p.z*1.1f);
         }
     }
+
+    // Ограничиваем скорость чтобы не улетала
+    float maxV = prm.maxSpeed * 2.0f;
+    float curMag2 = v.x*v.x + v.y*v.y + v.z*v.z;
+    if (curMag2 > maxV*maxV) {
+        float s = maxV / sqrtf(curMag2);
+        v *= s;
+    }
+
     return v;
 }
 
@@ -232,6 +306,27 @@ glm::vec3 colorForPoint(const glm::vec3& v, float sdfDist, const FlowParams& prm
     if (safeMaxSpeed < 1e-6f) safeMaxSpeed = 5.0f;
     float spdT = speed / safeMaxSpeed;
     if (spdT < 0) spdT = 0; if (spdT > 1) spdT = 1;
+
+    // Цветовые карты
+    if (aeroColorMap == 1) { // viridis
+        // viridis approximation
+        glm::vec3 c;
+        if (spdT < 0.25f) { float k=spdT/0.25f; c=glm::vec3(0.267f + k*0.1f, 0.004f + k*0.3f, 0.329f + k*0.2f); }
+        else if (spdT < 0.5f) { float k=(spdT-0.25f)/0.25f; c=glm::vec3(0.229f + k*0.1f, 0.322f + k*0.2f, 0.545f - k*0.1f); }
+        else if (spdT < 0.75f) { float k=(spdT-0.5f)/0.25f; c=glm::vec3(0.127f + k*0.5f, 0.566f + k*0.2f, 0.550f - k*0.2f); }
+        else { float k=(spdT-0.75f)/0.25f; c=glm::vec3(0.5f + k*0.49f, 0.79f + k*0.1f, 0.3f - k*0.1f); }
+        return c;
+    } else if (aeroColorMap == 2) { // parula
+        if (spdT < 0.25f) return glm::vec3(spdT*4.0f*0.2f, spdT*4.0f*0.2f, 0.5f + spdT*2.0f);
+        else if (spdT < 0.5f) { float k=(spdT-0.25f)/0.25f; return glm::vec3(k*0.2f, 0.2f + k*0.6f, 1.0f - k*0.3f); }
+        else if (spdT < 0.75f) { float k=(spdT-0.5f)/0.25f; return glm::vec3(0.2f + k*0.6f, 0.8f, 0.7f - k*0.7f); }
+        else { float k=(spdT-0.75f)/0.25f; return glm::vec3(0.8f + k*0.2f, 0.8f - k*0.8f, k*0.2f); }
+    } else if (aeroColorMap == 3) { // coolwarm
+        if (spdT < 0.5f) { float k=spdT*2.0f; return glm::vec3(0.23f + k*0.6f, 0.29f + k*0.4f, 0.75f); }
+        else { float k=(spdT-0.5f)*2.0f; return glm::vec3(0.85f, 0.7f - k*0.5f, 0.2f + k*0.1f); }
+    }
+
+    // Default rainbow как раньше
     float cell = prm.cellSizeX;
     if (cell < 1e-6f) cell = 0.1f;
     if (sdfDist < 1.5f * cell) return glm::vec3(1.0f, 0.2f, 0.0f);

@@ -1,9 +1,10 @@
 #include "atmosphere.h"
 #include <cmath>
 #include <algorithm>
+#include <limits>
+#include <iostream>
 
-// Глобальные переменные
-float altitude = 0.0f;              // м
+float altitude = 0.0f;
 SpeedUnit speedUnit = SPEED_MS;
 float airDensity = 1.225f;
 float airTemperature = 288.15f;
@@ -11,16 +12,17 @@ float airPressure = 101325.0f;
 float speedOfSound = 340.3f;
 bool useRealDensity = true;
 
-// Константы ISA
-static const float T0 = 288.15f;        // K, температура на уровне моря
-static const float P0 = 101325.0f;      // Pa, давление на уровне моря
-static const float L = 0.0065f;         // K/м, температурный градиент
-static const float R = 287.05f;         // Дж/(кг*К), газовая постоянная
-static const float g0 = 9.80665f;       // м/с²
-static const float gamma = 1.4f;        // показатель адиабаты
+static const float T0 = 288.15f;
+static const float P0 = 101325.0f;
+static const float L = 0.0065f;
+static const float R = 287.05f;
+static const float g0 = 9.80665f;
+static const float gamma_air = 1.4f;
 
-// Конвертация скорости
 float speedToMS(float value, SpeedUnit unit) {
+    if (!std::isfinite(value)) return 0.0f;
+    if (value < 0) value = 0;
+    if (value > 1e6f) value = 1e6f;
     switch (unit) {
         case SPEED_MS:    return value;
         case SPEED_KMH:   return value / 3.6f;
@@ -32,6 +34,9 @@ float speedToMS(float value, SpeedUnit unit) {
 }
 
 float speedFromMS(float ms, SpeedUnit unit) {
+    if (!std::isfinite(ms)) return 0.0f;
+    if (ms < 0) ms = 0;
+    if (ms > 1e6f) ms = 1e6f;
     switch (unit) {
         case SPEED_MS:    return ms;
         case SPEED_KMH:   return ms * 3.6f;
@@ -67,54 +72,78 @@ const char* speedUnitShort(SpeedUnit unit) {
 AtmosphereParams calculateAtmosphere(float h) {
     AtmosphereParams atm;
     atm.altitude = h;
-    h = std::max(0.0f, std::min(h, 80000.0f)); // ограничим 80км
+    if (!std::isfinite(h)) h = 0;
+    h = std::max(0.0f, std::min(h, 80000.0f));
 
     if (h <= 11000.0f) {
-        // Тропосфера 0-11км
         atm.temperature = T0 - L * h;
+        if (atm.temperature < 10.0f) atm.temperature = 10.0f;
         float exponent = g0 / (L * R);
-        atm.pressure = P0 * powf(atm.temperature / T0, exponent);
+        if (!std::isfinite(exponent)) exponent = 5.255f;
+        float ratio = atm.temperature / T0;
+        if (ratio < 1e-6f) ratio = 1e-6f;
+        atm.pressure = P0 * powf(ratio, exponent);
     } else if (h <= 20000.0f) {
-        // Нижняя стратосфера 11-20км — изотермический слой T=216.65K
-        float T11 = T0 - L * 11000.0f; // 216.65K
+        float T11 = T0 - L * 11000.0f;
         float P11 = P0 * powf(T11 / T0, g0 / (L * R));
         atm.temperature = T11;
-        atm.pressure = P11 * expf(-g0 * (h - 11000.0f) / (R * T11));
+        float expArg = -g0 * (h - 11000.0f) / (R * T11);
+        if (expArg < -50.0f) expArg = -50.0f;
+        if (expArg > 50.0f) expArg = 50.0f;
+        atm.pressure = P11 * expf(expArg);
     } else if (h <= 32000.0f) {
-        // 20-32км — температура растёт +1K/км
         float T11 = 216.65f;
         float P11 = P0 * powf(T11 / T0, g0 / (L * R)) * expf(-g0 * (20000.0f - 11000.0f) / (R * T11));
-        const float L2 = 0.001f; // K/м, рост температуры
-        const float T20 = T11; // 216.65K на 20км
-        atm.temperature = T20 + L2 * (h - 20000.0f); // растёт до 228.65K на 32км
-        atm.pressure = P11 * powf(atm.temperature / T20, -g0 / (L2 * R));
+        const float L2 = 0.001f;
+        const float T20 = T11;
+        atm.temperature = T20 + L2 * (h - 20000.0f);
+        float ratio = atm.temperature / T20;
+        if (ratio < 1e-6f) ratio = 1e-6f;
+        atm.pressure = P11 * powf(ratio, -g0 / (L2 * R));
     } else {
-        // Выше 32км — упрощённо
         atm.temperature = 228.65f + 0.0028f * (h - 32000.0f);
-        if (atm.temperature < 200.0f) atm.temperature = 200.0f;
-        // Очень низкое давление — P32 примерно на 32км
+        if (atm.temperature < 150.0f) atm.temperature = 150.0f;
+        if (atm.temperature > 500.0f) atm.temperature = 500.0f;
         const float P32 = 868.02f;
-        atm.pressure = P32 * expf(-g0 * (h - 32000.0f) / (R * atm.temperature));
+        float expArg = -g0 * (h - 32000.0f) / (R * atm.temperature);
+        if (expArg < -50.0f) expArg = -50.0f;
+        atm.pressure = P32 * expf(expArg);
     }
 
-    atm.density = atm.pressure / (R * atm.temperature);
-    atm.speedOfSound = sqrtf(gamma * R * atm.temperature);
+    if (!std::isfinite(atm.temperature) || atm.temperature < 10.0f) atm.temperature = 216.65f;
+    if (!std::isfinite(atm.pressure) || atm.pressure < 0.01f) atm.pressure = 0.01f;
 
-    // Защита от NaN
-    if (atm.density < 0.0001f) atm.density = 0.0001f;
-    if (atm.pressure < 1.0f) atm.pressure = 1.0f;
+    atm.density = atm.pressure / (R * atm.temperature);
+    if (!std::isfinite(atm.density) || atm.density < 1e-6f) atm.density = 1e-6f;
+    atm.speedOfSound = sqrtf(gamma_air * R * atm.temperature);
+    if (!std::isfinite(atm.speedOfSound) || atm.speedOfSound < 1.0f) atm.speedOfSound = 340.3f;
+
+    if (atm.density < 0.00001f) atm.density = 0.00001f;
+    if (atm.pressure < 0.1f) atm.pressure = 0.1f;
+    if (atm.density > 5.0f) atm.density = 5.0f;
 
     return atm;
 }
 
 float getAirDensity(float altitudeMeters) {
+    if (!std::isfinite(altitudeMeters)) return 1.225f;
     return calculateAtmosphere(altitudeMeters).density;
 }
 
 void updateAtmosphereParams() {
+    if (!std::isfinite(altitude)) altitude = 0.0f;
+    if (altitude < 0) altitude = 0;
+    if (altitude > 80000.0f) altitude = 80000.0f;
     AtmosphereParams atm = calculateAtmosphere(altitude);
     airDensity = atm.density;
     airTemperature = atm.temperature;
     airPressure = atm.pressure;
     speedOfSound = atm.speedOfSound;
+    if (!std::isfinite(airDensity)) {
+        std::cerr << "[Atmosphere] Invalid density, resetting" << std::endl;
+        airDensity = 1.225f;
+        airTemperature = 288.15f;
+        airPressure = 101325.0f;
+        speedOfSound = 340.3f;
+    }
 }

@@ -6,6 +6,7 @@
 #include "forces.h"
 #include "shaders.h"
 #include "lbm.h"
+#include "gl_utils.h"
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -787,18 +788,17 @@ bool testMemoryLayout() {
 bool testRealisticAero() {
     logTest("Testing realistic aerodynamics (photo-like)...");
     bool ok = true;
-    // Проверка что визуализация как на фото работает
     if (modelVertexCount == 0) { logTest("  SKIP: no model"); return true; }
 
-    // Проверка Cp диапазона — как на фото 4 NASCAR: Cp должен быть в [-3,1.5]
     float vinf = sqrtf(flowParams.vx*flowParams.vx + flowParams.vy*flowParams.vy + flowParams.vz*flowParams.vz);
-    if (vinf < 1e-3f) vinf = 1.0f;
+    if (!std::isfinite(vinf) || vinf < 1e-3f) vinf = 1.0f;
     int checkVerts = std::min(200, (int)(g_vertices.size()/3));
     float minCp = 1e9f, maxCp = -1e9f;
     for (int i = 0; i < checkVerts; ++i) {
         glm::vec3 p(g_vertices[3*i], g_vertices[3*i+1], g_vertices[3*i+2]);
         glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
         float speed = glm::length(v);
+        if (!std::isfinite(speed)) continue;
         float cp = 1.0f - (speed*speed)/(vinf*vinf);
         if (cp < minCp) minCp = cp;
         if (cp > maxCp) maxCp = cp;
@@ -806,34 +806,193 @@ bool testRealisticAero() {
     logTest("  Cp range: [" + std::to_string(minCp) + ", " + std::to_string(maxCp) + "] expected [-3,1.5]");
     if (minCp < -5.0f || maxCp > 3.0f) { logTestError("  FAIL: Cp out of realistic range"); ok = false; }
 
-    // Проверка что цветовые карты работают
-    glm::vec3 c1 = getRealisticPressureColor(1.0f); // стагнация — красный
-    glm::vec3 c2 = getRealisticPressureColor(-2.0f); // разрежение — синий
+    glm::vec3 c1 = getRealisticPressureColor(1.0f);
+    glm::vec3 c2 = getRealisticPressureColor(-2.0f);
     if (c1.r < 0.8f) { logTestError("  FAIL: pressure color for Cp=1 should be red"); ok = false; }
     if (c2.b < 0.5f) { logTestError("  FAIL: pressure color for Cp=-2 should be blue"); ok = false; }
 
-    glm::vec3 cv1 = getVelocityMagnitudeColor(0.0f, 10.0f); // низкая — синий
-    glm::vec3 cv2 = getVelocityMagnitudeColor(10.0f, 10.0f); // высокая — красный
+    glm::vec3 cv1 = getVelocityMagnitudeColor(0.0f, 10.0f);
+    glm::vec3 cv2 = getVelocityMagnitudeColor(10.0f, 10.0f);
     if (cv1.b < 0.3f) { logTestError("  FAIL: vel color low should be blue"); ok = false; }
     if (cv2.r < 0.8f) { logTestError("  FAIL: vel color high should be red"); ok = false; }
 
-    // Проверка LBM реалистичности если включен
     if (lbmParams.enabled && lbmInitialized) {
         if (!lbmValidateRealisticAero()) { logTestError("  FAIL: LBM realistic aero validation"); ok = false; }
-        // Проверка что есть вихри (как на фото 5 — след)
         float maxVort = 0;
-        for (float v : lbmVorticityMag) if (v > maxVort) maxVort = v;
+        for (float v : lbmVorticityMag) if (std::isfinite(v) && v > maxVort) maxVort = v;
         logTest("  Max vorticity: " + std::to_string(maxVort));
         if (maxVort < 1e-6f) logTestWarn("  WARN: no vorticity detected — may need more LBM steps");
     }
 
-    // Проверка ground effect
     if (aeroGroundEffect) {
         logTest("  Ground effect enabled at " + std::to_string(aeroGroundHeight));
         if (!std::isfinite(aeroGroundHeight)) { logTestError("  FAIL: ground height NaN"); ok = false; }
     }
 
     if (ok) logTest("  Realistic aero OK — like photos");
+    return ok;
+}
+
+bool testGroundEffect() {
+    logTest("Testing ground effect...");
+    bool ok = true;
+    float savedGE = aeroGroundEffect;
+    float savedGH = aeroGroundHeight;
+    
+    aeroGroundEffect = true;
+    aeroGroundHeight = 0.0f;
+    updateFlowParams();
+    
+    // Test that velocity near ground is reduced (no-slip)
+    glm::vec3 pGround(g_voxMinX, g_voxMinY + 0.01f, g_voxMinZ);
+    glm::vec3 pAbove(g_voxMinX, g_voxMinY + 1.0f, g_voxMinZ);
+    glm::vec3 vGround = computeVelocityFieldCPU(pGround, flowParams);
+    glm::vec3 vAbove = computeVelocityFieldCPU(pAbove, flowParams);
+    float magGround = glm::length(vGround);
+    float magAbove = glm::length(vAbove);
+    logTest("  Ground vel: " + std::to_string(magGround) + " vs above: " + std::to_string(magAbove));
+    if (magGround > magAbove + 1e-3f) {
+        logTestWarn("  WARN: ground velocity should be <= above velocity (no-slip)");
+    }
+    
+    // Test ground plane creation
+    try {
+        createGroundPlane(maxDim * 2.0f);
+        if (groundVAO == 0) { logTestError("  FAIL: ground VAO not created"); ok = false; }
+    } catch (...) { logTestError("  FAIL: ground plane creation threw"); ok = false; }
+    
+    aeroGroundEffect = savedGE;
+    aeroGroundHeight = savedGH;
+    updateFlowParams();
+    
+    if (ok) logTest("  Ground effect OK");
+    return ok;
+}
+
+bool testColorMaps() {
+    logTest("Testing color maps...");
+    bool ok = true;
+    
+    // Test all color maps for NaN and range
+    for (int cm = 0; cm < 4; ++cm) {
+        aeroColorMap = cm;
+        for (float t = 0.0f; t <= 1.0f; t += 0.1f) {
+            glm::vec3 c1 = getRealisticPressureColor(t*4.0f - 3.0f);
+            glm::vec3 c2 = getVelocityMagnitudeColor(t*10.0f, 10.0f);
+            glm::vec3 c3 = getVorticityColor(t*20.0f);
+            glm::vec3 c4 = getQCriterionColor(t*2.0f - 1.0f);
+            glm::vec3 c5 = getTKEColor(t);
+            if (!std::isfinite(c1.x) || !std::isfinite(c2.x) || !std::isfinite(c3.x) || !std::isfinite(c4.x) || !std::isfinite(c5.x)) {
+                logTestError("  FAIL: color map " + std::to_string(cm) + " t=" + std::to_string(t) + " produced NaN");
+                ok = false;
+            }
+            // Check 0-1 range
+            auto checkRange = [&](glm::vec3 c, const char* name) {
+                if (c.x < -0.1f || c.x > 1.1f || c.y < -0.1f || c.y > 1.1f || c.z < -0.1f || c.z > 1.1f) {
+                    logTestError(std::string("  FAIL: ") + name + " out of [0,1] range: " + std::to_string(c.x) + "," + std::to_string(c.y) + "," + std::to_string(c.z));
+                    return false;
+                }
+                return true;
+            };
+            if (!checkRange(c1, "pressure")) ok = false;
+            if (!checkRange(c2, "velocity")) ok = false;
+        }
+    }
+    aeroColorMap = 0; // reset
+    
+    if (ok) logTest("  Color maps OK");
+    return ok;
+}
+
+bool testStability() {
+    logTest("Testing stability...");
+    bool ok = true;
+    
+    if (lbmInitialized) {
+        if (!lbmValidateStability()) { logTestError("  FAIL: LBM stability check"); ok = false; }
+        if (!lbmValidateConservation()) { logTestError("  FAIL: LBM conservation"); ok = false; }
+        // Check for NaN in all fields
+        int nanCount = 0;
+        for (float v : lbmRho) if (!std::isfinite(v)) nanCount++;
+        for (float v : lbmUx) if (!std::isfinite(v)) nanCount++;
+        for (float v : lbmUy) if (!std::isfinite(v)) nanCount++;
+        for (float v : lbmUz) if (!std::isfinite(v)) nanCount++;
+        if (nanCount > 0) { logTestError("  FAIL: LBM fields have " + std::to_string(nanCount) + " NaN"); ok = false; }
+    }
+    
+    // Check global state
+    if (!std::isfinite(flowSpeed) || flowSpeed < 0 || flowSpeed > 1e6f) { logTestError("  FAIL: flowSpeed invalid"); ok = false; }
+    if (!std::isfinite(maxDim) || maxDim < 1e-6f) { logTestError("  FAIL: maxDim invalid"); ok = false; }
+    if (!std::isfinite(aeroRefArea) || aeroRefArea < 1e-9f) { logTestError("  FAIL: aeroRefArea invalid"); ok = false; }
+    
+    if (ok) logTest("  Stability OK");
+    return ok;
+}
+
+bool testRefArea() {
+    logTest("Testing ref area...");
+    bool ok = true;
+    
+    float areaAuto = computeLBMRefArea();
+    logTest("  Auto ref area: " + std::to_string(areaAuto));
+    if (!std::isfinite(areaAuto) || areaAuto < 1e-6f || areaAuto > 1e6f) { logTestError("  FAIL: ref area invalid"); ok = false; }
+    
+    // Manual area
+    float savedAuto = aeroAutoRefArea;
+    float savedArea = aeroRefArea;
+    aeroAutoRefArea = false;
+    aeroRefArea = 2.5f;
+    float areaManual = computeLBMRefArea();
+    if (fabsf(areaManual - 2.5f) > 1e-3f) { logTestError("  FAIL: manual ref area not respected"); ok = false; }
+    
+    aeroAutoRefArea = savedAuto;
+    aeroRefArea = savedArea;
+    
+    // Test Cd/Cl calculation doesn't crash
+    try {
+        computeLiftDrag();
+        if (!std::isfinite(liftMagnitude) || !std::isfinite(dragMagnitude)) {
+            logTestError("  FAIL: lift/drag NaN");
+            ok = false;
+        }
+        logTest("  Cd: " + std::to_string(aeroRefArea>1e-6f ? dragMagnitude / (0.5f*airDensity*flowSpeed*flowSpeed*aeroRefArea) : 0) + 
+                " Cl: " + std::to_string(aeroRefArea>1e-6f ? liftMagnitude / (0.5f*airDensity*flowSpeed*flowSpeed*aeroRefArea) : 0));
+    } catch (...) { logTestError("  FAIL: computeLiftDrag threw"); ok = false; }
+    
+    if (ok) logTest("  Ref area OK");
+    return ok;
+}
+
+bool testReynolds() {
+    logTest("Testing Reynolds number...");
+    bool ok = true;
+    
+    float Re = aeroReNumber;
+    logTest("  Re: " + std::to_string(Re));
+    if (!std::isfinite(Re) || Re < 0) { logTestError("  FAIL: Re invalid"); ok = false; }
+    if (Re > 1e10f) { logTestError("  FAIL: Re too high"); ok = false; }
+    
+    // Test that Re changes with speed
+    float savedSpeed = flowSpeed;
+    flowSpeed = 1.0f;
+    updateFlowParams();
+    float Re1 = aeroReNumber;
+    flowSpeed = 10.0f;
+    updateFlowParams();
+    float Re2 = aeroReNumber;
+    logTest("  Re at 1 m/s: " + std::to_string(Re1) + " at 10 m/s: " + std::to_string(Re2));
+    if (Re2 <= Re1) { logTestError("  FAIL: Re should increase with speed"); ok = false; }
+    
+    flowSpeed = savedSpeed;
+    updateFlowParams();
+    
+    if (lbmInitialized) {
+        float lbmRe = computeLBMRe();
+        logTest("  LBM Re: " + std::to_string(lbmRe));
+        if (!std::isfinite(lbmRe)) { logTestError("  FAIL: LBM Re NaN"); ok = false; }
+    }
+    
+    if (ok) logTest("  Reynolds OK");
     return ok;
 }
 
@@ -908,7 +1067,6 @@ void runOptimizationTests() {
         {"Optimization", testOptimization},
         {"OpenMP", testOpenMP},
         {"Memory Layout", testMemoryLayout},
-        {"Realistic Aero (Photo)", testRealisticAero},
     };
     for (auto& tc : tests) {
         bool passed = false; std::string msg = "";
@@ -919,11 +1077,31 @@ void runOptimizationTests() {
         logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
     }
 }
+
+void runRealisticTests() {
+    struct Case { const char* name; bool (*func)(); };
+    Case tests[] = {
+        {"Realistic Aero (Photo)", testRealisticAero},
+        {"Ground Effect", testGroundEffect},
+        {"Color Maps", testColorMaps},
+        {"Stability", testStability},
+        {"Ref Area", testRefArea},
+        {"Reynolds", testReynolds},
+    };
+    for (auto& tc : tests) {
+        bool passed = false; std::string msg = "";
+        try { passed = tc.func(); } catch (const std::exception& e) { msg = std::string("EXCEPTION: ") + e.what(); passed = false; } catch (...) { msg = "UNKNOWN EXCEPTION"; passed = false; }
+        TestResult r; r.name = tc.name; r.category = "Realistic"; r.passed = passed; r.message = msg.empty() ? (passed ? "OK" : "FAILED") : msg;
+        lastTestResults.push_back(r);
+        if (passed) testsPassed++; else testsFailed++;
+        logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
+    }
+}
 void runAllTests() {
     auto t0 = std::chrono::high_resolution_clock::now();
     lastTestResults.clear(); testLog.clear();
     testsPassed = 0; testsFailed = 0; codeTestsPassed = 0; codeTestsFailed = 0; lbmTestsPassed = 0; lbmTestsFailed = 0; lastGLError = 0; lastGLErrorStr.clear();
-    logTest("=== Starting Aeros Engine Tests v1.6.0 Optimized ===");
+    logTest("=== Starting Aeros Engine Tests v1.8.0 Realistic+ ===");
     logTest("Model: " + std::to_string(modelVertexCount) + " vertices, Voxel: " + std::to_string(g_voxNx) + "x" + std::to_string(g_voxNy) + "x" + std::to_string(g_voxNz) + ", LBM: " + std::to_string(lbmNx) + "x" + std::to_string(lbmNy) + "x" + std::to_string(lbmNz));
     logTest("--- Physics Tests ---");
     runPhysicsTests();
@@ -933,11 +1111,15 @@ void runAllTests() {
     runLBMTests();
     logTest("--- Optimization Tests ---");
     runOptimizationTests();
+    logTest("--- Realistic Aero Tests ---");
+    runRealisticTests();
     auto t1 = std::chrono::high_resolution_clock::now();
     lastTestTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
-    logTest("=== Tests finished: " + std::to_string(testsPassed) + " passed, " + std::to_string(testsFailed) + " failed (Physics=" + std::to_string(testsPassed - codeTestsPassed - lbmTestsPassed) + " Code=" + std::to_string(codeTestsPassed) + "/" + std::to_string(codeTestsPassed+codeTestsFailed) + " LBM=" + std::to_string(lbmTestsPassed) + "/" + std::to_string(lbmTestsPassed+lbmTestsFailed) + ") in " + std::to_string(lastTestTimeMs) + " ms ===");
-    if (testsFailed > 0) logTestError("!!! ERRORS DETECTED: Physics=" + std::to_string(testsFailed - codeTestsFailed - lbmTestsFailed) + " Code=" + std::to_string(codeTestsFailed) + " LBM=" + std::to_string(lbmTestsFailed) + " !!!");
-    else logTest("All tests passed — physics, code, LBM and optimization OK");
+    int realisticPassed = 0, realisticFailed = 0;
+    for (auto& r : lastTestResults) if (r.category=="Realistic") { if (r.passed) realisticPassed++; else realisticFailed++; }
+    logTest("=== Tests finished: " + std::to_string(testsPassed) + " passed, " + std::to_string(testsFailed) + " failed (Physics=" + std::to_string(testsPassed - codeTestsPassed - lbmTestsPassed - realisticPassed) + " Code=" + std::to_string(codeTestsPassed) + "/" + std::to_string(codeTestsPassed+codeTestsFailed) + " LBM=" + std::to_string(lbmTestsPassed) + "/" + std::to_string(lbmTestsPassed+lbmTestsFailed) + " Opt=3 Realistic=" + std::to_string(realisticPassed) + "/" + std::to_string(realisticPassed+realisticFailed) + ") in " + std::to_string(lastTestTimeMs) + " ms ===");
+    if (testsFailed > 0) logTestError("!!! ERRORS DETECTED: Physics=" + std::to_string(testsFailed - codeTestsFailed - lbmTestsFailed - realisticFailed) + " Code=" + std::to_string(codeTestsFailed) + " LBM=" + std::to_string(lbmTestsFailed) + " Realistic=" + std::to_string(realisticFailed) + " !!!");
+    else logTest("All tests passed — physics, code, LBM, optimization and realistic OK");
 }
 void validateFrame() {
     if (!testContinuous) return;
