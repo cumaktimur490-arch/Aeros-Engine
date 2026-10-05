@@ -2,7 +2,7 @@
 ; Подключается через #include
 
 #define AppName "Aeros Engine"
-#define AppPublisher "Aeros Team"
+#define AppPublisher "GoGonam AoS."
 #define AppURL "https://github.com/cumaktimur490-arch/Aeros-Engine"
 #define AppExeName "main.exe"
 

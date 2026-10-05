@@ -42,7 +42,7 @@ CreateUninstallRegKey=yes
 VersionInfoVersion={#AppVersion}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Setup {#ArchTitle}
-VersionInfoCopyright=Copyright (C) 2026 Aeros Team
+VersionInfoCopyright=Copyright (C) 2026 GoGonam AoS.
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
 
