@@ -78,10 +78,13 @@ pause
 "@ | Set-Content -Path (Join-Path $portableDir "run.bat") -Encoding ASCII
     }
 
-    # README и LICENSE
+    # README и LICENSE и иконка
     Copy-Item (Join-Path $RootDir "LICENSE") -Destination (Join-Path $portableDir "LICENSE.txt") -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $RootDir "README.md") -Destination (Join-Path $portableDir "README.txt") -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $RootDir "VERSION") -Destination (Join-Path $portableDir "VERSION.txt") -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $RootDir "icon.png") -Destination (Join-Path $portableDir "icon.png") -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $RootDir "aeros/src/icon.png") -Destination (Join-Path $portableDir "Aeros-Engine-Icon.png") -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $BinDir "icon.ico") -Destination (Join-Path $portableDir "icon.ico") -Force -ErrorAction SilentlyContinue
 
     # Portable info
     @"
