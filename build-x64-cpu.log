@@ -1,0 +1,76 @@
+[Aeros CPU] Building for x64 ...
+[Aeros CPU] Version: 1.6.0 Arch: x64
+[Aeros CPU] LibDir: D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs GLFW: lib-vc2022
+[Aeros CPU] Compiling glad.c...
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+glad.c
+[Aeros CPU] Compiling C++ files...
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+main.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs\glad\include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+globals.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+input.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+gl_utils.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared\minwindef.h(130): warning C4005: 'APIENTRY': macro redefinition
+D:\a\Aeros-Engine\Aeros-Engine\aeros\..\libs\glad\include\glad/glad.h(32): note: see previous definition of 'APIENTRY'
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+stl_loader.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+voxel_grid.cpp
+src\voxel_grid.cpp(156): warning C4849: OpenMP 'collapse' clause ignored in 'parallel for' directive
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+flow_field.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+particles.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+streamlines.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+forces.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+model.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+ui.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+test_mode.cpp
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+lbm.cpp
+src\lbm.cpp(306): error C7660: 'max': requires '-openmp:llvm' command line option(s)
+src\lbm.cpp(422): warning C4849: OpenMP 'collapse' clause ignored in 'parallel for' directive
+src\lbm.cpp(462): warning C4849: OpenMP 'collapse' clause ignored in 'parallel for' directive
+src\lbm.cpp(478): warning C4849: OpenMP 'collapse' clause ignored in 'parallel for' directive
+src\lbm.cpp(494): warning C4849: OpenMP 'collapse' clause ignored in 'parallel for' directive
+src\lbm.cpp(694): warning C4849: OpenMP 'collapse' clause ignored in 'parallel for' directive
