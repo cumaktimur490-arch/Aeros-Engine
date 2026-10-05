@@ -74,8 +74,8 @@ float computeLBMRe();
 // UI
 void drawLBMUI();
 
-// Внутренние — для тестов
-bool testLBMInitialization();
-bool testLBMConservation();
-bool testLBMBoundaryConditions();
-bool testLBMSolidHandling();
+// Внутренние — для тестов (переименованы чтобы не конфликтовать с test_mode)
+bool lbmValidateInitialization();
+bool lbmValidateConservation();
+bool lbmValidateBoundaryConditions();
+bool lbmValidateSolidHandling();

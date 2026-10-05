@@ -594,7 +594,7 @@ bool testLBMPhysics() {
             try { initLBM(); } catch (...) { logTestError("  FAIL: initLBM threw"); ok = false; }
             if (!lbmInitialized) { logTestError("  FAIL: LBM init failed"); ok = false; }
             else {
-                if (!testLBMInitialization()) { logTestError("  FAIL: LBM init validation"); ok = false; }
+                if (!lbmValidateInitialization()) { logTestError("  FAIL: LBM init validation"); ok = false; }
                 shutdownLBM();
             }
         }
@@ -605,10 +605,10 @@ bool testLBMPhysics() {
         logTestError("  FAIL: LBM enabled but not initialized");
         return false;
     }
-    if (!testLBMInitialization()) { logTestError("  FAIL: LBM init check"); ok = false; }
-    if (!testLBMBoundaryConditions()) { logTestError("  FAIL: LBM BC check"); ok = false; }
-    if (!testLBMSolidHandling()) { logTestError("  FAIL: LBM solid handling"); ok = false; }
-    if (!testLBMConservation()) { logTestError("  FAIL: LBM mass conservation"); ok = false; }
+    if (!lbmValidateInitialization()) { logTestError("  FAIL: LBM init check"); ok = false; }
+    if (!lbmValidateBoundaryConditions()) { logTestError("  FAIL: LBM BC check"); ok = false; }
+    if (!lbmValidateSolidHandling()) { logTestError("  FAIL: LBM solid handling"); ok = false; }
+    if (!lbmValidateConservation()) { logTestError("  FAIL: LBM mass conservation"); ok = false; }
 
     // Проверка скорости — не NaN, в разумных пределах
     int total = lbmNx*lbmNy*lbmNz;

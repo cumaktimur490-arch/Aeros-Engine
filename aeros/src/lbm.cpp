@@ -650,7 +650,7 @@ void computeLBMForcesFromLBM() {
 }
 
 // Тесты LBM
-bool testLBMInitialization() {
+bool lbmValidateInitialization() {
     if (!lbmInitialized) return false;
     if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return false;
     int total = lbmNx*lbmNy*lbmNz;
@@ -659,7 +659,7 @@ bool testLBMInitialization() {
     for (float rho : lbmRho) if (!std::isfinite(rho) || rho < 0.5f || rho > 2.0f) return false;
     return true;
 }
-bool testLBMConservation() {
+bool lbmValidateConservation() {
     if (!lbmInitialized) return true;
     // масса должна сохраняться ~ rho=1
     float avg = 0;
@@ -668,7 +668,7 @@ bool testLBMConservation() {
     if (std::fabs(avg - 1.0f) > 0.1f) return false;
     return true;
 }
-bool testLBMBoundaryConditions() {
+bool lbmValidateBoundaryConditions() {
     if (!lbmInitialized) return true;
     // inlet должен иметь скорость ~ U0
     float inUx, inUy, inUz;
@@ -677,7 +677,7 @@ bool testLBMBoundaryConditions() {
     if (mag < 1e-6f || mag > 0.3f) return false;
     return true;
 }
-bool testLBMSolidHandling() {
+bool lbmValidateSolidHandling() {
     if (!lbmInitialized) return true;
     for (size_t i = 0; i < lbmIsSolid.size(); i++) {
         if (lbmIsSolid[i]) {
