@@ -11,7 +11,7 @@
 #include "lbm.h"
 
 // =====================================================
-// FlowParams — v1.4.0 с защитой от ошибок кода
+// FlowParams — v1.6.0 оптимизировано с кэшированием
 // =====================================================
 void updateFlowParams() {
     updateAtmosphereParams();
@@ -46,7 +46,9 @@ void updateFlowParams() {
 
     float az = glm::radians(safeAz);
     float el = glm::radians(safeEl);
-    glm::vec3 dir(cosf(el) * cosf(az), sinf(el), cosf(el) * sinf(az));
+    float ce = cosf(el), se = sinf(el);
+    float ca = cosf(az), sa = sinf(az);
+    glm::vec3 dir(ce*ca, se, ce*sa);
     float dirLen = glm::length(dir);
     if (dirLen < 1e-6f || !std::isfinite(dirLen)) dir = glm::vec3(1,0,0);
     else dir = dir / dirLen;
@@ -114,42 +116,40 @@ void updateFlowParams() {
 }
 
 // =====================================================
-// Поле скоростей CPU — v1.5.0 LBM + защита
+// Поле скоростей CPU — v1.6.0 LBM + оптимизация
 // =====================================================
 glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
-    // LBM приоритет если включен
+    // LBM приоритет если включен — быстрый путь
     if (lbmParams.enabled && lbmInitialized) {
-        glm::vec3 vLBM = getLBMVelocityWorld(p);
-        if (std::isfinite(vLBM.x) && std::isfinite(vLBM.y) && std::isfinite(vLBM.z)) {
-            float mag = glm::length(vLBM);
-            if (mag < 1e-6f) {
-                // внутри твердого — небольшой поток для Cp
-                return glm::vec3(prm.vx, prm.vy, prm.vz) * 0.1f;
+        // Быстрая проверка границ LBM перед вызовом тяжелой функции
+        if (p.x >= lbmMinX && p.x <= lbmMaxX &&
+            p.y >= lbmMinY && p.y <= lbmMaxY &&
+            p.z >= lbmMinZ && p.z <= lbmMaxZ) {
+            glm::vec3 vLBM = getLBMVelocityWorld(p);
+            if (std::isfinite(vLBM.x)) {
+                float mag2 = vLBM.x*vLBM.x + vLBM.y*vLBM.y + vLBM.z*vLBM.z;
+                if (mag2 > 1e-12f) return vLBM;
             }
-            return vLBM;
+        } else {
+            // Вне LBM — сразу freestream
+            return glm::vec3(prm.vx, prm.vy, prm.vz);
         }
     }
 
-    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
-        return glm::vec3(prm.vx, prm.vy, prm.vz);
-    }
-    if (!std::isfinite(prm.vx) || !std::isfinite(prm.vy) || !std::isfinite(prm.vz)) {
-        return glm::vec3(0.0f);
-    }
+    if (!std::isfinite(p.x)) return glm::vec3(prm.vx, prm.vy, prm.vz);
+
     glm::vec3 v(prm.vx, prm.vy, prm.vz);
     float vmag = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
-    if (!std::isfinite(vmag) || vmag < 1e-4f) vmag = 1e-4f;
+    if (vmag < 1e-4f) vmag = 1e-4f;
 
     if (!g_distanceField.empty()) {
         float d = sampleSDFCPU(p);
-        if (!std::isfinite(d)) d = 1000.0f;
         if (d > 0.0f && d < 100.0f) {
             glm::vec3 n = sdfNormalCPU(p);
-            if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z)) n = glm::vec3(0,1,0);
+            if (!std::isfinite(n.x)) n = glm::vec3(0,1,0);
             float csx = prm.cellSizeX;
-            if (!std::isfinite(csx) || csx < 1e-6f) csx = 0.1f;
+            if (csx < 1e-6f) csx = 0.1f;
             float k = 2.5f * csx;
-            if (k < 1e-6f) k = 0.1f;
             float factor = expf(-d / k);
             if (factor > 1e-4f) {
                 float vn = glm::dot(v, n);
@@ -160,8 +160,8 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
                     float boundaryFactor = 1.0f - 0.4f * expf(-distNorm * 3.0f);
                     glm::vec3 v_n = n * glm::dot(v, n);
                     glm::vec3 v_t = v - v_n;
-                    float vtMag = glm::length(v_t);
-                    if (vtMag > 1e-6f) {
+                    float vtMag2 = v_t.x*v_t.x + v_t.y*v_t.y + v_t.z*v_t.z;
+                    if (vtMag2 > 1e-12f) {
                         float dTmp = (distNorm - 0.3f) * 2.5f;
                         float boostProfile = expf(-dTmp * dTmp);
                         float tangentialBoost = boostProfile * 0.6f;
@@ -178,7 +178,8 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
     }
 
     if (vmag > 1e-4f) {
-        float dx = prm.vx/vmag, dy = prm.vy/vmag, dz = prm.vz/vmag;
+        float invMag = 1.0f / vmag;
+        float dx = prm.vx*invMag, dy = prm.vy*invMag, dz = prm.vz*invMag;
         float rx = p.x - prm.centerX, ry = p.y - prm.centerY, rz = p.z - prm.centerZ;
         float along = rx*dx + ry*dy + rz*dz;
         float px = rx - along*dx, py = ry - along*dy, pz = rz - along*dz;
@@ -189,18 +190,17 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
         float safeWakeLen = prm.wakeLength;
         if (!std::isfinite(safeWakeLen) || safeWakeLen < 0.1f) safeWakeLen = 8.0f;
         if (along > D*0.3f && along < safeWakeLen) {
-            float denomWL = safeWakeLen * 0.5f;
-            if (denomWL < 1e-6f) denomWL = 0.5f;
-            float decay = expf(-(along - D*0.3f) / denomWL);
+            float decay = expf(-(along - D*0.3f) / (safeWakeLen * 0.5f));
             float wakeWidth = D * (0.5f + 0.5f * along / safeWakeLen);
             if (wakeWidth < 1e-6f) wakeWidth = 0.1f;
             float width = expf(-perp*perp / (wakeWidth*wakeWidth*1.2f));
-            float pnx=px/perp, pny=py/perp, pnz=pz/perp;
+            float invPerp = 1.0f / perp;
+            float pnx=px*invPerp, pny=py*invPerp, pnz=pz*invPerp;
             float vtx = dy*pnz - dz*pny;
             float vty = dz*pnx - dx*pnz;
             float vtz = dx*pny - dy*pnx;
             float st = prm.strouhal;
-            if (!std::isfinite(st) || st < 1e-6f) st = 0.2f;
+            if (st < 1e-6f) st = 0.2f;
             float omega = 6.2831853f * st * vmag / D;
             float phase = omega * prm.time - along * 1.5f;
             float amp = prm.wakeStrength * decay * width * vmag * 0.8f;
@@ -216,30 +216,28 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
             v.y += lat * pny;
             v.z += lat * pnz;
             float turbScale = 0.15f * amp;
-            float turbX = turbScale * sinf(prm.time*4.3f + along*2.1f + perp*3.7f + p.x*1.3f);
-            float turbY = turbScale * sinf(prm.time*3.7f + along*2.8f + perp*4.1f + p.y*1.7f);
-            float turbZ = turbScale * sinf(prm.time*5.1f + along*1.9f + perp*3.3f + p.z*1.1f);
-            v.x += turbX;
-            v.y += turbY;
-            v.z += turbZ;
+            float tx = prm.time;
+            v.x += turbScale * sinf(tx*4.3f + along*2.1f + perp*3.7f + p.x*1.3f);
+            v.y += turbScale * sinf(tx*3.7f + along*2.8f + perp*4.1f + p.y*1.7f);
+            v.z += turbScale * sinf(tx*5.1f + along*1.9f + perp*3.3f + p.z*1.1f);
         }
     }
     return v;
 }
 
 glm::vec3 colorForPoint(const glm::vec3& v, float sdfDist, const FlowParams& prm) {
-    if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) return glm::vec3(1,0,0);
-    if (!std::isfinite(sdfDist)) sdfDist = 1000.0f;
-    float speed = glm::length(v);
-    if (!std::isfinite(speed)) speed = 0.0f;
+    if (!std::isfinite(v.x)) return glm::vec3(1,0,0);
+    float speed = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
     float safeMaxSpeed = prm.maxSpeed;
-    if (!std::isfinite(safeMaxSpeed) || safeMaxSpeed < 1e-6f) safeMaxSpeed = 5.0f;
-    float spdT = glm::clamp(speed / (safeMaxSpeed + 1e-6f), 0.0f, 1.0f);
+    if (safeMaxSpeed < 1e-6f) safeMaxSpeed = 5.0f;
+    float spdT = speed / safeMaxSpeed;
+    if (spdT < 0) spdT = 0; if (spdT > 1) spdT = 1;
     float cell = prm.cellSizeX;
-    if (!std::isfinite(cell) || cell < 1e-6f) cell = 0.1f;
+    if (cell < 1e-6f) cell = 0.1f;
     if (sdfDist < 1.5f * cell) return glm::vec3(1.0f, 0.2f, 0.0f);
     else if (sdfDist < 4.0f * cell) {
-        float b = glm::clamp((sdfDist - 1.5f * cell) / (2.5f * cell), 0.0f, 1.0f);
+        float b = (sdfDist - 1.5f * cell) / (2.5f * cell);
+        if (b < 0) b = 0; if (b > 1) b = 1;
         glm::vec3 hot(1.0f, 0.5f, 0.0f);
         glm::vec3 cold;
         if (spdT < 0.5f) cold = glm::vec3(1.0f, spdT*2.0f, 0.0f);

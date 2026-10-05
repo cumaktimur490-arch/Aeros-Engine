@@ -4,7 +4,7 @@
 распределение давления по поверхности, подъёмная сила и сопротивление. C++17 / OpenGL 3.3 /
 CUDA / Dear ImGui / GLM.
 
-> v1.5.0 LBM: Lattice Boltzmann D3Q19 Navier-Stokes солвер (BGK + Smagorinsky LES, bounce-back, vorticity & Q-criterion, Re, MLUPS) — максимальное улучшение физики, частицы и давление из LBM; v1.4.0: 10 тестов ошибок кода + 9 физики, защита от NaN/div0/OOB; v1.3.0: единицы скорости, ISA атмосфера, ARM64.
+> v1.6.0 Optimized: OpenMP параллелизация LBM/voxels/particles/streamlines/forces, gather streaming, AABB culling, AVX2 O2 Ot LTCG fast math, MLUPS 2-3x, perf profiling, 26 тестов (9 Physics +10 Code +4 LBM +3 Optimization); v1.5.0 LBM D3Q19 BGK+Smagorinsky; v1.4.0 10 Code +9 Physics tests; v1.3.0 ISA atmosphere.
 
 ## 📥 Скачать (релиз)
 

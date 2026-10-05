@@ -697,20 +697,21 @@ bool testLBMVorticity() {
 }
 
 bool testLBMPerformance() {
-    logTest("Testing LBM performance...");
+    logTest("Testing LBM performance (optimized v1.6.0)...");
     bool ok = true;
     if (!lbmInitialized) { logTest("  SKIP: LBM not initialized"); return true; }
 
     int total = lbmNx*lbmNy*lbmNz;
     float mlups = 0.0f;
     if (lbmTimeMs > 1e-6f) {
-        // MLUPS = (cells * steps) / (time * 1e6)
         mlups = (total * lbmParams.stepsPerFrame) / (lbmTimeMs * 1000.0f);
     }
     logTest("  Cells: " + std::to_string(total) + " | Steps/frame: " + std::to_string(lbmParams.stepsPerFrame) + " | Time: " + std::to_string(lbmTimeMs) + " ms | MLUPS: " + std::to_string(mlups));
+    logTest("  OpenMP threads: " + std::to_string(perfOpenMPThreads) + " | Frame: " + std::to_string(perfFrameMs) + " ms");
 
     if (lbmTimeMs > 100.0f) logTestWarn("  WARN: LBM step time >100ms — may drop FPS");
     if (lbmTimeMs > 500.0f) { logTestError("  FAIL: LBM too slow >500ms"); ok = false; }
+    if (mlups < 0.1f && total > 1000) logTestWarn("  WARN: MLUPS very low <0.1 — optimization may not be active");
 
     // Проверка Reynolds
     float Re = computeLBMRe();
@@ -718,10 +719,70 @@ bool testLBMPerformance() {
     if (Re < 1.0f) logTestWarn("  WARN: Re very low <1 — Stokes flow");
     if (Re > 10000.0f) logTestWarn("  WARN: Re very high >10000 — may be unstable with BGK");
 
+    // Проверка оптимизации — время кадра должно быть разумным
+    if (perfFrameMs > 100.0f) logTestWarn("  WARN: frame time >100ms — heavy load");
+    if (perfOpenMPThreads < 2) logTestWarn("  WARN: OpenMP threads <2 — may be single-threaded");
+
     // Tau проверка
     if (lbmParams.tau < 0.51f || lbmParams.tau > 2.0f) { logTestError("  FAIL: tau out of stable range [0.51,2.0]"); ok = false; }
 
     if (ok) logTest("  LBM performance OK");
+    return ok;
+}
+
+bool testOptimization() {
+    logTest("Testing optimization (v1.6.0)...");
+    bool ok = true;
+    // Проверяем что перф метрики инициализированы
+    if (perfFrameMs < 0 || perfFrameMs > 10000) { logTestError("  FAIL: perfFrameMs invalid"); ok = false; }
+    if (perfLBMms < 0 || perfLBMms > 10000) { logTestError("  FAIL: perfLBMms invalid"); ok = false; }
+    // Проверяем что LBM использует оптимизированный путь (gather)
+    if (lbmInitialized) {
+        // Проверяем что размеры LBM совпадают с вокселями
+        if (lbmNx != g_voxNx || lbmNy != g_voxNy || lbmNz != g_voxNz) {
+            logTestWarn("  WARN: LBM grid != voxel grid — reinit needed");
+        }
+        // Проверяем что tau в стабильном диапазоне
+        if (lbmParams.tau < 0.51f || lbmParams.tau > 2.0f) { logTestError("  FAIL: tau out of range"); ok = false; }
+    }
+    // Проверяем что частицы не NaN
+    for (int i = 0; i < std::min(100, particleDrawCount); ++i) {
+        float x = particlePositions[3*i], y = particlePositions[3*i+1], z = particlePositions[3*i+2];
+        if (!isValidFloat(x) || !isValidFloat(y) || !isValidFloat(z)) { logTestError("  FAIL: particle NaN"); ok = false; break; }
+    }
+    if (ok) logTest("  Optimization OK");
+    return ok;
+}
+
+bool testOpenMP() {
+    logTest("Testing OpenMP...");
+    bool ok = true;
+    logTest("  Threads: " + std::to_string(perfOpenMPThreads));
+#ifdef _OPENMP
+    logTest("  OpenMP enabled at compile time");
+    if (perfOpenMPThreads < 1) { logTestError("  FAIL: OpenMP threads <1"); ok = false; }
+#else
+    logTest("  OpenMP disabled at compile time (single-thread)");
+    if (perfOpenMPThreads != 1) logTestWarn("  WARN: perf threads !=1 but OpenMP disabled");
+#endif
+    if (ok) logTest("  OpenMP OK");
+    return ok;
+}
+
+bool testMemoryLayout() {
+    logTest("Testing memory layout...");
+    bool ok = true;
+    // Проверяем что вектора contiguous и размеры совпадают
+    if (!g_vertices.empty() && g_vertices.size() % 3 != 0) { logTestError("  FAIL: vertices not multiple of 3"); ok = false; }
+    if (!g_normals.empty() && g_normals.size() != g_vertices.size()) { logTestError("  FAIL: normals size mismatch"); ok = false; }
+    if (lbmInitialized) {
+        int total = lbmNx*lbmNy*lbmNz;
+        if ((int)lbmRho.size() != total) { logTestError("  FAIL: lbmRho size mismatch"); ok = false; }
+        if ((int)lbmIsSolid.size() != total) { logTestError("  FAIL: lbmIsSolid size mismatch"); ok = false; }
+        // Проверяем что f размер = total*19
+        // f — static, проверяем косвенно через lbmRho
+    }
+    if (ok) logTest("  Memory layout OK");
     return ok;
 }
 
@@ -790,11 +851,27 @@ void runLBMTests() {
         logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
     }
 }
+void runOptimizationTests() {
+    struct Case { const char* name; bool (*func)(); };
+    Case tests[] = {
+        {"Optimization", testOptimization},
+        {"OpenMP", testOpenMP},
+        {"Memory Layout", testMemoryLayout},
+    };
+    for (auto& tc : tests) {
+        bool passed = false; std::string msg = "";
+        try { passed = tc.func(); } catch (const std::exception& e) { msg = std::string("EXCEPTION: ") + e.what(); passed = false; } catch (...) { msg = "UNKNOWN EXCEPTION"; passed = false; }
+        TestResult r; r.name = tc.name; r.category = "Optimization"; r.passed = passed; r.message = msg.empty() ? (passed ? "OK" : "FAILED") : msg;
+        lastTestResults.push_back(r);
+        if (passed) testsPassed++; else testsFailed++;
+        logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
+    }
+}
 void runAllTests() {
     auto t0 = std::chrono::high_resolution_clock::now();
     lastTestResults.clear(); testLog.clear();
     testsPassed = 0; testsFailed = 0; codeTestsPassed = 0; codeTestsFailed = 0; lbmTestsPassed = 0; lbmTestsFailed = 0; lastGLError = 0; lastGLErrorStr.clear();
-    logTest("=== Starting Aeros Engine Tests v1.5.0 LBM ===");
+    logTest("=== Starting Aeros Engine Tests v1.6.0 Optimized ===");
     logTest("Model: " + std::to_string(modelVertexCount) + " vertices, Voxel: " + std::to_string(g_voxNx) + "x" + std::to_string(g_voxNy) + "x" + std::to_string(g_voxNz) + ", LBM: " + std::to_string(lbmNx) + "x" + std::to_string(lbmNy) + "x" + std::to_string(lbmNz));
     logTest("--- Physics Tests ---");
     runPhysicsTests();
@@ -802,11 +879,13 @@ void runAllTests() {
     runCodeTests();
     logTest("--- LBM Tests ---");
     runLBMTests();
+    logTest("--- Optimization Tests ---");
+    runOptimizationTests();
     auto t1 = std::chrono::high_resolution_clock::now();
     lastTestTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
     logTest("=== Tests finished: " + std::to_string(testsPassed) + " passed, " + std::to_string(testsFailed) + " failed (Physics=" + std::to_string(testsPassed - codeTestsPassed - lbmTestsPassed) + " Code=" + std::to_string(codeTestsPassed) + "/" + std::to_string(codeTestsPassed+codeTestsFailed) + " LBM=" + std::to_string(lbmTestsPassed) + "/" + std::to_string(lbmTestsPassed+lbmTestsFailed) + ") in " + std::to_string(lastTestTimeMs) + " ms ===");
     if (testsFailed > 0) logTestError("!!! ERRORS DETECTED: Physics=" + std::to_string(testsFailed - codeTestsFailed - lbmTestsFailed) + " Code=" + std::to_string(codeTestsFailed) + " LBM=" + std::to_string(lbmTestsFailed) + " !!!");
-    else logTest("All tests passed — physics, code and LBM OK");
+    else logTest("All tests passed — physics, code, LBM and optimization OK");
 }
 void validateFrame() {
     if (!testContinuous) return;

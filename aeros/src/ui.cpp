@@ -20,12 +20,37 @@
 // =====================================================
 void drawUI() {
 ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
-ImGui::SetNextWindowSize(ImVec2(420, 900), ImGuiCond_Once);
-ImGui::Begin("AeroS Control");
-ImGui::Text("FPS: %.1f", deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f);
-ImGui::Text("Vertices: %d", modelVertexCount);
-ImGui::Text("Triangles: %d", modelVertexCount/3);
+ImGui::SetNextWindowSize(ImVec2(450, 950), ImGuiCond_Once);
+ImGui::Begin("AeroS Control v1.6.0 Optimized");
+ImGui::Text("FPS: %.1f | Frame: %.2f ms", deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f, perfFrameMs);
+ImGui::Text("Vertices: %d | Triangles: %d", modelVertexCount, modelVertexCount/3);
 ImGui::Text("Voxel Grid: %dx%dx%d", g_voxNx, g_voxNy, g_voxNz);
+ImGui::Text("OpenMP: %d threads | %s", perfOpenMPThreads,
+#ifdef _OPENMP
+    "Enabled"
+#else
+    "Disabled"
+#endif
+);
+ImGui::Separator();
+if (ImGui::CollapsingHeader("Performance (v1.6.0)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("Frame: %.2f ms | FPS: %.1f", perfFrameMs, perfFrameMs > 1e-3f ? 1000.0f/perfFrameMs : 0.0f);
+    ImGui::Text("LBM: %.2f ms | Particles: %.2f ms", perfLBMms, perfParticlesMs);
+    ImGui::Text("Forces: %.2f ms | Streamlines: %.2f ms", perfForcesMs, perfStreamlinesMs);
+    if (lbmInitialized) {
+        int total = lbmNx*lbmNy*lbmNz;
+        float mlups = (total * lbmParams.stepsPerFrame) / (lbmTimeMs > 0 ? lbmTimeMs : 1.0f) / 1000.0f;
+        ImGui::Text("LBM: %d cells | %.2f MLUPS | %.1f ms/step", total, mlups, lbmTimeMs);
+    }
+    ImGui::Separator();
+    ImGui::Text("Optimizations active:");
+    ImGui::BulletText("OpenMP parallel for (LBM, voxels, particles, streamlines, forces)");
+    ImGui::BulletText("AVX2 + O2/Ot + LTCG + fast math");
+    ImGui::BulletText("Gather streaming (cache-friendly)");
+    ImGui::BulletText("AABB culling for voxelization");
+    ImGui::BulletText("Precomputed flow axis & inlet BC");
+    ImGui::BulletText("SoA layout + raw pointers");
+}
 ImGui::Separator();
 
 if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -160,7 +185,7 @@ if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::ColorEdit3("Background", &bgColor[0]);
 }
 
-if (ImGui::CollapsingHeader("LBM - Lattice Boltzmann (v1.5.0)", ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader("LBM - Lattice Boltzmann (v1.6.0 Optimized)", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Enable LBM (High-Accuracy Physics)", &lbmParams.enabled);
     if (lbmParams.enabled) {
         ImGui::TextColored(ImVec4(0.2f,1,0.8f,1), "LBM Active — superior to potential flow");

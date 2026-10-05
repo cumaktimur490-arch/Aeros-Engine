@@ -10,8 +10,12 @@
 #include "voxel_grid.h"
 #include "particles.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // =====================================================
-// Частицы — v1.4.0 защита от ошибок кода
+// Частицы — оптимизировано: OpenMP, кэширование, SoA-friendly
 // =====================================================
 void initParticles() {
     updateFlowParams();
@@ -38,24 +42,27 @@ void initParticles() {
         if (!std::isfinite(z)) z = flowParams.minZ;
         int nSide = (int)sqrtf((float)numParticles) + 1;
         if (nSide <= 0) nSide = 1;
+        float rangeX = flowParams.maxX - flowParams.minX;
+        float rangeY = flowParams.maxY - flowParams.minY;
+        if (!std::isfinite(rangeX) || rangeX < 1e-6f) rangeX = 10.0f;
+        if (!std::isfinite(rangeY) || rangeY < 1e-6f) rangeY = 10.0f;
+        float stX = rangeX / nSide;
+        float stY = rangeY / nSide;
+        float minX = flowParams.minX;
+        float minY = flowParams.minY;
+
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
         for (int i = 0; i < numParticles; i++) {
             float r1 = fabsf(sinf(i*12.9898f + 78.233f) * 43758.5453f); r1 -= floorf(r1);
             float r2 = fabsf(cosf(i*39.346f + 11.135f) * 24634.6345f); r2 -= floorf(r2);
             if (!std::isfinite(r1)) r1 = 0.5f;
             if (!std::isfinite(r2)) r2 = 0.5f;
             int ix = i % nSide, iy = i / nSide;
-            float rangeX = flowParams.maxX - flowParams.minX;
-            float rangeY = flowParams.maxY - flowParams.minY;
-            if (!std::isfinite(rangeX) || rangeX < 1e-6f) rangeX = 10.0f;
-            if (!std::isfinite(rangeY) || rangeY < 1e-6f) rangeY = 10.0f;
-            float stX = rangeX / nSide;
-            float stY = rangeY / nSide;
-            particlePositions[3*i]   = flowParams.minX + ix*stX + (r1-0.5f)*stX*0.5f;
-            particlePositions[3*i+1] = flowParams.minY + iy*stY + (r2-0.5f)*stY*0.5f;
+            particlePositions[3*i]   = minX + ix*stX + (r1-0.5f)*stX*0.5f;
+            particlePositions[3*i+1] = minY + iy*stY + (r2-0.5f)*stY*0.5f;
             particlePositions[3*i+2] = z;
-            if (!std::isfinite(particlePositions[3*i])) particlePositions[3*i] = flowParams.minX;
-            if (!std::isfinite(particlePositions[3*i+1])) particlePositions[3*i+1] = flowParams.minY;
-            if (!std::isfinite(particlePositions[3*i+2])) particlePositions[3*i+2] = z;
             particleColors[3*i] = 0.3f;
             particleColors[3*i+1] = 0.8f;
             particleColors[3*i+2] = 1.0f;
@@ -87,85 +94,111 @@ void updateParticles(float dt) {
         try { updateParticlesCUDA(particlePositions, particleColors, n, flowParams, dt); }
         catch (...) {}
     } else {
+        // Кэшируем параметры для скорости
         float csx = flowParams.cellSizeX, csy = flowParams.cellSizeY, csz = flowParams.cellSizeZ;
         if (!std::isfinite(csx) || csx < 1e-8f) csx = 0.1f;
         if (!std::isfinite(csy) || csy < 1e-8f) csy = 0.1f;
         if (!std::isfinite(csz) || csz < 1e-8f) csz = 0.1f;
+        float minX = flowParams.minX, maxX = flowParams.maxX;
+        float minY = flowParams.minY, maxY = flowParams.maxY;
+        float minZ = flowParams.minZ, maxZ = flowParams.maxZ;
+        float time = flowParams.time;
+        float timeScale = flowParams.timeScale;
+        if (!std::isfinite(timeScale) || timeScale < 0) timeScale = 1.0f;
+        float vxInf = flowParams.vx, vyInf = flowParams.vy, vzInf = flowParams.vz;
+        float vInfMag = sqrtf(vxInf*vxInf + vyInf*vyInf + vzInf*vzInf);
+        if (!std::isfinite(vInfMag) || vInfMag < 1e-4f) vInfMag = 1.0f;
+
+        float* posPtr = particlePositions.data();
+        float* colPtr = particleColors.data();
+        const float* distField = g_distanceField.empty() ? nullptr : g_distanceField.data();
+        int voxNx = g_voxNx, voxNy = g_voxNy, voxNz = g_voxNz;
+        float voxMinX = g_voxMinX, voxMinY = g_voxMinY, voxMinZ = g_voxMinZ;
+        bool useColl = useVoxelCollision && distField && voxNx > 0;
+        int distSize = (int)g_distanceField.size();
+
+        // OpenMP параллельный апдейт — каждый поток работает со своими частицами
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
         for (int i = 0; i < n; i++) {
-            glm::vec3 p(particlePositions[3*i], particlePositions[3*i+1], particlePositions[3*i+2]);
-            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
-                float r1 = fabsf(sinf(i*12.9898f + flowParams.time*10.0f) * 43758.5453f); r1 -= floorf(r1);
-                float r2 = fabsf(cosf(i*39.346f + flowParams.time*15.0f) * 24634.6345f); r2 -= floorf(r2);
-                p.x = flowParams.minX + (flowParams.maxX - flowParams.minX)*(0.05f + 0.9f*r1);
-                p.y = flowParams.minY + (flowParams.maxY - flowParams.minY)*(0.05f + 0.9f*r2);
-                p.z = flowParams.minZ + 0.05f;
+            float px = posPtr[3*i];
+            float py = posPtr[3*i+1];
+            float pz = posPtr[3*i+2];
+
+            if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) {
+                float r1 = fabsf(sinf(i*12.9898f + time*10.0f) * 43758.5453f); r1 -= floorf(r1);
+                float r2 = fabsf(cosf(i*39.346f + time*15.0f) * 24634.6345f); r2 -= floorf(r2);
+                px = minX + (maxX - minX)*(0.05f + 0.9f*r1);
+                py = minY + (maxY - minY)*(0.05f + 0.9f*r2);
+                pz = minZ + 0.05f;
             }
+
+            glm::vec3 p(px, py, pz);
             glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
-            if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) v = glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
-            float safeTimeScale = flowParams.timeScale;
-            if (!std::isfinite(safeTimeScale) || safeTimeScale < 0) safeTimeScale = 1.0f;
-            glm::vec3 np = p + v * dt * safeTimeScale;
+            if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) v = glm::vec3(vxInf, vyInf, vzInf);
+
+            glm::vec3 np = p + v * dt * timeScale;
             float surfDist = 1000.0f;
-            if (useVoxelCollision && !g_distanceField.empty() && g_voxNx > 0) {
-                int ix = (int)((np.x - g_voxMinX) / csx);
-                int iy = (int)((np.y - g_voxMinY) / csy);
-                int iz = (int)((np.z - g_voxMinZ) / csz);
-                if (ix>=0 && ix<g_voxNx && iy>=0 && iy<g_voxNy && iz>=0 && iz<g_voxNz) {
-                    int idx = (iz*g_voxNy + iy)*g_voxNx + ix;
-                    if (idx >=0 && idx < (int)g_distanceField.size()) {
-                        float rawDist = g_distanceField[idx];
+
+            if (useColl) {
+                int ix = (int)((np.x - voxMinX) / csx);
+                int iy = (int)((np.y - voxMinY) / csy);
+                int iz = (int)((np.z - voxMinZ) / csz);
+                if (ix>=0 && ix<voxNx && iy>=0 && iy<voxNy && iz>=0 && iz<voxNz) {
+                    int idx = (iz*voxNy + iy)*voxNx + ix;
+                    if (idx >=0 && idx < distSize) {
+                        float rawDist = distField[idx];
                         if (!std::isfinite(rawDist)) rawDist = 1000.0f;
                         surfDist = rawDist * csx;
-                        if (!std::isfinite(surfDist)) surfDist = 1000.0f;
                         if (rawDist < 0.0f) {
                             glm::vec3 nrm = sdfNormalCPU(np);
                             if (!std::isfinite(nrm.x)) nrm = glm::vec3(0,1,0);
                             float push = fabsf(surfDist) + 0.5f * csx;
-                            if (!std::isfinite(push)) push = 0.5f * csx;
                             np += nrm * push;
-                            float vmag = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
-                            if (!std::isfinite(vmag) || vmag < 1e-4f) vmag = 1e-4f;
-                            glm::vec3 Vinf(flowParams.vx, flowParams.vy, flowParams.vz);
+                            glm::vec3 Vinf(vxInf, vyInf, vzInf);
                             float vinf_n = glm::dot(Vinf, nrm);
                             glm::vec3 vinf_t = Vinf - vinf_n * nrm;
                             float vn = glm::dot(v, nrm);
                             v -= vn * nrm;
-                            float perpFactor = fabsf(vinf_n) / vmag;
-                            if (!std::isfinite(perpFactor)) perpFactor = 0;
+                            float perpFactor = fabsf(vinf_n) / vInfMag;
                             float slideBoost = 1.2f + 0.8f * perpFactor;
                             v += vinf_t * slideBoost * 0.6f;
                             float spd = glm::length(v);
-                            if (!std::isfinite(spd)) spd = vmag;
-                            if (spd < 0.3f * vmag) v = vinf_t * slideBoost;
+                            if (spd < 0.3f * vInfMag) v = vinf_t * slideBoost;
                         }
                     }
                 }
             }
+
             if (!std::isfinite(np.x) || !std::isfinite(np.y) || !std::isfinite(np.z) ||
-                np.x < flowParams.minX || np.x > flowParams.maxX ||
-                np.y < flowParams.minY || np.y > flowParams.maxY ||
-                np.z < flowParams.minZ || np.z > flowParams.maxZ) {
-                float r1 = fabsf(sinf(i*12.9898f + flowParams.time*10.0f) * 43758.5453f); r1 -= floorf(r1);
-                float r2 = fabsf(cosf(i*39.346f + flowParams.time*15.0f) * 24634.6345f); r2 -= floorf(r2);
+                np.x < minX || np.x > maxX ||
+                np.y < minY || np.y > maxY ||
+                np.z < minZ || np.z > maxZ) {
+                float r1 = fabsf(sinf(i*12.9898f + time*10.0f) * 43758.5453f); r1 -= floorf(r1);
+                float r2 = fabsf(cosf(i*39.346f + time*15.0f) * 24634.6345f); r2 -= floorf(r2);
                 if (!std::isfinite(r1)) r1 = 0.5f;
                 if (!std::isfinite(r2)) r2 = 0.5f;
-                float rangeX = flowParams.maxX - flowParams.minX;
-                float rangeY = flowParams.maxY - flowParams.minY;
+                float rangeX = maxX - minX;
+                float rangeY = maxY - minY;
                 if (!std::isfinite(rangeX) || rangeX < 1e-6f) rangeX = 10.0f;
                 if (!std::isfinite(rangeY) || rangeY < 1e-6f) rangeY = 10.0f;
-                np.x = flowParams.minX + rangeX*(0.05f + 0.9f*r1);
-                np.y = flowParams.minY + rangeY*(0.05f + 0.9f*r2);
-                np.z = flowParams.minZ + 0.05f;
+                np.x = minX + rangeX*(0.05f + 0.9f*r1);
+                np.y = minY + rangeY*(0.05f + 0.9f*r2);
+                np.z = minZ + 0.05f;
             }
+
             if (!std::isfinite(np.x) || !std::isfinite(np.y) || !std::isfinite(np.z)) continue;
-            particlePositions[3*i] = np.x;
-            particlePositions[3*i+1] = np.y;
-            particlePositions[3*i+2] = np.z;
+
+            posPtr[3*i] = np.x;
+            posPtr[3*i+1] = np.y;
+            posPtr[3*i+2] = np.z;
+
             glm::vec3 c = colorForPoint(v, surfDist, flowParams);
             if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z)) c = glm::vec3(0.3f,0.8f,1.0f);
-            particleColors[3*i] = c.x;
-            particleColors[3*i+1] = c.y;
-            particleColors[3*i+2] = c.z;
+            colPtr[3*i] = c.x;
+            colPtr[3*i+1] = c.y;
+            colPtr[3*i+2] = c.z;
         }
     }
     if (particleVBO_pos != 0 && particleVBO_col != 0) {
@@ -173,7 +206,5 @@ void updateParticles(float dt) {
         glBufferSubData(GL_ARRAY_BUFFER, 0, particlePositions.size()*sizeof(float), particlePositions.data());
         glBindBuffer(GL_ARRAY_BUFFER, particleVBO_col);
         glBufferSubData(GL_ARRAY_BUFFER, 0, particleColors.size()*sizeof(float), particleColors.data());
-        GLenum err = glGetError();
-        if (err != GL_NO_ERROR) {}
     }
 }

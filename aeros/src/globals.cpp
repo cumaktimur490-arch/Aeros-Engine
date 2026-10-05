@@ -108,3 +108,11 @@ float g_voxMinX = 0, g_voxMinY = 0, g_voxMinZ = 0;
 float g_voxMaxX = 0, g_voxMaxY = 0, g_voxMaxZ = 0;
 int   voxelResolution = 48;
 bool  useVoxelCollision = true;
+
+float perfFrameMs = 0.0f;
+float perfLBMms = 0.0f;
+float perfParticlesMs = 0.0f;
+float perfStreamlinesMs = 0.0f;
+float perfForcesMs = 0.0f;
+float perfVoxelMs = 0.0f;
+int   perfOpenMPThreads = 0;

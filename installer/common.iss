@@ -7,7 +7,7 @@
 #define AppExeName "main.exe"
 
 #ifndef AppVersion
-  #define AppVersion "1.5.0"
+  #define AppVersion "1.6.0"
 #endif
 
 #ifndef Arch

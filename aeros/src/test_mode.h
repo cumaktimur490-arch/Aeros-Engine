@@ -1,7 +1,7 @@
 #pragma once
 // =====================================================
 // Режим теста для проверки ошибок вычислений и кода
-// v1.5.0 — физика + код + LBM
+// v1.6.0 — физика + код + LBM + perf
 // =====================================================
 
 #include <string>
@@ -60,6 +60,11 @@ bool testLBMConservation();
 bool testLBMVorticity();
 bool testLBMPerformance();
 
+// ===== Optimization (v1.6.0) =====
+bool testOptimization();
+bool testOpenMP();
+bool testMemoryLayout();
+
 // Утилиты
 bool checkGLErrors(const char* where);
 std::string getGLErrorString(int err);
@@ -67,6 +72,7 @@ void runAllTests();
 void runPhysicsTests();
 void runCodeTests();
 void runLBMTests();
+void runOptimizationTests();
 void validateFrame();
 void validateFrameCode();
 void drawTestModeUI();

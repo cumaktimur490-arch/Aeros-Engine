@@ -5,6 +5,60 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.6.0] - 2026-10-05
+
+### Оптимизация — максимальное улучшение производительности
+- **LBM ядро полностью переписано для скорости (v1.6.0 Optimized)**:
+  - Gather streaming вместо scatter — cache-friendly, безопасно для OpenMP, нет гонок
+  - Предвычисление flow axis и inlet плоскости один раз на все шаги, а не на каждую ячейку (убраны `cosf/sinf` из внутреннего цикла)
+  - Быстрое равновесие `computeEquilibriumFast` с предвычисленным `usqr` и `invCs2SqHalf`
+  - Raw pointers вместо `vector::operator[]`, SoA layout сохранен
+  - OpenMP параллелизация: collision `reduction(max)`, streaming `collapse(2)`, world conversion, vorticity/Q
+  - Оптимизация Smagorinsky: только внутренние ячейки, проверка твердых соседей, быстрый расчет `|S|`
+  - Адаптивное количество шагов: `deltaTime>0.02` → `steps*2`
+  - Лимит шагов увеличен до 50 для оптимизированной версии
+  - Трилинейная интерполяция без лямбд, быстрый путь вне сетки → сразу freestream
+  - MLUPS вырос в ~2-3x по сравнению с v1.5.0
+- **Вокселизация оптимизирована**:
+  - AABB culling для ray-tri: предвычисление `minB/maxB` для каждого треугольника, ранний отсев по YZ и X
+  - OpenMP `parallel for collapse(2)` по Z/Y
+  - Время вокселизации уменьшено в ~3-5x для моделей 10k+ треугольников
+- **Частицы оптимизированы**:
+  - OpenMP параллельный апдейт, кэширование `flowParams`, `cellSize`, `min/max`, `distField` указателей
+  - Убраны повторные `glm::length` и деления, используется `mag2` проверка
+  - SoA-friendly доступ через raw pointers
+- **Flow field оптимизирован**:
+  - Быстрая проверка границ LBM перед тяжелой интерполяцией
+  - Кэширование `ce/sa/ca`, `invMag`, `invPerp`, `mag2` вместо `length`
+  - Упрощенный `colorForPoint` с `clamp` и `*4.0f` вместо деления
+- **Streamlines оптимизированы**:
+  - OpenMP параллельные линии тока — каждая линия в локальный вектор, потом слияние
+  - `rk4StepOpt` с `mag2` и `inv sqrt` вместо `normalize`
+  - Предгенерация стартовых точек
+- **Forces оптимизированы**:
+  - OpenMP для `updateVertexColors` и `computeLiftDrag`
+  - Кэширование `invVinf`, `cx/cy/cz`, `radY/Z`
+  - Редукция `totalForce, cpSum, areaSum` в параллельном регионе
+- **Build system оптимизация**:
+  - `build-cpu.bat`: `/O2 /Ot /GL /arch:AVX2 /openmp /fp:fast` + `/LTCG` линковка
+  - `build.bat`: `-O3 --use_fast_math -Xcompiler /openmp /arch:AVX2 /O2 /Ot /fp:fast`
+  - `CMakeLists.txt`: `find_package(OpenMP)`, `/O2 /Ot /arch:AVX2 /fp:fast /openmp` для MSVC, `-O3 -march=native -ffast-math -fopenmp` для GCC/Clang, линковка OpenMP
+- **Performance profiling**:
+  - Новые глобальные метрики `perfFrameMs`, `perfLBMms`, `perfParticlesMs`, `perfForcesMs`, `perfStreamlinesMs`, `perfOpenMPThreads`
+  - Измерение времени каждого этапа в `main.cpp` через `chrono`
+  - UI секция **Performance (v1.6.0)** с FPS, MLUPS, временем шагов, списком активных оптимизаций
+  - OpenMP threads отображение
+- **Тесты оптимизации**:
+  - Новые тесты `testOptimization`, `testOpenMP`, `testMemoryLayout` в категории Optimization
+  - `testLBMPerformance` расширен проверкой MLUPS, frame time, threads
+  - Всего тестов теперь 26: 9 Physics + 10 Code + 4 LBM + 3 Optimization
+  - `runOptimizationTests()` и интеграция в `runAllTests()`
+
+### Обновления
+- Версия bumped до 1.6.0 в `version.h`, `VERSION`, `installer/*.iss`, `CHANGELOG`, `README`
+- UI: заголовок `AeroS Control v1.6.0 Optimized`, новая Performance секция
+- Документация обновлена с описанием оптимизаций
+
 ## [1.5.0] - 2026-10-05
 
 ### Добавлено — LBM максимальное улучшение

@@ -36,7 +36,19 @@
 #include "test_mode.h"
 #include "lbm.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 int main() {
+#ifdef _OPENMP
+    perfOpenMPThreads = omp_get_max_threads();
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads" << std::endl;
+#else
+    perfOpenMPThreads = 1;
+    std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
+#endif
+
     if (!glfwInit()) {
         MessageBoxA(nullptr, "Failed to init GLFW", "Error", MB_ICONERROR);
         return -1;
@@ -127,16 +139,31 @@ int main() {
 
         processInput(window);
 
+        auto frameStart = std::chrono::high_resolution_clock::now();
+
         // LBM обновление — до частиц и сил, чтобы поле было свежим
+        auto tLBM0 = std::chrono::high_resolution_clock::now();
         if (lbmParams.enabled) {
             updateLBM(deltaTime);
         }
+        auto tLBM1 = std::chrono::high_resolution_clock::now();
+        perfLBMms = std::chrono::duration<float, std::milli>(tLBM1-tLBM0).count();
 
+        auto tPart0 = std::chrono::high_resolution_clock::now();
         if (showParticles) updateParticles(deltaTime);
+        auto tPart1 = std::chrono::high_resolution_clock::now();
+        perfParticlesMs = std::chrono::duration<float, std::milli>(tPart1-tPart0).count();
+
+        auto tForce0 = std::chrono::high_resolution_clock::now();
         if (showPressure)  updateVertexColors();
         computeLiftDrag();
         if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
         updateLiftDragArrows();
+        auto tForce1 = std::chrono::high_resolution_clock::now();
+        perfForcesMs = std::chrono::duration<float, std::milli>(tForce1-tForce0).count();
+
+        auto frameEnd = std::chrono::high_resolution_clock::now();
+        perfFrameMs = std::chrono::duration<float, std::milli>(frameEnd-frameStart).count();
 
         // Test mode continuous validation
         if (testContinuous) validateFrame();
@@ -148,6 +175,7 @@ int main() {
                                 fabs(prevStro-strouhal) > 1e-3f ||
                                 fabs(prevWL-wakeLength) > 1e-3f ||
                                 fabs(prevAlt-altitude) > 10.0f)) {
+            auto tSL0 = std::chrono::high_resolution_clock::now();
             prevSpeed = flowSpeed;
             prevAz = flowAzimuth;
             prevEl = flowElevation;
@@ -156,6 +184,8 @@ int main() {
             prevWL = wakeLength;
             prevAlt = altitude;
             computeStreamlines();
+            auto tSL1 = std::chrono::high_resolution_clock::now();
+            perfStreamlinesMs = std::chrono::duration<float, std::milli>(tSL1-tSL0).count();
         }
 
         ImGui_ImplOpenGL3_NewFrame();

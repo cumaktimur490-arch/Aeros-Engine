@@ -14,6 +14,7 @@
 #include "forces.h"
 #include "model.h"
 #include "lbm.h"
+#include <chrono>
 
 // =====================================================
 // Загрузка модели
@@ -60,7 +61,10 @@ bool loadModel(const std::string& path) {
     createBoundingBoxVAO();
     createAxesVAO(maxDim * 0.6f);
 
+    auto tVox0 = std::chrono::high_resolution_clock::now();
     buildVoxelGrid(vertices, voxelResolution);
+    auto tVox1 = std::chrono::high_resolution_clock::now();
+    perfVoxelMs = std::chrono::duration<float, std::milli>(tVox1-tVox0).count();
 
     if (lbmParams.enabled) {
         initLBM();

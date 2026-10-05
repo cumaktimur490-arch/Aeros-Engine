@@ -34,6 +34,22 @@ if(NOT AEROS_CPU_ONLY)
     set(CMAKE_CUDA_ARCHITECTURES 75)  # Для совместимости, как build.bat
 endif()
 
+# v1.6.0 Optimized — OpenMP, O2, AVX2, fast math
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "OpenMP found: ${OpenMP_CXX_VERSION}")
+else()
+    message(STATUS "OpenMP not found — building without")
+endif()
+
+if(MSVC)
+    add_compile_options(/O2 /Ot /arch:AVX2 /fp:fast /openmp)
+    add_link_options(/LTCG)
+else()
+    add_compile_options(-O3 -march=native -ffast-math -fopenmp)
+    add_link_options(-fopenmp)
+endif()
+
 set(LIBDIR ${CMAKE_CURRENT_SOURCE_DIR}/../libs)
 
 # Определяем архитектуру
@@ -95,6 +111,9 @@ target_include_directories(main PRIVATE
 target_compile_definitions(main PRIVATE VERSION="${APP_VERSION}")
 if(AEROS_CPU_ONLY)
     target_compile_definitions(main PRIVATE CPU_ONLY)
+endif()
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(main PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 if(WIN32)

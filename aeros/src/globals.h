@@ -143,4 +143,13 @@ extern float g_voxMaxZ;
 extern int   voxelResolution;
 extern bool  useVoxelCollision;
 
+// --- Performance metrics (v1.6.0) ---
+extern float perfFrameMs;
+extern float perfLBMms;
+extern float perfParticlesMs;
+extern float perfStreamlinesMs;
+extern float perfForcesMs;
+extern float perfVoxelMs;
+extern int   perfOpenMPThreads;
+
 #endif // GLOBALS_H

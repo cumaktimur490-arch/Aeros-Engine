@@ -13,6 +13,10 @@
 #include <cstring>
 #include <limits>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // Глобальные
 LBMParams lbmParams;
 bool lbmInitialized = false;
@@ -37,14 +41,13 @@ std::vector<float> lbmUxWorld, lbmUyWorld, lbmUzWorld;
 std::vector<float> lbmVorticityMag;
 std::vector<float> lbmQCriterion;
 std::vector<float> lbmPressure;
-std::vector<char> lbmIsSolid;
+std::vector<char>  lbmIsSolid;
 
 // Распределения
-static std::vector<float> f;      // текущее
-static std::vector<float> fNext;  // следующее
-static std::vector<float> fEq;    // для временного хранения (опционально)
+static std::vector<float> f;
+static std::vector<float> fNext;
 
-// D3Q19
+// D3Q19 — оптимизировано: статические константы, выровненные
 static const int Q = 19;
 static const int c[19][3] = {
     {0,0,0},
@@ -68,38 +71,63 @@ static const int opp[19] = {
     16,15,18,17
 };
 static const float cs2 = 1.0f/3.0f;
-static const float cs4 = cs2*cs2;
 static const float invCs2 = 3.0f;
+static const float invCs2SqHalf = 4.5f; // 0.5 * invCs2 * invCs2
+
+// Предвычисленные оффсеты для стриминга
+static int lbmOffsets[19];
+static int lbmStrideX = 1;
+static int lbmStrideY = 0;
+static int lbmStrideZ = 0;
 
 inline int idx3D(int x, int y, int z) { return (z*lbmNy + y)*lbmNx + x; }
 inline int fIdx(int cell, int q) { return cell*Q + q; }
 
-static float computeEquilibrium(int qi, float rho, float ux, float uy, float uz) {
-    float cu = c[qi][0]*ux + c[qi][1]*uy + c[qi][2]*uz;
-    float usqr = ux*ux + uy*uy + uz*uz;
-    return w[qi]*rho*(1.0f + cu*invCs2 + cu*cu*0.5f*invCs2*invCs2 - usqr*0.5f*invCs2);
+// Быстрое равновесие — инлайн, без ветвлений
+inline float computeEquilibriumFast(int qi, float rho, float ux, float uy, float uz, float usqr) {
+    float cu = (float)c[qi][0]*ux + (float)c[qi][1]*uy + (float)c[qi][2]*uz;
+    return w[qi]*rho*(1.0f + cu*invCs2 + cu*cu*invCs2SqHalf - usqr*1.5f);
 }
 
 static void computeInletVelocityLB(float& ux, float& uy, float& uz) {
     float az = glm::radians(flowAzimuth);
     float el = glm::radians(flowElevation);
-    glm::vec3 dir(cosf(el)*cosf(az), sinf(el), cosf(el)*sinf(az));
-    if (glm::length(dir) < 1e-6f) dir = glm::vec3(1,0,0);
-    dir = glm::normalize(dir);
+    float ce = cosf(el), se = sinf(el);
+    float ca = cosf(az), sa = sinf(az);
+    float dx = ce*ca, dy = se, dz = ce*sa;
+    float len = sqrtf(dx*dx + dy*dy + dz*dz);
+    if (len < 1e-6f) { dx = 1; dy = 0; dz = 0; len = 1; }
+    dx /= len; dy /= len; dz /= len;
     float U0 = lbmParams.U0;
     if (!std::isfinite(U0) || U0 < 1e-6f) U0 = 0.1f;
     if (U0 > 0.25f) U0 = 0.25f;
-    ux = dir.x * U0;
-    uy = dir.y * U0;
-    uz = dir.z * U0;
+    ux = dx * U0;
+    uy = dy * U0;
+    uz = dz * U0;
+}
+
+// Определение главной оси потока — 0=X,1=Y,2=Z и знак
+static void computeFlowAxis(int& axis, int& sign, glm::vec3& dirNorm) {
+    float az = glm::radians(flowAzimuth);
+    float el = glm::radians(flowElevation);
+    float ce = cosf(el), se = sinf(el);
+    float ca = cosf(az), sa = sinf(az);
+    dirNorm = glm::vec3(ce*ca, se, ce*sa);
+    float len = glm::length(dirNorm);
+    if (len < 1e-6f) dirNorm = glm::vec3(1,0,0);
+    else dirNorm = dirNorm / len;
+    float ax = fabsf(dirNorm.x), ay = fabsf(dirNorm.y), azv = fabsf(dirNorm.z);
+    if (ax >= ay && ax >= azv) { axis = 0; sign = (dirNorm.x > 0) ? 1 : -1; }
+    else if (ay >= azv) { axis = 1; sign = (dirNorm.y > 0) ? 1 : -1; }
+    else { axis = 2; sign = (dirNorm.z > 0) ? 1 : -1; }
 }
 
 void initLBM() {
-    std::cout << "[LBM] Initializing LBM D3Q19..." << std::endl;
+    std::cout << "[LBM] Initializing optimized D3Q19..." << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
     if (g_voxelData.empty() || g_voxNx <= 0) {
-        std::cout << "[LBM] No voxel grid — cannot init LBM, using fallback resolution 48" << std::endl;
+        std::cout << "[LBM] No voxel grid — fallback 48" << std::endl;
         lbmNx = voxelResolution;
         lbmNy = voxelResolution;
         lbmNz = voxelResolution;
@@ -129,6 +157,14 @@ void initLBM() {
         return;
     }
 
+    // страйды и оффсеты
+    lbmStrideX = 1;
+    lbmStrideY = lbmNx;
+    lbmStrideZ = lbmNx * lbmNy;
+    for (int qi = 0; qi < Q; ++qi) {
+        lbmOffsets[qi] = c[qi][0]*lbmStrideX + c[qi][1]*lbmStrideY + c[qi][2]*lbmStrideZ;
+    }
+
     try {
         lbmRho.assign(total, 1.0f);
         lbmUx.assign(total, 0.0f);
@@ -143,40 +179,44 @@ void initLBM() {
         lbmIsSolid.assign(total, 0);
         f.assign(total*Q, 0.0f);
         fNext.assign(total*Q, 0.0f);
+        // Резервируем чтобы избежать реаллокаций
+        lbmRho.shrink_to_fit(); // нет, оставляем capacity
     } catch (const std::bad_alloc& e) {
         std::cout << "[LBM] Allocation failed: " << e.what() << std::endl;
         lbmInitialized = false;
         return;
     }
 
-    // Маркировка твердых ячеек из воксельной сетки
-    if (!g_voxelData.empty() && (int)g_voxelData.size() == g_voxNx*g_voxNy*g_voxNz) {
-        for (int i = 0; i < total; i++) {
-            lbmIsSolid[i] = (g_voxelData[i] == 1) ? 1 : 0;
-        }
+    // Маркировка твердых
+    if (!g_voxelData.empty() && (int)g_voxelData.size() == total) {
+        const int* vox = g_voxelData.data();
+        char* solid = lbmIsSolid.data();
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for (int i = 0; i < total; ++i) solid[i] = (vox[i] == 1) ? 1 : 0;
     } else {
-        // если нет вокселей — нет твердых
         std::fill(lbmIsSolid.begin(), lbmIsSolid.end(), 0);
     }
 
-    // Инициализация равновесным распределением с inlet скоростью
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
-    std::cout << "[LBM] Inlet LB velocity: (" << inUx << "," << inUy << "," << inUz << ")" << std::endl;
+    std::cout << "[LBM] Inlet LB velocity: (" << inUx << "," << inUy << "," << inUz << ") total=" << total << std::endl;
 
-    for (int cell = 0; cell < total; cell++) {
+    // Инициализация равновесием — параллельная
+    float* fPtr = f.data();
+    char* solidPtr = lbmIsSolid.data();
+    #ifdef _OPENMP
+    #pragma omp parallel for
+    #endif
+    for (int cell = 0; cell < total; ++cell) {
         float rho = 1.0f;
         float ux = 0, uy = 0, uz = 0;
-        if (lbmIsSolid[cell]) {
-            ux = 0; uy = 0; uz = 0;
-        } else {
-            // начальное поле — inlet везде для быстрого старта
-            ux = inUx; uy = inUy; uz = inUz;
-        }
-        lbmRho[cell] = rho;
-        lbmUx[cell] = ux; lbmUy[cell] = uy; lbmUz[cell] = uz;
-        for (int qi = 0; qi < Q; qi++) {
-            f[fIdx(cell, qi)] = computeEquilibrium(qi, rho, ux, uy, uz);
+        if (!solidPtr[cell]) { ux = inUx; uy = inUy; uz = inUz; }
+        float usqr = ux*ux + uy*uy + uz*uz;
+        int base = cell*Q;
+        for (int qi = 0; qi < Q; ++qi) {
+            fPtr[base+qi] = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
         }
     }
 
@@ -191,13 +231,18 @@ void initLBM() {
     lbmConverged = false;
     lbmInitialized = true;
 
-    // Reynolds: Re = U*L / nu
-    float L = std::max({(float)lbmNx, (float)lbmNy, (float)lbmNz});
+    float L = (float)std::max({lbmNx, lbmNy, lbmNz});
     lbmReynolds = lbmParams.U0 * L / (lbmParams.viscosity + 1e-6f);
 
     auto t1 = std::chrono::high_resolution_clock::now();
     lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
-    std::cout << "[LBM] Initialized: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total << " cells, tau=" << lbmParams.tau << " nu=" << lbmParams.viscosity << " Re=" << lbmReynolds << " in " << lbmTimeMs << " ms" << std::endl;
+    std::cout << "[LBM] Initialized OPT: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
+              << " cells, tau=" << lbmParams.tau << " nu=" << lbmParams.viscosity
+              << " Re=" << lbmReynolds << " in " << lbmTimeMs << " ms"
+#ifdef _OPENMP
+              << " [OpenMP " << omp_get_max_threads() << " threads]"
+#endif
+              << std::endl;
 }
 
 void resetLBM() {
@@ -210,182 +255,198 @@ void shutdownLBM() {
     lbmInitialized = false;
     lbmCurrentStep = 0;
     lbmConverged = false;
-    // не очищаем вектора полностью для переиспользования, но можно
-    // оставляем как есть
 }
 
+// Оптимизированный шаг LBM — collision + streaming gather
 void stepLBMCPU(int steps) {
     if (!lbmInitialized) return;
     if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return;
     int total = lbmNx * lbmNy * lbmNz;
     if (total <= 0) return;
+    if (total != (int)lbmRho.size()) return;
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
     float tau0 = lbmParams.tau;
     if (!std::isfinite(tau0) || tau0 < 0.51f) tau0 = 0.6f;
+    if (tau0 > 2.0f) tau0 = 2.0f;
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
+    float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
+    if (U0mag < 1e-6f) U0mag = 0.1f;
 
-    // Для Smagorinsky: предварительный расчет градиентов скорости если включен
-    // Мы будем считать |S| внутри цикла коллизии через центральные разности
-    // Для производительности — используем предыдущие lbmUx
+    // Определяем ось потока один раз на все шаги
+    int flowAxis, flowSign;
+    glm::vec3 flowDir;
+    computeFlowAxis(flowAxis, flowSign, flowDir);
 
-    for (int s = 0; s < steps; s++) {
-        // === COLLISION ===
-        float maxVel = 0.0f;
-        float avgRho = 0.0f;
-        float kinetic = 0.0f;
+    // Указатели для скорости
+    float* fPtr = f.data();
+    float* fNextPtr = fNext.data();
+    float* rhoPtr = lbmRho.data();
+    float* uxPtr = lbmUx.data();
+    float* uyPtr = lbmUy.data();
+    float* uzPtr = lbmUz.data();
+    char* solidPtr = lbmIsSolid.data();
 
-        for (int cell = 0; cell < total; cell++) {
-            if (lbmIsSolid[cell]) {
-                // твердые — не коллизия, но rho=1, u=0
-                lbmRho[cell] = 1.0f;
-                lbmUx[cell] = 0; lbmUy[cell] = 0; lbmUz[cell] = 0;
+    const int Nx = lbmNx, Ny = lbmNy, Nz = lbmNz;
+    const int strideY = Nx;
+    const int strideZ = Nx*Ny;
+
+    // Для сходимости
+    static float prevKinetic = 0.0f;
+
+    for (int s = 0; s < steps; ++s) {
+        float maxVelLocal = 0.0f;
+        double avgRhoAcc = 0.0;
+        double kineticAcc = 0.0;
+
+        // === COLLISION — параллельный ===
+        #ifdef _OPENMP
+        #pragma omp parallel reduction(max:maxVelLocal) reduction(+:avgRhoAcc,kineticAcc)
+        {
+        #pragma omp for nowait
+        #endif
+        for (int cell = 0; cell < total; ++cell) {
+            if (solidPtr[cell]) {
+                rhoPtr[cell] = 1.0f;
+                uxPtr[cell] = 0; uyPtr[cell] = 0; uzPtr[cell] = 0;
                 continue;
             }
 
-            // вычисляем макроскопические из f
+            int base = cell*Q;
+            // Макроскопические
             float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
-            for (int qi = 0; qi < Q; qi++) {
-                float fi = f[fIdx(cell, qi)];
-                if (!std::isfinite(fi)) fi = w[qi]; // защита
+            // Разворачиваем цикл по Q для скорости — 19 итераций
+            // Используем ручной unroll частично
+            for (int qi = 0; qi < Q; ++qi) {
+                float fi = fPtr[base+qi];
+                // защита от NaN — быстро
+                if (!std::isfinite(fi)) fi = w[qi];
                 rho += fi;
-                ux += fi * c[qi][0];
-                uy += fi * c[qi][1];
-                uz += fi * c[qi][2];
+                ux += fi * (float)c[qi][0];
+                uy += fi * (float)c[qi][1];
+                uz += fi * (float)c[qi][2];
             }
-            if (!std::isfinite(rho) || rho < 1e-6f) rho = 1.0f;
-            ux /= rho; uy /= rho; uz /= rho;
+            if (rho < 1e-6f || !std::isfinite(rho)) rho = 1.0f;
+            float invRho = 1.0f / rho;
+            ux *= invRho; uy *= invRho; uz *= invRho;
             if (!std::isfinite(ux)) ux = 0;
             if (!std::isfinite(uy)) uy = 0;
             if (!std::isfinite(uz)) uz = 0;
 
-            // Inlet/outlet граничные условия — перезаписываем скорость на границах
-            int x = cell % lbmNx;
-            // int y = (cell / lbmNx) % lbmNy;
-            // int z = cell / (lbmNx*lbmNy);
-            bool isInlet = false, isOutlet = false;
-            // Определяем inlet по направлению потока: если поток +X, inlet at x=0
-            // Для универсальности — если |dir.x| >= |dir.y|,|dir.z|, используем X
-            float az = glm::radians(flowAzimuth);
-            float el = glm::radians(flowElevation);
-            glm::vec3 dir(cosf(el)*cosf(az), sinf(el), cosf(el)*sinf(az));
-            if (glm::length(dir) < 1e-6f) dir = glm::vec3(1,0,0);
-            dir = glm::normalize(dir);
-            if (fabsf(dir.x) >= fabsf(dir.y) && fabsf(dir.x) >= fabsf(dir.z)) {
-                if (dir.x > 0) { isInlet = (x == 0); isOutlet = (x == lbmNx-1); }
-                else { isInlet = (x == lbmNx-1); isOutlet = (x == 0); }
-            } else if (fabsf(dir.y) >= fabsf(dir.z)) {
-                int y = (cell / lbmNx) % lbmNy;
-                if (dir.y > 0) { isInlet = (y == 0); isOutlet = (y == lbmNy-1); }
-                else { isInlet = (y == lbmNy-1); isOutlet = (y == 0); }
-            } else {
-                int z = cell / (lbmNx*lbmNy);
-                if (dir.z > 0) { isInlet = (z == 0); isOutlet = (z == lbmNz-1); }
-                else { isInlet = (z == lbmNz-1); isOutlet = (z == 0); }
-            }
+            // Граничные — определяем быстро по индексу
+            int x = cell % Nx;
+            int y = (cell / Nx) % Ny;
+            int z = cell / strideZ;
+            bool isInlet = false;
+            if (flowAxis == 0) isInlet = (flowSign > 0) ? (x == 0) : (x == Nx-1);
+            else if (flowAxis == 1) isInlet = (flowSign > 0) ? (y == 0) : (y == Ny-1);
+            else isInlet = (flowSign > 0) ? (z == 0) : (z == Nz-1);
 
             if (isInlet) {
                 rho = 1.0f;
                 ux = inUx; uy = inUy; uz = inUz;
             }
 
-            // Smagorinsky LES
+            // Smagorinsky LES — только для внутренних не-граничных ячеек
             float tauEff = tau0;
-            if (lbmParams.useTurbulence && !isInlet && !isOutlet) {
-                // вычисляем тензор скоростей деформаций через центральные разности
-                int xm = (x > 0) ? cell-1 : cell;
-                int xp = (x < lbmNx-1) ? cell+1 : cell;
-                int ym = cell - lbmNx;
-                int yp = cell + lbmNx;
-                int zm = cell - lbmNx*lbmNy;
-                int zp = cell + lbmNx*lbmNy;
-                if (ym < 0) ym = cell;
-                if (yp >= total) yp = cell;
-                if (zm < 0) zm = cell;
-                if (zp >= total) zp = cell;
-                // градиенты
-                float dux_dx = (lbmUx[xp] - lbmUx[xm]) * 0.5f;
-                float duy_dy = (lbmUy[yp] - lbmUy[ym]) * 0.5f;
-                float duz_dz = (lbmUz[zp] - lbmUz[zm]) * 0.5f;
-                float dux_dy = (lbmUx[yp] - lbmUx[ym]) * 0.5f;
-                float dux_dz = (lbmUx[zp] - lbmUx[zm]) * 0.5f;
-                float duy_dx = (lbmUy[xp] - lbmUy[xm]) * 0.5f;
-                float duy_dz = (lbmUy[zp] - lbmUy[zm]) * 0.5f;
-                float duz_dx = (lbmUz[xp] - lbmUz[xm]) * 0.5f;
-                float duz_dy = (lbmUz[yp] - lbmUz[ym]) * 0.5f;
+            if (lbmParams.useTurbulence && !isInlet) {
+                // Проверяем что внутренние (не на границе домена)
+                if (x > 0 && x < Nx-1 && y > 0 && y < Ny-1 && z > 0 && z < Nz-1) {
+                    // Быстрые индексы соседей
+                    int xm = cell - 1;
+                    int xp = cell + 1;
+                    int ym = cell - strideY;
+                    int yp = cell + strideY;
+                    int zm = cell - strideZ;
+                    int zp = cell + strideZ;
+                    // Пропускаем если соседи твердые — упрощение
+                    if (!solidPtr[xm] && !solidPtr[xp] && !solidPtr[ym] && !solidPtr[yp] && !solidPtr[zm] && !solidPtr[zp]) {
+                        float dux_dx = (uxPtr[xp] - uxPtr[xm]) * 0.5f;
+                        float duy_dy = (uyPtr[yp] - uyPtr[ym]) * 0.5f;
+                        float duz_dz = (uzPtr[zp] - uzPtr[zm]) * 0.5f;
+                        float dux_dy = (uxPtr[yp] - uxPtr[ym]) * 0.5f;
+                        float dux_dz = (uxPtr[zp] - uxPtr[zm]) * 0.5f;
+                        float duy_dx = (uyPtr[xp] - uyPtr[xm]) * 0.5f;
+                        float duy_dz = (uyPtr[zp] - uyPtr[zm]) * 0.5f;
+                        float duz_dx = (uzPtr[xp] - uzPtr[xm]) * 0.5f;
+                        float duz_dy = (uzPtr[yp] - uzPtr[ym]) * 0.5f;
 
-                float Sxx = dux_dx;
-                float Syy = duy_dy;
-                float Szz = duz_dz;
-                float Sxy = 0.5f*(dux_dy + duy_dx);
-                float Sxz = 0.5f*(dux_dz + duz_dx);
-                float Syz = 0.5f*(duy_dz + duz_dy);
+                        float Sxx = dux_dx;
+                        float Syy = duy_dy;
+                        float Szz = duz_dz;
+                        float Sxy = 0.5f*(dux_dy + duy_dx);
+                        float Sxz = 0.5f*(dux_dz + duz_dx);
+                        float Syz = 0.5f*(duy_dz + duz_dy);
 
-                float S2 = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0f*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
-                float S = std::sqrt(2.0f*S2);
-                if (!std::isfinite(S)) S = 0.0f;
-                float Cs = lbmParams.smagorinskyC;
-                if (!std::isfinite(Cs) || Cs < 0) Cs = 0.12f;
-                float nu_t = Cs*Cs * S; // dx=1
-                float tau_t = nu_t / cs2;
-                tauEff = tau0 + tau_t;
-                if (tauEff > 2.0f) tauEff = 2.0f;
-                if (tauEff < 0.51f) tauEff = 0.51f;
+                        float S2 = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0f*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+                        float S = std::sqrt(2.0f*S2);
+                        if (std::isfinite(S)) {
+                            float Cs = lbmParams.smagorinskyC;
+                            float nu_t = Cs*Cs * S;
+                            tauEff = tau0 + nu_t / cs2;
+                            if (tauEff > 2.0f) tauEff = 2.0f;
+                            if (tauEff < 0.51f) tauEff = 0.51f;
+                        }
+                    }
+                }
             }
 
-            // равновесие и коллизия
-            for (int qi = 0; qi < Q; qi++) {
-                float feq = computeEquilibrium(qi, rho, ux, uy, uz);
-                float fi = f[fIdx(cell, qi)];
+            float usqr = ux*ux + uy*uy + uz*uz;
+            float invTau = 1.0f / tauEff;
+            // Коллизия BGK
+            for (int qi = 0; qi < Q; ++qi) {
+                float feq = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
+                float fi = fPtr[base+qi];
                 if (!std::isfinite(fi)) fi = feq;
-                float fColl = fi - (fi - feq) / tauEff;
-                if (!std::isfinite(fColl)) fColl = feq;
-                // сохраняем в f (переиспользуем f как пост-коллизионное для стриминга)
-                // но нам нужен fNext для стриминга, так что пишем во временный?
-                // Для упрощения — пишем в f, а стриминг отдельно из f
-                f[fIdx(cell, qi)] = fColl; // пост-коллизия
+                fPtr[base+qi] = fi - (fi - feq) * invTau;
             }
 
-            lbmRho[cell] = rho;
-            lbmUx[cell] = ux; lbmUy[cell] = uy; lbmUz[cell] = uz;
+            rhoPtr[cell] = rho;
+            uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
 
-            float velMag = std::sqrt(ux*ux + uy*uy + uz*uz);
-            if (velMag > maxVel) maxVel = velMag;
-            avgRho += rho;
-            kinetic += velMag*velMag;
+            float velMag = std::sqrt(usqr);
+            if (velMag > maxVelLocal) maxVelLocal = velMag;
+            avgRhoAcc += rho;
+            kineticAcc += usqr;
         }
+        #ifdef _OPENMP
+        } // parallel
+        #endif
 
-        // === STREAMING + BOUNCE-BACK ===
-        std::fill(fNext.begin(), fNext.end(), 0.0f);
+        // === STREAMING GATHER — параллельный по z ===
+        // Используем gather: fNext[dest][q] = f[src][q] где src = dest - c[q]
+        // Это безопасно для параллели, т.к. каждый dest пишет только в свои ячейки
+        #ifdef _OPENMP
+        #pragma omp parallel for collapse(2)
+        #endif
+        for (int z = 0; z < Nz; ++z) {
+            for (int y = 0; y < Ny; ++y) {
+                int rowBase = (z*Ny + y)*Nx;
+                for (int x = 0; x < Nx; ++x) {
+                    int dest = rowBase + x;
+                    if (solidPtr[dest]) continue;
 
-        for (int z = 0; z < lbmNz; z++) {
-            for (int y = 0; y < lbmNy; y++) {
-                for (int x = 0; x < lbmNx; x++) {
-                    int cell = idx3D(x,y,z);
-                    if (lbmIsSolid[cell]) continue; // твердые не стримят
-
-                    for (int qi = 0; qi < Q; qi++) {
-                        int nx = x + c[qi][0];
-                        int ny = y + c[qi][1];
-                        int nz = z + c[qi][2];
-                        float fColl = f[fIdx(cell, qi)];
-
-                        if (nx < 0 || nx >= lbmNx || ny < 0 || ny >= lbmNy || nz < 0 || nz >= lbmNz) {
-                            // выход за границы — outlet/inlet обработка
-                            // для outlet — отскок назад? проще — bounce-back на границе
-                            // outlet: копируем в противоположное направление в той же ячейке
-                            // inlet уже обработан
-                            // Для простоты — отражаем
-                            fNext[fIdx(cell, opp[qi])] += fColl; // упрощенный outlet
+                    int destBase = dest*Q;
+                    // Для каждой скорости
+                    for (int qi = 0; qi < Q; ++qi) {
+                        int sx = x - c[qi][0];
+                        int sy = y - c[qi][1];
+                        int sz = z - c[qi][2];
+                        if (sx < 0 || sx >= Nx || sy < 0 || sy >= Ny || sz < 0 || sz >= Nz) {
+                            // Выход за границу — outlet: копируем bounce-back или оставляем
+                            // Для стабильности — используем равновесие с локальной скоростью или отражение
+                            // Простой outlet: fNext = f[dest][opp] (отражение) для предотвращения потери массы
+                            // Но лучше — zero-gradient: fNext[dest][q] = f[dest][q]
+                            fNextPtr[destBase+qi] = fPtr[destBase+qi];
                         } else {
-                            int ncell = idx3D(nx,ny,nz);
-                            if (lbmIsSolid[ncell]) {
-                                // bounce-back: отражаем в противоположное направление в текущей ячейке
-                                fNext[fIdx(cell, opp[qi])] += fColl;
+                            int src = (sz*Ny + sy)*Nx + sx;
+                            if (solidPtr[src]) {
+                                // bounce-back от твердого — отражение
+                                fNextPtr[destBase+qi] = fPtr[destBase+opp[qi]];
                             } else {
-                                fNext[fIdx(ncell, qi)] += fColl;
+                                fNextPtr[destBase+qi] = fPtr[src*Q+qi];
                             }
                         }
                     }
@@ -393,35 +454,53 @@ void stepLBMCPU(int steps) {
             }
         }
 
-        // Inlet граничные условия — перезаписываем fNext на inlet плоскости равновесием
-        {
-            float az = glm::radians(flowAzimuth);
-            float el = glm::radians(flowElevation);
-            glm::vec3 dir(cosf(el)*cosf(az), sinf(el), cosf(el)*sinf(az));
-            if (glm::length(dir) < 1e-6f) dir = glm::vec3(1,0,0);
-            dir = glm::normalize(dir);
-            if (fabsf(dir.x) >= fabsf(dir.y) && fabsf(dir.x) >= fabsf(dir.z)) {
-                int ix = (dir.x > 0) ? 0 : lbmNx-1;
-                for (int z = 0; z < lbmNz; z++) for (int y = 0; y < lbmNy; y++) {
-                    int cell = idx3D(ix,y,z);
-                    if (lbmIsSolid[cell]) continue;
-                    for (int qi = 0; qi < Q; qi++) {
-                        fNext[fIdx(cell, qi)] = computeEquilibrium(qi, 1.0f, inUx, inUy, inUz);
+        // Inlet BC — перезаписываем fNext на inlet плоскости равновесием
+        if (flowAxis == 0) {
+            int ix = (flowSign > 0) ? 0 : Nx-1;
+            float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+            #ifdef _OPENMP
+            #pragma omp parallel for collapse(2)
+            #endif
+            for (int z = 0; z < Nz; ++z) {
+                for (int y = 0; y < Ny; ++y) {
+                    int cell = (z*Ny + y)*Nx + ix;
+                    if (solidPtr[cell]) continue;
+                    int base = cell*Q;
+                    for (int qi = 0; qi < Q; ++qi) {
+                        fNextPtr[base+qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
                     }
                 }
-            } else if (fabsf(dir.y) >= fabsf(dir.z)) {
-                int iy = (dir.y > 0) ? 0 : lbmNy-1;
-                for (int z = 0; z < lbmNz; z++) for (int x = 0; x < lbmNx; x++) {
-                    int cell = idx3D(x,iy,z);
-                    if (lbmIsSolid[cell]) continue;
-                    for (int qi = 0; qi < Q; qi++) fNext[fIdx(cell, qi)] = computeEquilibrium(qi, 1.0f, inUx, inUy, inUz);
+            }
+        } else if (flowAxis == 1) {
+            int iy = (flowSign > 0) ? 0 : Ny-1;
+            float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+            #ifdef _OPENMP
+            #pragma omp parallel for collapse(2)
+            #endif
+            for (int z = 0; z < Nz; ++z) {
+                for (int x = 0; x < Nx; ++x) {
+                    int cell = (z*Ny + iy)*Nx + x;
+                    if (solidPtr[cell]) continue;
+                    int base = cell*Q;
+                    for (int qi = 0; qi < Q; ++qi) {
+                        fNextPtr[base+qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                    }
                 }
-            } else {
-                int iz = (dir.z > 0) ? 0 : lbmNz-1;
-                for (int y = 0; y < lbmNy; y++) for (int x = 0; x < lbmNx; x++) {
-                    int cell = idx3D(x,y,iz);
-                    if (lbmIsSolid[cell]) continue;
-                    for (int qi = 0; qi < Q; qi++) fNext[fIdx(cell, qi)] = computeEquilibrium(qi, 1.0f, inUx, inUy, inUz);
+            }
+        } else {
+            int iz = (flowSign > 0) ? 0 : Nz-1;
+            float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+            #ifdef _OPENMP
+            #pragma omp parallel for collapse(2)
+            #endif
+            for (int y = 0; y < Ny; ++y) {
+                for (int x = 0; x < Nx; ++x) {
+                    int cell = (iz*Ny + y)*Nx + x;
+                    if (solidPtr[cell]) continue;
+                    int base = cell*Q;
+                    for (int qi = 0; qi < Q; ++qi) {
+                        fNextPtr[base+qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                    }
                 }
             }
         }
@@ -429,35 +508,43 @@ void stepLBMCPU(int steps) {
         f.swap(fNext);
 
         lbmCurrentStep++;
-        lbmAvgRho = avgRho / total;
-        lbmAvgKineticEnergy = kinetic / total;
-        lbmMaxVelocityLB = maxVel;
+        lbmAvgRho = (float)(avgRhoAcc / total);
+        lbmAvgKineticEnergy = (float)(kineticAcc / total);
+        lbmMaxVelocityLB = maxVelLocal;
 
-        // конвертация в мировые
-        float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
-        if (U0mag < 1e-6f) U0mag = 0.1f;
         float scale = flowSpeed / U0mag;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
-        lbmMaxVelocityWorld = maxVel * scale;
+        if (scale < 0.01f) scale = 0.01f;
+        lbmMaxVelocityWorld = maxVelLocal * scale;
 
-        // сходимость — разница кинетической энергии
-        static float prevKinetic = 0.0f;
         lbmConvergence = std::fabs(lbmAvgKineticEnergy - prevKinetic);
         prevKinetic = lbmAvgKineticEnergy;
-        if (lbmConvergence < lbmParams.convergenceThreshold) lbmConverged = true;
-        else lbmConverged = false;
+        lbmConverged = (lbmConvergence < lbmParams.convergenceThreshold);
+    }
 
-        // обновление мировых скоростей
-        for (int cell = 0; cell < total; cell++) {
-            if (lbmIsSolid[cell]) {
-                lbmUxWorld[cell] = 0; lbmUyWorld[cell] = 0; lbmUzWorld[cell] = 0;
-                lbmPressure[cell] = 0;
+    // Обновление мировых скоростей и давления — один раз после всех шагов, параллельно
+    {
+        float scale = flowSpeed / U0mag;
+        if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
+        float* uxW = lbmUxWorld.data();
+        float* uyW = lbmUyWorld.data();
+        float* uzW = lbmUzWorld.data();
+        float* pPtr = lbmPressure.data();
+        float cs2Scale = cs2 * scale * scale;
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for (int cell = 0; cell < total; ++cell) {
+            if (solidPtr[cell]) {
+                uxW[cell] = 0; uyW[cell] = 0; uzW[cell] = 0;
+                pPtr[cell] = 0;
             } else {
-                lbmUxWorld[cell] = lbmUx[cell] * scale;
-                lbmUyWorld[cell] = lbmUy[cell] * scale;
-                lbmUzWorld[cell] = lbmUz[cell] * scale;
-                // давление из плотности: p = cs2 * (rho - rho0)
-                lbmPressure[cell] = cs2 * (lbmRho[cell] - 1.0f) * scale * scale; // масштабируем
+                uxW[cell] = uxPtr[cell] * scale;
+                uyW[cell] = uyPtr[cell] * scale;
+                uzW[cell] = uzPtr[cell] * scale;
+                pPtr[cell] = cs2 * (rhoPtr[cell] - 1.0f) * scale * scale;
+                // Защита от NaN
+                if (!std::isfinite(pPtr[cell])) pPtr[cell] = 0;
             }
         }
     }
@@ -468,86 +555,94 @@ void stepLBMCPU(int steps) {
 
 void updateLBM(float deltaTime) {
     if (!lbmParams.enabled) return;
-    if (!lbmInitialized) {
-        initLBM();
-        return;
-    }
-    // если изменился voxelResolution или модель — переинициализируем
+    if (!lbmInitialized) { initLBM(); return; }
     if (lbmNx != g_voxNx || lbmNy != g_voxNy || lbmNz != g_voxNz) {
         std::cout << "[LBM] Voxel grid changed, reinit" << std::endl;
         initLBM();
         return;
     }
-
     int steps = lbmParams.stepsPerFrame;
     if (steps <= 0) steps = 1;
-    if (steps > 20) steps = 20; // лимит для стабильности кадра
+    if (steps > 50) steps = 50; // увеличенный лимит для оптимизированной версии
+
+    // Адаптивное количество шагов — если deltaTime большой, делаем больше шагов
+    // Но не более 2x от настроек
+    if (deltaTime > 0.02f) steps = std::min(steps*2, 50);
 
     stepLBMCPU(steps);
 
-    // каждые 100 шагов — пересчет вихрей и Q
     if (lbmCurrentStep % 50 == 0) {
         computeLBMVorticityAndQ();
     }
 }
 
+// Оптимизированный сэмплинг — трилинейная интерполяция без лямбд
 glm::vec3 getLBMVelocityLB(const glm::vec3& worldPos) {
     if (!lbmInitialized) return glm::vec3(0);
-    if (!std::isfinite(worldPos.x)) return glm::vec3(0);
-    // мир -> решетка
+    if (!std::isfinite(worldPos.x) || !std::isfinite(worldPos.y) || !std::isfinite(worldPos.z)) return glm::vec3(0);
+
     float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
     float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
     float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
+
     int ix = (int)std::floor(fx);
     int iy = (int)std::floor(fy);
     int iz = (int)std::floor(fz);
-    float tx = fx - ix;
-    float ty = fy - iy;
-    float tz = fz - iz;
-    if (ix < 0 || ix >= lbmNx-1 || iy < 0 || iy >= lbmNy-1 || iz < 0 || iz >= lbmNz-1) {
-        // вне сетки — возвращаем 0 или freestream?
-        return glm::vec3(0);
-    }
-    // трилинейная интерполяция 8 углов
-    auto getVel = [&](int x,int y,int z)->glm::vec3 {
-        if (x<0||x>=lbmNx||y<0||y>=lbmNy||z<0||z>=lbmNz) return glm::vec3(0);
-        int cell = idx3D(x,y,z);
-        if (cell<0||cell>=(int)lbmUx.size()) return glm::vec3(0);
-        if (lbmIsSolid[cell]) return glm::vec3(0);
-        return glm::vec3(lbmUx[cell], lbmUy[cell], lbmUz[cell]);
-    };
-    glm::vec3 c000 = getVel(ix,iy,iz);
-    glm::vec3 c100 = getVel(ix+1,iy,iz);
-    glm::vec3 c010 = getVel(ix,iy+1,iz);
-    glm::vec3 c110 = getVel(ix+1,iy+1,iz);
-    glm::vec3 c001 = getVel(ix,iy,iz+1);
-    glm::vec3 c101 = getVel(ix+1,iy,iz+1);
-    glm::vec3 c011 = getVel(ix,iy+1,iz+1);
-    glm::vec3 c111 = getVel(ix+1,iy+1,iz+1);
+    float tx = fx - (float)ix;
+    float ty = fy - (float)iy;
+    float tz = fz - (float)iz;
 
-    glm::vec3 c00 = c000*(1-tx) + c100*tx;
-    glm::vec3 c01 = c001*(1-tx) + c101*tx;
-    glm::vec3 c10 = c010*(1-tx) + c110*tx;
-    glm::vec3 c11 = c011*(1-tx) + c111*tx;
-    glm::vec3 c0 = c00*(1-ty) + c10*ty;
-    glm::vec3 c1 = c01*(1-ty) + c11*ty;
-    glm::vec3 c = c0*(1-tz) + c1*tz;
+    if (ix < 0 || ix >= lbmNx-1 || iy < 0 || iy >= lbmNy-1 || iz < 0 || iz >= lbmNz-1) return glm::vec3(0);
+
+    // Быстрый доступ
+    const float* uxPtr = lbmUx.data();
+    const float* uyPtr = lbmUy.data();
+    const float* uzPtr = lbmUz.data();
+    const char* solidPtr = lbmIsSolid.data();
+    const int Nx = lbmNx, Ny = lbmNy;
+    const int strideY = Nx, strideZ = Nx*Ny;
+
+    auto fetch = [&](int x,int y,int z, glm::vec3& out)->bool {
+        if (x<0||x>=Nx||y<0||y>=Ny||z<0||z>=lbmNz) { out = glm::vec3(0); return false; }
+        int cell = (z*Ny + y)*Nx + x;
+        if (solidPtr[cell]) { out = glm::vec3(0); return false; }
+        out.x = uxPtr[cell]; out.y = uyPtr[cell]; out.z = uzPtr[cell];
+        return true;
+    };
+
+    glm::vec3 c000,c100,c010,c110,c001,c101,c011,c111;
+    fetch(ix,iy,iz,c000); fetch(ix+1,iy,iz,c100); fetch(ix,iy+1,iz,c010); fetch(ix+1,iy+1,iz,c110);
+    fetch(ix,iy,iz+1,c001); fetch(ix+1,iy,iz+1,c101); fetch(ix,iy+1,iz+1,c011); fetch(ix+1,iy+1,iz+1,c111);
+
+    glm::vec3 c00 = c000*(1.0f-tx) + c100*tx;
+    glm::vec3 c01 = c001*(1.0f-tx) + c101*tx;
+    glm::vec3 c10 = c010*(1.0f-tx) + c110*tx;
+    glm::vec3 c11 = c011*(1.0f-tx) + c111*tx;
+    glm::vec3 c0 = c00*(1.0f-ty) + c10*ty;
+    glm::vec3 c1 = c01*(1.0f-ty) + c11*ty;
+    glm::vec3 c = c0*(1.0f-tz) + c1*tz;
     if (!std::isfinite(c.x)) return glm::vec3(0);
     return c;
 }
 
 glm::vec3 getLBMVelocityWorld(const glm::vec3& worldPos) {
-    glm::vec3 vLB = getLBMVelocityLB(worldPos);
-    if (glm::length(vLB) < 1e-6f) {
-        // вне LBM — возвращаем freestream как fallback
+    // Быстрый путь — если вне сетки, сразу freestream
+    if (!lbmInitialized) return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
+    if (worldPos.x < lbmMinX || worldPos.x > lbmMaxX ||
+        worldPos.y < lbmMinY || worldPos.y > lbmMaxY ||
+        worldPos.z < lbmMinZ || worldPos.z > lbmMaxZ) {
         return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
     }
+    glm::vec3 vLB = getLBMVelocityLB(worldPos);
+    float mag2 = vLB.x*vLB.x + vLB.y*vLB.y + vLB.z*vLB.z;
+    if (mag2 < 1e-12f) return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz) * 0.1f;
+
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
     float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
     if (U0mag < 1e-6f) U0mag = 0.1f;
     float scale = flowSpeed / U0mag;
-    if (!std::isfinite(scale)) scale = 20.0f;
+    if (!std::isfinite(scale)) return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
     glm::vec3 vWorld = vLB * scale;
     if (!std::isfinite(vWorld.x)) return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
     return vWorld;
@@ -560,9 +655,10 @@ float getLBMDensityWorld(const glm::vec3& worldPos) {
     float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
     int ix = (int)fx, iy = (int)fy, iz = (int)fz;
     if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return 1.0f;
-    int cell = idx3D(ix,iy,iz);
+    int cell = (iz*lbmNy + iy)*lbmNx + ix;
     if (cell < 0 || cell >= (int)lbmRho.size()) return 1.0f;
-    return lbmRho[cell];
+    float rho = lbmRho[cell];
+    return std::isfinite(rho) ? rho : 1.0f;
 }
 
 bool isLBMSolidWorld(const glm::vec3& worldPos) {
@@ -572,7 +668,7 @@ bool isLBMSolidWorld(const glm::vec3& worldPos) {
     float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
     int ix = (int)fx, iy = (int)fy, iz = (int)fz;
     if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return false;
-    int cell = idx3D(ix,iy,iz);
+    int cell = (iz*lbmNy + iy)*lbmNx + ix;
     if (cell < 0 || cell >= (int)lbmIsSolid.size()) return false;
     return lbmIsSolid[cell] != 0;
 }
@@ -581,45 +677,54 @@ void computeLBMVorticityAndQ() {
     if (!lbmInitialized) return;
     int total = lbmNx * lbmNy * lbmNz;
     if (total <= 0) return;
+    const int Nx = lbmNx, Ny = lbmNy, Nz = lbmNz;
+    const float* uxW = lbmUxWorld.data();
+    const float* uyW = lbmUyWorld.data();
+    const float* uzW = lbmUzWorld.data();
+    float* vortPtr = lbmVorticityMag.data();
+    float* qPtr = lbmQCriterion.data();
+    const char* solidPtr = lbmIsSolid.data();
+    float csx = lbmCellSizeX, csy = lbmCellSizeY, csz = lbmCellSizeZ;
+    if (csx < 1e-6f) csx = 0.1f;
+    if (csy < 1e-6f) csy = 0.1f;
+    if (csz < 1e-6f) csz = 0.1f;
+    float invCsx = 1.0f / csx, invCsy = 1.0f / csy, invCsz = 1.0f / csz;
 
-    for (int z = 1; z < lbmNz-1; z++) {
-        for (int y = 1; y < lbmNy-1; y++) {
-            for (int x = 1; x < lbmNx-1; x++) {
-                int cell = idx3D(x,y,z);
-                if (lbmIsSolid[cell]) { lbmVorticityMag[cell] = 0; lbmQCriterion[cell] = 0; continue; }
+    #ifdef _OPENMP
+    #pragma omp parallel for collapse(2)
+    #endif
+    for (int z = 1; z < Nz-1; ++z) {
+        for (int y = 1; y < Ny-1; ++y) {
+            for (int x = 1; x < Nx-1; ++x) {
+                int cell = (z*Ny + y)*Nx + x;
+                if (solidPtr[cell]) { vortPtr[cell] = 0; qPtr[cell] = 0; continue; }
 
-                int xm = idx3D(x-1,y,z), xp = idx3D(x+1,y,z);
-                int ym = idx3D(x,y-1,z), yp = idx3D(x,y+1,z);
-                int zm = idx3D(x,y,z-1), zp = idx3D(x,y,z+1);
+                int xm = cell-1, xp = cell+1;
+                int ym = cell-Nx, yp = cell+Nx;
+                int zm = cell-Nx*Ny, zp = cell+Nx*Ny;
 
-                // центральные разности для скорости (мировая)
-                float dux_dx = (lbmUxWorld[xp] - lbmUxWorld[xm]) * 0.5f / lbmCellSizeX;
-                float dux_dy = (lbmUxWorld[yp] - lbmUxWorld[ym]) * 0.5f / lbmCellSizeY;
-                float dux_dz = (lbmUxWorld[zp] - lbmUxWorld[zm]) * 0.5f / lbmCellSizeZ;
+                float dux_dx = (uxW[xp] - uxW[xm]) * 0.5f * invCsx;
+                float dux_dy = (uxW[yp] - uxW[ym]) * 0.5f * invCsy;
+                float dux_dz = (uxW[zp] - uxW[zm]) * 0.5f * invCsz;
 
-                float duy_dx = (lbmUyWorld[xp] - lbmUyWorld[xm]) * 0.5f / lbmCellSizeX;
-                float duy_dy = (lbmUyWorld[yp] - lbmUyWorld[ym]) * 0.5f / lbmCellSizeY;
-                float duy_dz = (lbmUyWorld[zp] - lbmUyWorld[zm]) * 0.5f / lbmCellSizeZ;
+                float duy_dx = (uyW[xp] - uyW[xm]) * 0.5f * invCsx;
+                float duy_dy = (uyW[yp] - uyW[ym]) * 0.5f * invCsy;
+                float duy_dz = (uyW[zp] - uyW[zm]) * 0.5f * invCsz;
 
-                float duz_dx = (lbmUzWorld[xp] - lbmUzWorld[xm]) * 0.5f / lbmCellSizeX;
-                float duz_dy = (lbmUzWorld[yp] - lbmUzWorld[ym]) * 0.5f / lbmCellSizeY;
-                float duz_dz = (lbmUzWorld[zp] - lbmUzWorld[zm]) * 0.5f / lbmCellSizeZ;
+                float duz_dx = (uzW[xp] - uzW[xm]) * 0.5f * invCsx;
+                float duz_dy = (uzW[yp] - uzW[ym]) * 0.5f * invCsy;
+                float duz_dz = (uzW[zp] - uzW[zm]) * 0.5f * invCsz;
 
-                // завихренность ω = curl u
                 float wx = duz_dy - duy_dz;
                 float wy = dux_dz - duz_dx;
                 float wz = duy_dx - dux_dy;
                 float vortMag = std::sqrt(wx*wx + wy*wy + wz*wz);
-                if (!std::isfinite(vortMag)) vortMag = 0;
-                lbmVorticityMag[cell] = vortMag;
+                vortPtr[cell] = std::isfinite(vortMag) ? vortMag : 0.0f;
 
-                // Q-критерий: Q = 0.5*(||Ω||² - ||S||²)
-                // Ω — антисимметричная часть, S — симметричная
                 float Sxx = dux_dx, Syy = duy_dy, Szz = duz_dz;
                 float Sxy = 0.5f*(dux_dy + duy_dx);
                 float Sxz = 0.5f*(dux_dz + duz_dx);
                 float Syz = 0.5f*(duy_dz + duz_dy);
-
                 float Oxy = 0.5f*(dux_dy - duy_dx);
                 float Oxz = 0.5f*(dux_dz - duz_dx);
                 float Oyz = 0.5f*(duy_dz - duz_dy);
@@ -627,8 +732,7 @@ void computeLBMVorticityAndQ() {
                 float S2 = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0f*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
                 float O2 = 2.0f*(Oxy*Oxy + Oxz*Oxz + Oyz*Oyz);
                 float Q = 0.5f*(O2 - S2);
-                if (!std::isfinite(Q)) Q = 0;
-                lbmQCriterion[cell] = Q;
+                qPtr[cell] = std::isfinite(Q) ? Q : 0.0f;
             }
         }
     }
@@ -636,20 +740,16 @@ void computeLBMVorticityAndQ() {
 
 float computeLBMRe() {
     if (!lbmInitialized) return 0.0f;
-    float L = std::max({(float)lbmNx, (float)lbmNy, (float)lbmNz});
+    float L = (float)std::max({lbmNx, lbmNy, lbmNz});
     float nu = lbmParams.viscosity;
     if (nu < 1e-6f) nu = 0.033f;
     return lbmParams.U0 * L / nu;
 }
 
 void computeLBMForcesFromLBM() {
-    // Используем LBM давление для пересчета сил (momentum exchange упрощенно)
-    // Для v1.5.0 — используем существующий computeLiftDrag но с LBM скоростями для Cp
-    // Здесь только обновляем avg и т.д.
     lbmReynolds = computeLBMRe();
 }
 
-// Тесты LBM
 bool lbmValidateInitialization() {
     if (!lbmInitialized) return false;
     if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return false;
@@ -661,25 +761,21 @@ bool lbmValidateInitialization() {
 }
 bool lbmValidateConservation() {
     if (!lbmInitialized) return true;
-    // масса должна сохраняться ~ rho=1
     float avg = 0;
     for (float r : lbmRho) avg += r;
     avg /= lbmRho.size();
-    if (std::fabs(avg - 1.0f) > 0.1f) return false;
-    return true;
+    return std::fabs(avg - 1.0f) <= 0.1f;
 }
 bool lbmValidateBoundaryConditions() {
     if (!lbmInitialized) return true;
-    // inlet должен иметь скорость ~ U0
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
     float mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
-    if (mag < 1e-6f || mag > 0.3f) return false;
-    return true;
+    return mag >= 1e-6f && mag <= 0.3f;
 }
 bool lbmValidateSolidHandling() {
     if (!lbmInitialized) return true;
-    for (size_t i = 0; i < lbmIsSolid.size(); i++) {
+    for (size_t i = 0; i < lbmIsSolid.size(); ++i) {
         if (lbmIsSolid[i]) {
             if (std::fabs(lbmUx[i]) > 1e-6f || std::fabs(lbmUy[i]) > 1e-6f || std::fabs(lbmUz[i]) > 1e-6f) return false;
         }
@@ -687,6 +783,4 @@ bool lbmValidateSolidHandling() {
     return true;
 }
 
-void drawLBMUI() {
-    // UI уже в ui.cpp — эта функция для совместимости
-}
+void drawLBMUI() {}
