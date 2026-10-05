@@ -176,3 +176,42 @@ bool aeroScreenshotRequested = false;
 bool aeroCSVExportRequested = false;
 std::string aeroLastScreenshotPath = "";
 std::string aeroLastCSVPath = "";
+
+// v1.15.0 FSR & Optimizations
+FSRMode fsrMode = FSRMode::Quality;
+bool fsrEnabled = false;
+float fsrSharpness = 0.6f;
+float fsrRenderScale = 0.67f;
+bool fsrUseRCAS = true;
+bool fsrDynamicRes = false;
+float fsrTargetFPS = 60.0f;
+float fsrCurrentScale = 0.67f;
+bool fsrShowDebug = false;
+
+unsigned int fsrLowResFBO = 0;
+unsigned int fsrLowResColorTex = 0;
+unsigned int fsrLowResDepthRBO = 0;
+unsigned int fsrIntermediateFBO = 0;
+unsigned int fsrIntermediateTex = 0;
+unsigned int fsrEASUProgram = 0;
+unsigned int fsrRCASProgram = 0;
+unsigned int fsrQuadVAO = 0;
+unsigned int fsrQuadVBO = 0;
+
+bool optFrustumCulling = true;
+bool optOcclusionCulling = false;
+bool optLOD = true;
+bool optEarlyZ = true;
+bool optDynamicParticles = true;
+bool optVRS = false;
+bool optAsyncCompute = true;
+int  optParticleLOD = 0;
+float optLODDistance = 5.0f;
+bool optMeshletCulling = true;
+bool optFramePacing = false;
+float optTargetFPS = 60.0f;
+
+float perfFSRms = 0.0f;
+float perfCullingMs = 0.0f;
+int perfCulledParticles = 0;
+int perfCulledTriangles = 0;

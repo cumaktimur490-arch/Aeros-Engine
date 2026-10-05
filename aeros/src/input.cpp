@@ -9,6 +9,7 @@
 #include "input.h"
 #include "forces.h"
 #include "streamlines.h"
+#include "fsr.h"
 
 // =====================================================
 // Callbacks v1.9.0 Ultra Realistic+ — улучшено
@@ -22,6 +23,10 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
     display_w = width;
     display_h = height;
+    // v1.15.0 FSR resize
+    if (fsrLowResFBO != 0) {
+        resizeFSR(width, height);
+    }
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos) {

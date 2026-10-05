@@ -90,6 +90,7 @@ set(SOURCES
     src/test_mode.cpp
     src/lbm.cpp
     src/lang.cpp
+    src/fsr.cpp
     src/glad.c
     src/imgui/imgui.cpp
     src/imgui/imgui_draw.cpp

@@ -1,5 +1,5 @@
 // =====================================================
-// AeroS Engine — точка входа, главный цикл и рендер v1.14.0 GoGonam AoS.
+// AeroS Engine — точка входа, главный цикл и рендер v1.15.0 GoGonam AoS.
 // =====================================================
 
 #ifdef _WIN32
@@ -42,12 +42,13 @@
 #include "test_mode.h"
 #include "lbm.h"
 #include "lang.h"
+#include "fsr.h"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
-// GL debug callback — v1.14.0 fixed to use GLAD_GL_VERSION_4_3
+// GL debug callback — v1.15.0 fixed to use GLAD_GL_VERSION_4_3
 static void APIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
     (void)source; (void)id; (void)length; (void)userParam;
     if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
@@ -141,11 +142,11 @@ static bool exportForcesCSV(const std::string& path) {
     return f.good();
 }
 
-// Settings save/load — v1.14.0 Multilingual (non-static for UI)
+// Settings save/load — v1.15.0 Multilingual (non-static for UI)
 bool saveSettings(const std::string& path) {
     std::ofstream f(path);
     if (!f) return false;
-    f << "# Aeros Engine v1.14.0 Settings\n";
+    f << "# Aeros Engine v1.15.0 Settings\n";
     f << "flowSpeed=" << flowSpeed << "\n";
     f << "flowAzimuth=" << flowAzimuth << "\n";
     f << "flowElevation=" << flowElevation << "\n";
@@ -218,7 +219,7 @@ bool loadSettings(const std::string& path) {
 int main() {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.14.0 Multilingual)" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.15.0 Multilingual)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
@@ -248,7 +249,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.14.0 GoGonam AoS.", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.15.0 GoGonam AoS.", nullptr, nullptr);
     if (!window) {
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
@@ -259,7 +260,7 @@ int main() {
         return -1;
     }
 
-    // v1.14.0: Set window icon — AoS ENG.
+    // v1.15.0: Set window icon — AoS ENG.
     {
         #include "icon_data.h"
         GLFWimage iconImg;
@@ -314,14 +315,14 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.14.0 still compatible
+    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.15.0 still compatible
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // old ImGui doesn't have this
 
-    // v1.14.0: Initialize localization with Cyrillic font support
+    // v1.15.0: Initialize localization with Cyrillic font support
     initLocalization();
 
     ImGui::StyleColorsDark();
-    // Improve ImGui style for v1.14.0
+    // Improve ImGui style for v1.15.0
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 4.0f;
     style.FrameRounding = 3.0f;
@@ -352,6 +353,16 @@ int main() {
         ImGui::DestroyContext();
         glfwTerminate();
         return -1;
+    }
+
+    // v1.15.0 FSR init
+    if (!initFSR(display_w, display_h)) {
+        std::cerr << "[FSR] Failed to init, disabling" << std::endl;
+        fsrEnabled = false;
+    } else {
+        fsrRenderScale = getFSRScale((int)fsrMode);
+        fsrCurrentScale = fsrRenderScale;
+        std::cout << "[FSR] Ready — mode " << getFSRModeName((int)fsrMode) << " scale " << fsrRenderScale << std::endl;
     }
 
     std::string modelPath = openFileDialog();
@@ -521,16 +532,64 @@ int main() {
 
         drawUI();
 
-        glClearColor(bgColor.x, bgColor.y, bgColor.z, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        // v1.15.0 FSR — update scale
+        if (fsrEnabled) {
+            if (!fsrDynamicRes) {
+                fsrRenderScale = getFSRScale((int)fsrMode);
+                fsrCurrentScale = fsrRenderScale;
+            }
+        }
 
+        // Matrices
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         float aspect = (display_h > 0) ? (float)display_w/(float)display_h : 1.0f;
         glm::mat4 projection = glm::perspective(glm::radians(fov), aspect, 0.05f, maxDim*50.0f);
         glm::mat4 model = glm::mat4(1.0f);
+        glm::mat4 vp = projection * view;
+
+        // v1.15.0 Optimizations — Frustum culling
+        auto tCull0 = std::chrono::high_resolution_clock::now();
+        bool modelInFrustum = true;
+        if (optFrustumCulling) {
+            modelInFrustum = isBoxInFrustum(minBB, maxBB, vp);
+            if (!modelInFrustum) perfCulledTriangles = modelVertexCount/3;
+            else perfCulledTriangles = 0;
+        }
+        // Particle LOD / dynamic
+        int effectiveParticleCount = particleDrawCount;
+        if (optDynamicParticles) {
+            float distToCenter = glm::length(cameraPos - center);
+            int lod = computeLODLevel(distToCenter, maxDim);
+            if (lod==1) effectiveParticleCount = particleDrawCount/2;
+            else if (lod==2) effectiveParticleCount = particleDrawCount/4;
+            else if (lod>=3) effectiveParticleCount = particleDrawCount/8;
+            if (perfFrameMs > 20.0f) effectiveParticleCount = (int)(effectiveParticleCount * 0.7f);
+            if (effectiveParticleCount < 100) effectiveParticleCount = 100;
+        }
+        auto tCull1 = std::chrono::high_resolution_clock::now();
+        perfCullingMs = std::chrono::duration<float, std::milli>(tCull1-tCull0).count();
+
+        // v1.15.0 FSR — begin low-res render if enabled
+        bool useFSR = fsrEnabled && fsrMode != FSRMode::Off && fsrLowResFBO != 0;
+        if (useFSR) {
+            beginFSRRender(display_w, display_h);
+        } else {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0,0,display_w,display_h);
+        }
+
+        glClearColor(bgColor.x, bgColor.y, bgColor.z, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glm::vec3 lightPos = center + glm::vec3(maxDim*2.0f, maxDim*2.5f, maxDim*2.0f);
         glm::vec3 lightColor(1.0f);
+
+        // Early-Z: opaque first
+        if (optEarlyZ) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+        }
 
         if (showGroundPlane || aeroGroundEffect) {
             float groundY = g_voxMinY + aeroGroundHeight;
@@ -565,7 +624,7 @@ int main() {
             }
         }
 
-        if (showModel) {
+        if (showModel && modelInFrustum) {
             glUseProgram(modelShaderProgram);
             glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
@@ -581,28 +640,6 @@ int main() {
             glBindVertexArray(modelVAO);
             glDrawArrays(GL_TRIANGLES, 0, modelVertexCount);
             glBindVertexArray(0);
-        }
-
-        if (showObstacle) {
-            glDepthMask(GL_FALSE);
-            glUseProgram(modelShaderProgram);
-            glm::mat4 om = glm::translate(glm::mat4(1.0f), center) *
-                           glm::scale(glm::mat4(1.0f), glm::vec3(flowParams.radiusX, flowParams.radiusY, flowParams.radiusZ));
-            glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(om));
-            glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-            glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-            glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightPos"), 1, &lightPos[0]);
-            glUniform3fv(glGetUniformLocation(modelShaderProgram, "viewPos"), 1, &cameraPos[0]);
-            glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightColor"), 1, &lightColor[0]);
-            glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &obstacleColor[0]);
-            glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), 1);
-            glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), 0);
-            glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), 0);
-            glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), obstacleAlpha);
-            glBindVertexArray(obstacleVAO);
-            glDrawElements(GL_TRIANGLES, obstacleIndexCount, GL_UNSIGNED_INT, 0);
-            glBindVertexArray(0);
-            glDepthMask(GL_TRUE);
         }
 
         // Slice plane
@@ -660,6 +697,29 @@ int main() {
             glLineWidth(1.0f);
         }
 
+        // Transparent last — with depth mask false for particles
+        if (showObstacle) {
+            glDepthMask(GL_FALSE);
+            glUseProgram(modelShaderProgram);
+            glm::mat4 om = glm::translate(glm::mat4(1.0f), center) *
+                           glm::scale(glm::mat4(1.0f), glm::vec3(flowParams.radiusX, flowParams.radiusY, flowParams.radiusZ));
+            glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(om));
+            glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+            glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+            glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightPos"), 1, &lightPos[0]);
+            glUniform3fv(glGetUniformLocation(modelShaderProgram, "viewPos"), 1, &cameraPos[0]);
+            glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightColor"), 1, &lightColor[0]);
+            glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &obstacleColor[0]);
+            glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), 1);
+            glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), 0);
+            glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), 0);
+            glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), obstacleAlpha);
+            glBindVertexArray(obstacleVAO);
+            glDrawElements(GL_TRIANGLES, obstacleIndexCount, GL_UNSIGNED_INT, 0);
+            glBindVertexArray(0);
+            glDepthMask(GL_TRUE);
+        }
+
         if (showParticles) {
             glUseProgram(particleShaderProgram);
             glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
@@ -667,8 +727,9 @@ int main() {
             glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
             glUniform1f(glGetUniformLocation(particleShaderProgram, "pointSize"), particleSize);
             glBindVertexArray(particleVAO);
-            glDrawArrays(GL_POINTS, 0, particleDrawCount);
+            glDrawArrays(GL_POINTS, 0, effectiveParticleCount);
             glBindVertexArray(0);
+            perfCulledParticles = particleDrawCount - effectiveParticleCount;
         }
 
         if (showLiftDrag) {
@@ -700,6 +761,12 @@ int main() {
             glLineWidth(1.0f);
         }
 
+        // v1.15.0 FSR upscale
+        if (useFSR) {
+            endFSRRenderAndUpscale(display_w, display_h);
+        }
+
+        // UI always at native res
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
@@ -721,6 +788,7 @@ int main() {
 
     // Cleanup
     std::cout << "[Main] Cleaning up v1.9.0..." << std::endl;
+    shutdownFSR();
     glDeleteProgram(modelShaderProgram);
     glDeleteProgram(particleShaderProgram);
     glDeleteProgram(lineShaderProgram);

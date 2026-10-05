@@ -230,4 +230,54 @@ extern bool aeroCSVExportRequested;
 extern std::string aeroLastScreenshotPath;
 extern std::string aeroLastCSVPath;
 
+// --- FSR & Optimizations v1.15.0 ---
+enum class FSRMode {
+    Off = 0,
+    UltraQuality = 1,   // 0.77x  — 77% render scale
+    Quality = 2,        // 0.67x  — 67%
+    Balanced = 3,       // 0.59x  — 59%
+    Performance = 4,    // 0.50x  — 50%
+    UltraPerformance = 5 // 0.33x — 33%
+};
+extern FSRMode fsrMode;
+extern bool fsrEnabled;
+extern float fsrSharpness;          // 0.0-1.0 RCAS sharpness
+extern float fsrRenderScale;        // computed
+extern bool fsrUseRCAS;
+extern bool fsrDynamicRes;
+extern float fsrTargetFPS;
+extern float fsrCurrentScale;       // dynamic
+extern bool fsrShowDebug;
+
+// FSR GL objects
+extern unsigned int fsrLowResFBO;
+extern unsigned int fsrLowResColorTex;
+extern unsigned int fsrLowResDepthRBO;
+extern unsigned int fsrIntermediateFBO;
+extern unsigned int fsrIntermediateTex;
+extern unsigned int fsrEASUProgram;
+extern unsigned int fsrRCASProgram;
+extern unsigned int fsrQuadVAO;
+extern unsigned int fsrQuadVBO;
+
+// General optimizations
+extern bool optFrustumCulling;
+extern bool optOcclusionCulling;
+extern bool optLOD;
+extern bool optEarlyZ;
+extern bool optDynamicParticles;
+extern bool optVRS;
+extern bool optAsyncCompute;
+extern int  optParticleLOD;         // 0=full, 1=half, 2=quarter
+extern float optLODDistance;
+extern bool optMeshletCulling;
+extern bool optFramePacing;
+extern float optTargetFPS;
+
+// Perf
+extern float perfFSRms;
+extern float perfCullingMs;
+extern int perfCulledParticles;
+extern int perfCulledTriangles;
+
 #endif // GLOBALS_H
