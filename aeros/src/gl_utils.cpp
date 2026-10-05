@@ -8,6 +8,8 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
+#include <cmath>
+#include <iostream>
 
 #include <iostream>
 #include <vector>

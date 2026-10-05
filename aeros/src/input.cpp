@@ -7,7 +7,6 @@
 #include "globals.h"
 #include "input.h"
 #include "forces.h"
-#include "imgui.h"
 
 // =====================================================
 // Callbacks v1.8.0 — улучшено
@@ -22,13 +21,6 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
-    // Игнорируем если ImGui хочет мышь
-    ImGuiIO& io = ImGui::GetIO();
-    if (io.WantCaptureMouse) {
-        lastX = (float)xpos;
-        lastY = (float)ypos;
-        return;
-    }
 
     if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) != GLFW_PRESS &&
         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) != GLFW_PRESS) {
@@ -70,8 +62,6 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
 
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     (void)window; (void)xoffset;
-    ImGuiIO& io = ImGui::GetIO();
-    if (io.WantCaptureMouse) return;
     if (!std::isfinite((float)yoffset)) return;
     fov -= (float)yoffset * 2.0f;
     if (fov < 1.0f)  fov = 1.0f;

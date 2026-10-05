@@ -338,10 +338,7 @@ if (ImGui::CollapsingHeader("Voxel Collision", ImGuiTreeNodeFlags_DefaultOpen)) 
     ImGui::Checkbox("Enable Voxel Collision", &useVoxelCollision);
     ImGui::SliderInt("Voxel Resolution", &voxelResolution, 16, 128);
     if (ImGui::Button("Rebuild Voxel Grid")) {
-        auto t0 = std::chrono::high_resolution_clock::now();
         buildVoxelGrid(g_vertices, voxelResolution);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        perfVoxelMs = std::chrono::duration<float, std::milli>(t1-t0).count();
         if (lbmParams.enabled) { shutdownLBM(); initLBM(); }
     }
     ImGui::Text("Voxel: %dx%dx%d = %d cells | %.1f ms", g_voxNx, g_voxNy, g_voxNz, g_voxNx*g_voxNy*g_voxNz, perfVoxelMs);
@@ -481,26 +478,96 @@ if (ImGui::CollapsingHeader("Test Mode v1.8.0 (Physics+Code+LBM+Opt+Realistic)",
 
     if (!lastTestResults.empty()) {
         ImGui::Separator();
-        auto drawCategory = [&](const char* catName, const char* label, ImVec4 passCol, ImVec4 failCol) {
+        // Physics
+        {
             int pass=0, fail=0;
-            for (auto& r : lastTestResults) if (r.category==catName) { if (r.passed) pass++; else fail++; }
-            if (pass+fail==0) return;
-            if (ImGui::TreeNode((std::string(label)+" ("+std::to_string(pass)+"/"+std::to_string(pass+fail)+")").c_str())) {
-                for (auto& r : lastTestResults) if (r.category==catName) {
-                    ImVec4 col = r.passed ? passCol : failCol;
-                    ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
-                    if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
-                        ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+            for (auto& r : lastTestResults) if (r.category=="Physics") { if (r.passed) pass++; else fail++; }
+            if (pass+fail>0) {
+                std::string title = std::string("Physics Tests (") + std::to_string(pass) + "/" + std::to_string(pass+fail) + ")";
+                if (ImGui::TreeNode(title.c_str())) {
+                    for (auto& r : lastTestResults) if (r.category=="Physics") {
+                        ImVec4 col = r.passed ? ImVec4(0.2f,1,0.2f,1) : ImVec4(1,0.2f,0.2f,1);
+                        ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                        if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                            ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                        }
                     }
+                    ImGui::TreePop();
                 }
-                ImGui::TreePop();
             }
-        };
-        drawCategory("Physics", "Physics Tests", ImVec4(0.2f,1,0.2f,1), ImVec4(1,0.2f,0.2f,1));
-        drawCategory("Code", "Code Action Tests", ImVec4(0.4f,0.8f,1.0f,1), ImVec4(1,0.3f,0.1f,1));
-        drawCategory("LBM", "LBM Tests", ImVec4(0.2f,0.8f,1.0f,1), ImVec4(1,0.5f,0.1f,1));
-        drawCategory("Optimization", "Optimization Tests", ImVec4(0.8f,1.0f,0.2f,1), ImVec4(1,0.2f,0.5f,1));
-        drawCategory("Realistic", "Realistic Aero Tests", ImVec4(0.9f,0.6f,1.0f,1), ImVec4(1,0.2f,0.2f,1));
+        }
+        // Code
+        {
+            int pass=0, fail=0;
+            for (auto& r : lastTestResults) if (r.category=="Code") { if (r.passed) pass++; else fail++; }
+            if (pass+fail>0) {
+                std::string title = std::string("Code Tests (") + std::to_string(pass) + "/" + std::to_string(pass+fail) + ")";
+                if (ImGui::TreeNode(title.c_str())) {
+                    for (auto& r : lastTestResults) if (r.category=="Code") {
+                        ImVec4 col = r.passed ? ImVec4(0.4f,0.8f,1.0f,1) : ImVec4(1,0.3f,0.1f,1);
+                        ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                        if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                            ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                        }
+                    }
+                    ImGui::TreePop();
+                }
+            }
+        }
+        // LBM
+        {
+            int pass=0, fail=0;
+            for (auto& r : lastTestResults) if (r.category=="LBM") { if (r.passed) pass++; else fail++; }
+            if (pass+fail>0) {
+                std::string title = std::string("LBM Tests (") + std::to_string(pass) + "/" + std::to_string(pass+fail) + ")";
+                if (ImGui::TreeNode(title.c_str())) {
+                    for (auto& r : lastTestResults) if (r.category=="LBM") {
+                        ImVec4 col = r.passed ? ImVec4(0.2f,0.8f,1.0f,1) : ImVec4(1,0.5f,0.1f,1);
+                        ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                        if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                            ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                        }
+                    }
+                    ImGui::TreePop();
+                }
+            }
+        }
+        // Opt
+        {
+            int pass=0, fail=0;
+            for (auto& r : lastTestResults) if (r.category=="Optimization") { if (r.passed) pass++; else fail++; }
+            if (pass+fail>0) {
+                std::string title = std::string("Optimization (") + std::to_string(pass) + "/" + std::to_string(pass+fail) + ")";
+                if (ImGui::TreeNode(title.c_str())) {
+                    for (auto& r : lastTestResults) if (r.category=="Optimization") {
+                        ImVec4 col = r.passed ? ImVec4(0.8f,1.0f,0.2f,1) : ImVec4(1,0.2f,0.5f,1);
+                        ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                        if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                            ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                        }
+                    }
+                    ImGui::TreePop();
+                }
+            }
+        }
+        // Realistic
+        {
+            int pass=0, fail=0;
+            for (auto& r : lastTestResults) if (r.category=="Realistic") { if (r.passed) pass++; else fail++; }
+            if (pass+fail>0) {
+                std::string title = std::string("Realistic Aero (") + std::to_string(pass) + "/" + std::to_string(pass+fail) + ")";
+                if (ImGui::TreeNode(title.c_str())) {
+                    for (auto& r : lastTestResults) if (r.category=="Realistic") {
+                        ImVec4 col = r.passed ? ImVec4(0.9f,0.6f,1.0f,1) : ImVec4(1,0.2f,0.2f,1);
+                        ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                        if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                            ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                        }
+                    }
+                    ImGui::TreePop();
+                }
+            }
+        }
     }
 
     if (!testLog.empty()) {

@@ -12,7 +12,6 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
-#include <random>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -350,9 +349,7 @@ void initLBM() {
     char* solidPtr = lbmIsSolid.data();
     char* groundPtr = lbmIsGround.data();
 
-    // Более реалистичная инициализация с небольшим шумом
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> dist(-0.01f, 0.01f);
+    // Более реалистичная инициализация
 
     #ifdef _OPENMP
     #pragma omp parallel for

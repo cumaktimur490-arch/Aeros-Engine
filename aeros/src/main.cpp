@@ -43,7 +43,7 @@
 
 static void APIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
     (void)source; (void)id; (void)length; (void)userParam;
-    if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
+    if (severity == 0x826B) return; // GL_DEBUG_SEVERITY_NOTIFICATION
     std::cerr << "[GL Debug] type=" << type << " severity=" << severity << " msg=" << message << std::endl;
 }
 
@@ -86,11 +86,8 @@ int main() {
         return -1;
     }
 
-    // OpenGL debug if available
-    if (GLAD_GL_KHR_debug) {
-        glEnable(GL_DEBUG_OUTPUT);
-        glDebugMessageCallback(glDebugCallback, nullptr);
-    }
+    // OpenGL debug if available (GLAD may not have KHR_debug) — disabled for compat
+    // if (GLAD_GL_KHR_debug) { glEnable(GL_DEBUG_OUTPUT); glDebugMessageCallback(glDebugCallback,nullptr); }
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
