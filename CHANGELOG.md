@@ -5,6 +5,25 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.2.1] - 2026-10-05
+
+### Исправлено
+- **Критичный баг в `particles.cpp`**: `surfDist` хранился в вокселях, а сравнивался с `1.5*cellSizeX` в мировых единицах; теперь `rawDist*cellSizeX` и порог `1.5f` в вокселях — унифицировано с `cuda_stub.cpp`
+- `atmosphere.cpp`: убрана неиспользуемая `T32`, `RHO0`; исправлен градиент 20-32км с `-0.001` на `+0.001` (температура должна расти), давление теперь считается правильно
+- `flow_field.cpp` и `kernel.cu`: замена `powf(x,2)` на `x*x` для избежания NaN при отрицательном основании
+- `kernel.cu`: удалён мёртвый код `voxelQuery`, `voxelNormal` и неиспользуемые глобальные `d_voxNx`, `d_voxMinX`, `d_cellX`
+- `gl_utils.cpp`: `createObstacleSphere` теперь проверяет `if (VAO==0)` перед `glGen*`, исправлена утечка VAO/VBO
+- `model.cpp`: добавлен `#include <cfloat>` для `FLT_MAX`
+- `ui.cpp`: добавлен `#include <cmath>`, исправлен `InputFloat` формат с `%.2f %s` на `%.2f` + отдельный `Text(unit)`, убраны неиспользуемые буферы
+- `main.cpp`: добавлен `#include \"atmosphere.h\"`, учёт изменения `altitude` в dirty-проверке линий тока
+- `installer/*.iss`: обновлён комментарий `/DAppVersion` с 1.0.0 на 1.2.1, `common.iss` теперь `ifndef OutputBaseName`
+- `tools/build-all.ps1`: добавлен `arm64` билд и `-Arch all` для портативок/установщиков
+- `README.md` и `installer/README.md`: обновлены с учётом ARM64, единиц скорости и атмосферы
+
+### Улучшено
+- `forces.cpp`: теперь использует `flowParams.airDensity` вместо глобальной переменной, добавлена защита `rho>0.0001`
+- Общий аудит всех файлов на предмет утечек, неиспользуемых переменных и смешения единиц
+
 ## [1.2.0] - 2026-10-04
 
 ### Добавлено

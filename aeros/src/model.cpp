@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <vector>
+#include <cfloat>
 
 #include "globals.h"
 #include "stl_loader.h"

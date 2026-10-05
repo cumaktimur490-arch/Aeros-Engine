@@ -8,10 +8,13 @@
 |------|----------|
 | `Aeros-Engine-Setup-x64-vX.Y.Z.exe` | Полный установщик 64-bit |
 | `Aeros-Engine-Setup-x86-vX.Y.Z.exe` | Полный установщик 32-bit |
+| `Aeros-Engine-Setup-arm64-vX.Y.Z.exe` | Полный установщик ARM64 |
 | `Aeros-Engine-Portable-x64-vX.Y.Z.zip` | Портативная 64-bit (без установки) |
 | `Aeros-Engine-Portable-x86-vX.Y.Z.zip` | Портативная 32-bit |
+| `Aeros-Engine-Portable-arm64-vX.Y.Z.zip` | Портативная ARM64 |
 | `Aeros-Engine-Update-x64-vX.Y.Z.exe` | Обновление для установленной 64-bit версии |
 | `Aeros-Engine-Update-x86-vX.Y.Z.exe` | Обновление для установленной 32-bit версии |
+| `Aeros-Engine-Update-arm64-vX.Y.Z.exe` | Обновление для установленной ARM64 версии |
 
 ## 🛠 Требования для сборки
 

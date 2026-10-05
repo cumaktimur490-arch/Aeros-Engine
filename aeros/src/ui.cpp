@@ -2,6 +2,7 @@
 
 #include <string>
 #include <cstdio>
+#include <cmath>
 
 #include "globals.h"
 #include "stl_loader.h"
@@ -47,18 +48,16 @@ if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
         default: break;
     }
 
-    char speedLabel[64];
-    snprintf(speedLabel, sizeof(speedLabel), "Speed (%.2f %s)", displaySpeed, speedUnitShort(speedUnit));
     if (ImGui::SliderFloat("##speed", &displaySpeed, 0.0f, maxDisplay, "%.2f")) {
         flowSpeed = speedToMS(displaySpeed, speedUnit);
     }
-    ImGui::SameLine(); ImGui::SetNextItemWidth(100);
-    char inputFmt[32];
-    snprintf(inputFmt, sizeof(inputFmt), "%%.2f %s", speedUnitShort(speedUnit));
-    if (ImGui::InputFloat("##spd", &displaySpeed, 0, 0, inputFmt)) {
+    ImGui::SameLine(); ImGui::SetNextItemWidth(70);
+    if (ImGui::InputFloat("##spd", &displaySpeed, 0, 0, "%.2f")) {
         if (displaySpeed < 0) displaySpeed = 0;
         flowSpeed = speedToMS(displaySpeed, speedUnit);
     }
+    ImGui::SameLine();
+    ImGui::Text("%s", speedUnitShort(speedUnit));
 
     // Показываем конвертацию во все единицы для наглядности
     ImGui::Text("  = %.2f m/s | %.1f km/h | %.1f mph | %.1f kts | %.1f ft/s",

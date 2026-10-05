@@ -1,8 +1,8 @@
 ; Aeros Engine — Апдейт установщик x86 (32-bit)
-; Сборка: iscc AerosEngine-Updater-x86.iss /DAppVersion=1.0.0
+; Сборка: iscc AerosEngine-Updater-x86.iss /DAppVersion=1.2.1
 
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.2.1"
 #endif
 #define Arch "x86"
 #include "common.iss"

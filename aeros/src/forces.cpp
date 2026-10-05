@@ -86,7 +86,8 @@ void computeLiftDrag() {
     flowDir /= vinf;
 
     // Динамическое давление q = 0.5 * rho * v² — учитываем реальную плотность
-    float rho = useRealDensity ? airDensity : 1.225f;
+    float rho = useRealDensity ? flowParams.airDensity : 1.225f;
+    if (rho < 0.0001f) rho = 0.0001f;
     float q = 0.5f * rho * vinf * vinf;
 
     glm::vec3 totalForce(0.0f);

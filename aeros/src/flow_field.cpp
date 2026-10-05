@@ -111,7 +111,8 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
                     float vtMag = glm::length(v_t);
                     if (vtMag > 1e-6f) {
                         // Ускорение максимально на расстоянии ~1-2 ячейки
-                        float boostProfile = expf(-powf((distNorm - 0.3f) * 2.5f, 2.0f));
+                        float dTmp = (distNorm - 0.3f) * 2.5f;
+                        float boostProfile = expf(-dTmp * dTmp);
                         tangentialBoost = boostProfile * 0.6f;
                         v_t *= (1.0f + tangentialBoost);
                         v = v_n * boundaryFactor + v_t;

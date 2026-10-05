@@ -42,10 +42,15 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw "x64 build failed" }
 
         Write-Host "[Aeros] Building x86..." -ForegroundColor Green
-        # x86 may fail if no 32-bit GLFW lib — warn but continue
         & .\build.bat x86
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[WARN] x86 build failed — portable/installer for x86 will use x64 fallback or existing binary" -ForegroundColor Yellow
+        }
+
+        Write-Host "[Aeros] Building arm64..." -ForegroundColor Green
+        & .\build.bat arm64
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[WARN] arm64 build failed — will use x64 fallback" -ForegroundColor Yellow
         }
     } finally {
         Pop-Location
@@ -57,7 +62,7 @@ if (-not $SkipBuild) {
 # 2. Portable
 if (-not $SkipPortable) {
     Write-Host "`n[2/3] Building portable versions..." -ForegroundColor Yellow
-    & "$InstallerDir\build-portable.ps1" -Version $Version -Arch both
+    & "$InstallerDir\build-portable.ps1" -Version $Version -Arch all
 } else {
     Write-Host "[SKIP] Portable build" -ForegroundColor Gray
 }
@@ -66,7 +71,7 @@ if (-not $SkipPortable) {
 if (-not $SkipInstaller) {
     Write-Host "`n[3/3] Building installers..." -ForegroundColor Yellow
     try {
-        & "$InstallerDir\build-installers.ps1" -Version $Version -Arch both -Type all
+        & "$InstallerDir\build-installers.ps1" -Version $Version -Arch all -Type all
     } catch {
         Write-Host "[WARN] Installer build failed or Inno Setup not installed: $_" -ForegroundColor Yellow
         Write-Host "Install Inno Setup 6 to build installers: https://jrsoftware.org/isinfo.php" -ForegroundColor Yellow

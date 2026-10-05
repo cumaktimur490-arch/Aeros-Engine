@@ -7,7 +7,7 @@
 #define AppExeName "main.exe"
 
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.2.1"
 #endif
 
 #ifndef Arch
@@ -28,4 +28,6 @@
   #define ArchTitle "x86 (32-bit)"
 #endif
 
-#define OutputBaseName "Aeros-Engine-Setup-" + ArchSuffix + "-v" + AppVersion
+#ifndef OutputBaseName
+  #define OutputBaseName "Aeros-Engine-Setup-" + ArchSuffix + "-v" + AppVersion
+#endif

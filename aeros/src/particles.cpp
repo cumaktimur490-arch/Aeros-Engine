@@ -66,7 +66,6 @@ void updateParticles(float dt) {
             glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
             glm::vec3 np = p + v * dt * flowParams.timeScale;
 
-            bool collided = false;
             float surfDist = 1000.0f;
 
             if (useVoxelCollision && !g_distanceField.empty()) {
@@ -75,12 +74,12 @@ void updateParticles(float dt) {
                 int iz = (int)((np.z - g_voxMinZ) / flowParams.cellSizeZ);
                 if (ix>=0 && ix<g_voxNx && iy>=0 && iy<g_voxNy && iz>=0 && iz<g_voxNz) {
                     int idx = (iz*g_voxNy + iy)*g_voxNx + ix;
-                    surfDist = g_distanceField[idx];
-                    if (surfDist < 0.0f) {
+                    float rawDist = g_distanceField[idx];
+                    surfDist = rawDist * flowParams.cellSizeX;
+                    if (rawDist < 0.0f) {
                         glm::vec3 nrm = sdfNormalCPU(np);
                         float push = fabsf(surfDist) + 0.5f * flowParams.cellSizeX;
                         np += nrm * push;
-                        collided = true;
 
                         float vmag = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
                         if (vmag < 1e-4f) vmag = 1e-4f;
@@ -101,8 +100,6 @@ void updateParticles(float dt) {
                         if (spd < 0.3f * vmag) {
                             v = vinf_t * slideBoost;
                         }
-                    } else if (surfDist < 1.5f * flowParams.cellSizeX) {
-                        collided = true;
                     }
                 }
             }

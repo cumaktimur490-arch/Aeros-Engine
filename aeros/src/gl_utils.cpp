@@ -109,6 +109,9 @@ void createAxesVAO(float size) {
 // Эллипсоид
 // =====================================================
 void createObstacleSphere(int stacks, int slices) {
+    if (obstacleVAO == 0) glGenVertexArrays(1, &obstacleVAO);
+    if (obstacleVBO == 0) glGenBuffers(1, &obstacleVBO);
+    if (obstacleEBO == 0) glGenBuffers(1, &obstacleEBO);
     std::vector<float> v;
     std::vector<unsigned int> idx;
     for (int i = 0; i <= stacks; ++i) {
@@ -130,9 +133,6 @@ void createObstacleSphere(int stacks, int slices) {
             idx.push_back(a+1); idx.push_back(b); idx.push_back(b+1);
         }
     obstacleIndexCount = (int)idx.size();
-    glGenVertexArrays(1, &obstacleVAO);
-    glGenBuffers(1, &obstacleVBO);
-    glGenBuffers(1, &obstacleEBO);
     glBindVertexArray(obstacleVAO);
     glBindBuffer(GL_ARRAY_BUFFER, obstacleVBO);
     glBufferData(GL_ARRAY_BUFFER, v.size()*sizeof(float), v.data(), GL_STATIC_DRAW);

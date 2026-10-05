@@ -14,7 +14,6 @@ bool useRealDensity = true;
 // Константы ISA
 static const float T0 = 288.15f;        // K, температура на уровне моря
 static const float P0 = 101325.0f;      // Pa, давление на уровне моря
-static const float RHO0 = 1.225f;       // кг/м³, плотность на уровне моря
 static const float L = 0.0065f;         // K/м, температурный градиент
 static const float R = 287.05f;         // Дж/(кг*К), газовая постоянная
 static const float g0 = 9.80665f;       // м/с²
@@ -82,21 +81,19 @@ AtmosphereParams calculateAtmosphere(float h) {
         atm.temperature = T11;
         atm.pressure = P11 * expf(-g0 * (h - 11000.0f) / (R * T11));
     } else if (h <= 32000.0f) {
-        // 20-32км
+        // 20-32км — температура растёт +1K/км
         float T11 = 216.65f;
         float P11 = P0 * powf(T11 / T0, g0 / (L * R)) * expf(-g0 * (20000.0f - 11000.0f) / (R * T11));
-        // Градиент +0.001K/м
-        float L2 = -0.001f;
-        float T20 = T11;
-        atm.temperature = T20 + L2 * (h - 20000.0f);
+        const float L2 = 0.001f; // K/м, рост температуры
+        const float T20 = T11; // 216.65K на 20км
+        atm.temperature = T20 + L2 * (h - 20000.0f); // растёт до 228.65K на 32км
         atm.pressure = P11 * powf(atm.temperature / T20, -g0 / (L2 * R));
     } else {
         // Выше 32км — упрощённо
         atm.temperature = 228.65f + 0.0028f * (h - 32000.0f);
         if (atm.temperature < 200.0f) atm.temperature = 200.0f;
-        // Очень низкое давление
-        float T32 = 228.65f;
-        float P32 = 868.02f; // примерно на 32км
+        // Очень низкое давление — P32 примерно на 32км
+        const float P32 = 868.02f;
         atm.pressure = P32 * expf(-g0 * (h - 32000.0f) / (R * atm.temperature));
     }
 

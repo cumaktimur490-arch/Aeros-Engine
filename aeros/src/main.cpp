@@ -32,6 +32,7 @@
 #include "particles.h"
 #include "streamlines.h"
 #include "forces.h"
+#include "atmosphere.h"
 
 int main() {
     if (!glfwInit()) {
@@ -105,6 +106,7 @@ int main() {
     static float prevWake  = wakeStrength;
     static float prevStro  = strouhal;
     static float prevWL    = wakeLength;
+    static float prevAlt   = 0.0f;
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = glfwGetTime();
@@ -133,13 +135,15 @@ int main() {
                                 fabs(prevEl-flowElevation) > 1e-3f ||
                                 fabs(prevWake-wakeStrength) > 1e-3f ||
                                 fabs(prevStro-strouhal) > 1e-3f ||
-                                fabs(prevWL-wakeLength) > 1e-3f)) {
+                                fabs(prevWL-wakeLength) > 1e-3f ||
+                                fabs(prevAlt-altitude) > 10.0f)) {
             prevSpeed = flowSpeed;
             prevAz = flowAzimuth;
             prevEl = flowElevation;
             prevWake = wakeStrength;
             prevStro = strouhal;
             prevWL = wakeLength;
+            prevAlt = altitude;
             computeStreamlines();
         }
 

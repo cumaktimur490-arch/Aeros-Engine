@@ -41,7 +41,6 @@ extern "C" void updateParticlesCUDA(std::vector<float>& positions, std::vector<f
         glm::vec3 v = computeVelocityFieldCPU(p, params);
         glm::vec3 np = p + v * dt * params.timeScale;
 
-        bool collided = false;
         float surfDist = 1000.0f;
 
         if (useVoxelCollision && !g_distanceField.empty()) {
@@ -50,14 +49,12 @@ extern "C" void updateParticlesCUDA(std::vector<float>& positions, std::vector<f
             int iz = (int)((np.z - g_voxMinZ) / params.cellSizeZ);
             if (ix>=0 && ix<g_voxNx && iy>=0 && iy<g_voxNy && iz>=0 && iz<g_voxNz) {
                 int idx = (iz*g_voxNy + iy)*g_voxNx + ix;
-                // g_distanceField хранится в вокселях, переводим в мировые единицы
                 float rawDist = g_distanceField[idx];
                 surfDist = rawDist * params.cellSizeX;
                 if (rawDist < 0.0f) {
                     glm::vec3 nrm = sdfNormalCPU(np);
                     float push = fabsf(surfDist) + 0.5f * params.cellSizeX;
                     np += nrm * push;
-                    collided = true;
 
                     float vmag = glm::length(glm::vec3(params.vx, params.vy, params.vz));
                     if (vmag < 1e-4f) vmag = 1e-4f;
@@ -78,8 +75,6 @@ extern "C" void updateParticlesCUDA(std::vector<float>& positions, std::vector<f
                     if (spd < 0.3f * vmag) {
                         v = vinf_t * slideBoost;
                     }
-                } else if (rawDist < 1.5f) {
-                    collided = true;
                 }
             }
         }

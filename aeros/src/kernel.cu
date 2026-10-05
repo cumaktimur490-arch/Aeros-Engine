@@ -36,9 +36,6 @@ extern "C" float runCudaTest(const std::vector<float>& in) {
 
 // ============ SDF на GPU ============
 float* g_dDist = nullptr;
-int    d_voxNx = 0, d_voxNy = 0, d_voxNz = 0;
-float  d_voxMinX = 0, d_voxMinY = 0, d_voxMinZ = 0;
-float  d_cellX = 1, d_cellY = 1, d_cellZ = 1;
 
 // ============ SDF-семплинг ============
 __device__ bool sampleSDF(float3 p, float* dist, int nx, int ny, int nz,
@@ -125,7 +122,8 @@ __device__ float3 baseFlowSDF(float3 p, FlowParams prm, float* dDist) {
         float3 v_t = make_float3(v.x - v_n.x, v.y - v_n.y, v.z - v_n.z);
         float vtMag = sqrtf(v_t.x*v_t.x + v_t.y*v_t.y + v_t.z*v_t.z);
         if (vtMag > 1e-6f) {
-            float boostProfile = expf(-powf((distNorm - 0.3f) * 2.5f, 2.0f));
+            float dTmp = (distNorm - 0.3f) * 2.5f;
+            float boostProfile = expf(-dTmp * dTmp);
             float tangentialBoost = boostProfile * 0.6f;
             v_t.x *= (1.0f + tangentialBoost);
             v_t.y *= (1.0f + tangentialBoost);
@@ -207,47 +205,6 @@ __device__ float3 fullField(float3 p, FlowParams prm, float* dDist) {
     float3 v = baseFlowSDF(p, prm, dDist);
     float3 w = wakeField(p, prm);
     return make_float3(v.x + w.x, v.y + w.y, v.z + w.z);
-}
-
-// ============ Воксельный запрос ============
-__device__ int voxelQuery(float3 p, float* dist, int nx, int ny, int nz,
-                          float mnX, float mnY, float mnZ,
-                          float csX, float csY, float csZ, float* outDist)
-{
-    if (!dist) { *outDist = 1000.0f; return 0; }
-    int ix = (int)((p.x - mnX) / csX);
-    int iy = (int)((p.y - mnY) / csY);
-    int iz = (int)((p.z - mnZ) / csZ);
-    if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) {
-        *outDist = 1000.0f;
-        return 0;
-    }
-    int idx = (iz * ny + iy) * nx + ix;
-    float d = dist[idx];
-    *outDist = d;
-    if (d < 0.0f) return 1;
-    if (d < 1.5f) return 2;
-    return 0;
-}
-
-__device__ float3 voxelNormal(float3 p, float* dist, int nx, int ny, int nz,
-                              float mnX, float mnY, float mnZ,
-                              float csX, float csY, float csZ)
-{
-    if (!dist) return make_float3(0, 1, 0);
-    int ix = (int)((p.x - mnX) / csX);
-    int iy = (int)((p.y - mnY) / csY);
-    int iz = (int)((p.z - mnZ) / csZ);
-    if (ix <= 0 || ix >= nx-1 || iy <= 0 || iy >= ny-1 || iz <= 0 || iz >= nz-1)
-        return make_float3(0, 1, 0);
-
-    float dx = dist[(iz*ny + iy)*nx + (ix+1)] - dist[(iz*ny + iy)*nx + (ix-1)];
-    float dy = dist[(iz*ny + (iy+1))*nx + ix] - dist[(iz*ny + (iy-1))*nx + ix];
-    float dz = dist[((iz+1)*ny + iy)*nx + ix] - dist[((iz-1)*ny + iy)*nx + ix];
-    float3 n = make_float3(dx, dy, dz);
-    float len = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
-    if (len < 1e-4f) return make_float3(0, 1, 0);
-    return make_float3(n.x/len, n.y/len, n.z/len);
 }
 
 // ============ Ядра ============
@@ -448,6 +405,7 @@ extern "C" void setVoxelData(const int* voxel, const float* dist,
                              float mnX, float mnY, float mnZ,
                              float csX, float csY, float csZ)
 {
+    (void)voxel; (void)mnX; (void)mnY; (void)mnZ; (void)csX; (void)csY; (void)csZ;
     if (g_dDist) { cudaFree(g_dDist); g_dDist = nullptr; }
     int total = nx * ny * nz;
     if (total <= 0) return;
@@ -455,9 +413,6 @@ extern "C" void setVoxelData(const int* voxel, const float* dist,
         cudaMalloc(&g_dDist, total * sizeof(float));
         cudaMemcpy(g_dDist, dist, total * sizeof(float), cudaMemcpyHostToDevice);
     }
-    d_voxNx = nx; d_voxNy = ny; d_voxNz = nz;
-    d_voxMinX = mnX; d_voxMinY = mnY; d_voxMinZ = mnZ;
-    d_cellX = csX; d_cellY = csY; d_cellZ = csZ;
 }
 
 extern "C" void initParticlesCUDA(std::vector<float>& pos, std::vector<float>& col,
