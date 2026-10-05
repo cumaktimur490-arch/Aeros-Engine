@@ -5,6 +5,31 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.5.0] - 2026-10-05
+
+### Добавлено — LBM максимальное улучшение
+- **Lattice Boltzmann Method D3Q19** — новый модуль `lbm.h/cpp`:
+  - Полноценный Navier-Stokes солвер через Boltzmann BGK: 19 направлений, веса `1/3, 1/18, 1/36`, `cs2=1/3`
+  - Bounce-back no-slip на поверхности модели из воксельной сетки
+  - Inlet/outlet граничные условия с учетом направления потока (azimuth/elevation)
+  - LES Smagorinsky турбулентность: `nu_t = (Cs*dx)^2*|S|`, `tau_eff = tau + tau_t`, `Cs=0.12`
+  - Трилинейная интерполяция скорости из LBM сетки в мировые координаты
+  - Конвертация решеточных единиц в мировые: `scale = flowSpeed / U0`, `U0=0.1` ~ Mach 0.17, стабильность
+  - Поля: `rho`, `Ux,Uy,Uz` (LB и World), `pressure = cs2*(rho-1)`, `vorticity |ω|`, `Q-criterion = 0.5*(||Ω||²-||S||²)`
+  - Счетчики: шаги, сходимость, средняя плотность, кинетическая энергия, макс скорость LB/World, Reynolds `Re=U*L/nu`, время шага ms, MLUPS
+  - Интеграция: `computeVelocityFieldCPU` теперь приоритетно использует LBM если `enabled`, частицы и давление используют LBM
+  - UI секция **LBM - Lattice Boltzmann (v1.5.0)**: Enable, Steps per Frame 1-20, Tau 0.51-1.5, U0 0.01-0.25, Smagorinsky toggle + C, отображение grid, steps, converged, rho, kinetic, max vel, Re, convergence, cell size, кнопки Init/Reset/Shutdown/Step 10/100/Compute Vorticity
+  - Тесты LBM: Physics (init, BC, solid, NaN, pressure), Conservation (avg rho ~1, solid fraction, kinetic), Vorticity & Q (max, range, NaN), Performance (MLUPS, time, Re, tau)
+  - Всего тестов теперь 23: 9 Physics + 10 Code + 4 LBM
+  - Улучшено: `flow_field.cpp` использует LBM, `forces.cpp` использует LBM для Cp + давление, `model.cpp` инициализирует LBM после вокселизации, `main.cpp` вызывает `updateLBM` каждый кадр до частиц
+  - Build: `lbm.cpp` добавлен в `build.bat`, `build-cpu.bat`, `CMakeLists.txt`
+
+### Улучшено до максимума
+- Физика теперь истинный Navier-Stokes вместо потенциального течения + эвристического следа
+- Автоматическое отрывное течение, вихри Кармана, турбулентность без ручных параметров wake
+- Давление из плотности LBM, более точные lift/drag
+- Подготовка к CUDA LBM: структура для GPU ускорения
+
 ## [1.4.0] - 2026-10-05
 
 ### Добавлено

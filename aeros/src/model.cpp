@@ -13,6 +13,7 @@
 #include "streamlines.h"
 #include "forces.h"
 #include "model.h"
+#include "lbm.h"
 
 // =====================================================
 // Загрузка модели
@@ -60,6 +61,10 @@ bool loadModel(const std::string& path) {
     createAxesVAO(maxDim * 0.6f);
 
     buildVoxelGrid(vertices, voxelResolution);
+
+    if (lbmParams.enabled) {
+        initLBM();
+    }
 
     initParticles();
     computeStreamlines();

@@ -10,6 +10,7 @@
 #include "voxel_grid.h"
 #include "atmosphere.h"
 #include "forces.h"
+#include "lbm.h"
 
 // =====================================================
 // Давление — v1.4.0 защита
@@ -19,6 +20,49 @@ void updateVertexColors() {
     int numVerts = (int)(g_vertices.size() / 3);
     if (numVerts == 0) return;
     if (g_vertices.size() != g_normals.size()) return;
+
+    // LBM: если включен — используем LBM давление и скорость для Cp
+    if (lbmParams.enabled && lbmInitialized) {
+        try { g_vertexColors.resize(numVerts*3); } catch (...) { return; }
+        float vinf = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
+        if (!std::isfinite(vinf) || vinf < 1e-4f) vinf = 1e-4f;
+        float maxCp = 1.0f, minCp = -3.0f;
+        for (int i = 0; i < numVerts; i++) {
+            glm::vec3 p(g_vertices[3*i], g_vertices[3*i+1], g_vertices[3*i+2]);
+            glm::vec3 v = getLBMVelocityWorld(p);
+            if (!std::isfinite(v.x)) v = glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
+            float speed = glm::length(v);
+            float cp = 1.0f - (speed*speed)/(vinf*vinf);
+            // добавляем вклад LBM давления напрямую
+            float lbmPress = getLBMDensityWorld(p); // rho
+            // rho-1 пропорционально давлению
+            cp += (lbmPress - 1.0f) * 0.5f;
+            if (!std::isfinite(cp)) cp = 0;
+            if (cp > maxCp) cp = maxCp;
+            if (cp < minCp) cp = minCp;
+            float t = (cp - minCp) / (maxCp - minCp);
+            t = glm::clamp(t, 0.0f, 1.0f);
+            glm::vec3 col;
+            if (t<0.25f) { float k=t/0.25f; col=glm::vec3(0,k,1); }
+            else if (t<0.5f) { float k=(t-0.25f)/0.25f; col=glm::vec3(0,1,1-k); }
+            else if (t<0.75f) { float k=(t-0.5f)/0.25f; col=glm::vec3(k,1,0); }
+            else { float k=(t-0.75f)/0.25f; col=glm::vec3(1,1-k,0); }
+            g_vertexColors[3*i]=col.x; g_vertexColors[3*i+1]=col.y; g_vertexColors[3*i+2]=col.z;
+        }
+        if (modelVBO_colors == 0) {
+            glGenBuffers(1, &modelVBO_colors);
+            glBindVertexArray(modelVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
+            glBufferData(GL_ARRAY_BUFFER, g_vertexColors.size()*sizeof(float), g_vertexColors.data(), GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+            glEnableVertexAttribArray(2);
+            glBindVertexArray(0);
+        } else {
+            glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
+        }
+        return;
+    }
 
     if (useCUDA == 1) {
         try { computeVertexPressureCUDA(g_vertices, g_normals, g_vertexColors, numVerts, flowParams); }

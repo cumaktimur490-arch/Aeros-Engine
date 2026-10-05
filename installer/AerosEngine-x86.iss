@@ -1,9 +1,9 @@
 ; Aeros Engine — Полный установщик x86 (32-bit)
 ; Требует Inno Setup 6.x
-; Сборка: iscc AerosEngine-x86.iss /DAppVersion=1.4.0
+; Сборка: iscc AerosEngine-x86.iss /DAppVersion=1.5.0
 
 #ifndef AppVersion
-  #define AppVersion "1.4.0"
+  #define AppVersion "1.5.0"
 #endif
 #define Arch "x86"
 #include "common.iss"

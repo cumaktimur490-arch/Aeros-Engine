@@ -5,6 +5,7 @@
 #include "atmosphere.h"
 #include "forces.h"
 #include "shaders.h"
+#include "lbm.h"
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -23,6 +24,8 @@ int testsPassed = 0;
 int testsFailed = 0;
 int codeTestsPassed = 0;
 int codeTestsFailed = 0;
+int lbmTestsPassed = 0;
+int lbmTestsFailed = 0;
 float lastTestTimeMs = 0.0f;
 std::string testLog;
 int lastGLError = 0;
@@ -572,6 +575,155 @@ bool testErrorHandling() {
     return ok;
 }
 
+// ===================== LBM TESTS (v1.5.0) =====================
+bool testLBMPhysics() {
+    logTest("Testing LBM physics (LBM)...");
+    bool ok = true;
+    if (!lbmParams.enabled) {
+        logTest("  SKIP: LBM disabled, testing init capability");
+        // тест инициализации без включения
+        if (g_voxelData.empty()) {
+            logTest("  SKIP: no voxel data for LBM init test");
+            return true;
+        }
+        // пробуем инициализировать временно
+        bool wasEnabled = lbmParams.enabled;
+        lbmParams.enabled = true;
+        bool prevInit = lbmInitialized;
+        if (!prevInit) {
+            try { initLBM(); } catch (...) { logTestError("  FAIL: initLBM threw"); ok = false; }
+            if (!lbmInitialized) { logTestError("  FAIL: LBM init failed"); ok = false; }
+            else {
+                if (!testLBMInitialization()) { logTestError("  FAIL: LBM init validation"); ok = false; }
+                shutdownLBM();
+            }
+        }
+        lbmParams.enabled = wasEnabled;
+        return ok;
+    }
+    if (!lbmInitialized) {
+        logTestError("  FAIL: LBM enabled but not initialized");
+        return false;
+    }
+    if (!testLBMInitialization()) { logTestError("  FAIL: LBM init check"); ok = false; }
+    if (!testLBMBoundaryConditions()) { logTestError("  FAIL: LBM BC check"); ok = false; }
+    if (!testLBMSolidHandling()) { logTestError("  FAIL: LBM solid handling"); ok = false; }
+    if (!testLBMConservation()) { logTestError("  FAIL: LBM mass conservation"); ok = false; }
+
+    // Проверка скорости — не NaN, в разумных пределах
+    int total = lbmNx*lbmNy*lbmNz;
+    int nanCount = 0, hugeCount = 0;
+    for (int i = 0; i < total; i++) {
+        if (lbmIsSolid[i]) continue;
+        if (!isValidFloat(lbmUx[i]) || !isValidFloat(lbmUy[i]) || !isValidFloat(lbmUz[i])) nanCount++;
+        float mag = std::sqrt(lbmUx[i]*lbmUx[i] + lbmUy[i]*lbmUy[i] + lbmUz[i]*lbmUz[i]);
+        if (mag > 1.0f) hugeCount++; // LB скорость должна быть <0.3 для несжимаемости
+    }
+    if (nanCount > 0) { logTestError("  FAIL: LBM velocity NaN count: " + std::to_string(nanCount)); ok = false; }
+    if (hugeCount > total/10) { logTestError("  FAIL: too many high LB velocities >1.0: " + std::to_string(hugeCount)); ok = false; }
+    else if (hugeCount > 0) logTestWarn("  WARN: " + std::to_string(hugeCount) + " cells with LB vel >1.0 (Mach too high)");
+
+    // Проверка давления
+    int pressNaN = 0;
+    for (float p : lbmPressure) if (!isValidFloat(p)) pressNaN++;
+    if (pressNaN > 0) { logTestError("  FAIL: LBM pressure NaN: " + std::to_string(pressNaN)); ok = false; }
+
+    if (ok) logTest("  LBM physics OK");
+    return ok;
+}
+
+bool testLBMConservation() {
+    logTest("Testing LBM conservation laws...");
+    bool ok = true;
+    if (!lbmInitialized) { logTest("  SKIP: LBM not initialized"); return true; }
+
+    // Масса
+    float avgRho = 0;
+    for (float r : lbmRho) avgRho += r;
+    avgRho /= lbmRho.size();
+    logTest("  Avg rho: " + std::to_string(avgRho) + " (expected ~1.0)");
+    if (std::fabs(avgRho - 1.0f) > 0.2f) { logTestError("  FAIL: avg rho deviates >0.2 from 1.0"); ok = false; }
+
+    // Импульс — должен быть примерно inlet * (1 - solidFraction)
+    float solidFrac = 0;
+    for (char s : lbmIsSolid) if (s) solidFrac += 1;
+    solidFrac /= lbmIsSolid.size();
+    logTest("  Solid fraction: " + std::to_string(solidFrac*100) + "%");
+
+    // Кинетическая энергия не должна взрываться
+    if (lbmAvgKineticEnergy > 1.0f) { logTestError("  FAIL: kinetic energy too high: " + std::to_string(lbmAvgKineticEnergy)); ok = false; }
+    if (!isValidFloat(lbmAvgKineticEnergy)) { logTestError("  FAIL: kinetic energy NaN"); ok = false; }
+
+    // Сходимость
+    if (lbmConvergence > 1.0f) logTestWarn("  WARN: convergence high: " + std::to_string(lbmConvergence));
+
+    if (ok) logTest("  LBM conservation OK");
+    return ok;
+}
+
+bool testLBMVorticity() {
+    logTest("Testing LBM vorticity & Q-criterion...");
+    bool ok = true;
+    if (!lbmInitialized) { logTest("  SKIP: LBM not initialized"); return true; }
+
+    // Если еще не считались вихри — считаем
+    if (lbmVorticityMag.empty() || lbmVorticityMag[0] == 0) {
+        try { computeLBMVorticityAndQ(); } catch (...) { logTestError("  FAIL: compute vorticity threw"); return false; }
+    }
+
+    int nanVort = 0, nanQ = 0;
+    float maxVort = 0, maxQ = -1e9f, minQ = 1e9f;
+    for (size_t i = 0; i < lbmVorticityMag.size(); i++) {
+        if (lbmIsSolid[i]) continue;
+        float v = lbmVorticityMag[i];
+        float q = lbmQCriterion[i];
+        if (!isValidFloat(v)) nanVort++;
+        else if (v > maxVort) maxVort = v;
+        if (!isValidFloat(q)) nanQ++;
+        else { if (q > maxQ) maxQ = q; if (q < minQ) minQ = q; }
+    }
+    logTest("  Vorticity max: " + std::to_string(maxVort) + " | Q range: [" + std::to_string(minQ) + ", " + std::to_string(maxQ) + "]");
+    if (nanVort > 0) { logTestError("  FAIL: vorticity NaN count: " + std::to_string(nanVort)); ok = false; }
+    if (nanQ > 0) { logTestError("  FAIL: Q NaN count: " + std::to_string(nanQ)); ok = false; }
+    if (maxVort > 100.0f) logTestWarn("  WARN: vorticity very high: " + std::to_string(maxVort));
+
+    // Q должен иметь и положительные (вихри) и отрицательные (деформация) значения
+    if (maxQ < 1e-6f) logTestWarn("  WARN: Q max near zero — no vortices detected");
+    if (minQ > -1e-6f) logTestWarn("  WARN: Q min near zero — no strain");
+
+    if (ok) logTest("  LBM vorticity OK");
+    return ok;
+}
+
+bool testLBMPerformance() {
+    logTest("Testing LBM performance...");
+    bool ok = true;
+    if (!lbmInitialized) { logTest("  SKIP: LBM not initialized"); return true; }
+
+    int total = lbmNx*lbmNy*lbmNz;
+    float mlups = 0.0f;
+    if (lbmTimeMs > 1e-6f) {
+        // MLUPS = (cells * steps) / (time * 1e6)
+        mlups = (total * lbmParams.stepsPerFrame) / (lbmTimeMs * 1000.0f);
+    }
+    logTest("  Cells: " + std::to_string(total) + " | Steps/frame: " + std::to_string(lbmParams.stepsPerFrame) + " | Time: " + std::to_string(lbmTimeMs) + " ms | MLUPS: " + std::to_string(mlups));
+
+    if (lbmTimeMs > 100.0f) logTestWarn("  WARN: LBM step time >100ms — may drop FPS");
+    if (lbmTimeMs > 500.0f) { logTestError("  FAIL: LBM too slow >500ms"); ok = false; }
+
+    // Проверка Reynolds
+    float Re = computeLBMRe();
+    logTest("  Reynolds: " + std::to_string(Re));
+    if (Re < 1.0f) logTestWarn("  WARN: Re very low <1 — Stokes flow");
+    if (Re > 10000.0f) logTestWarn("  WARN: Re very high >10000 — may be unstable with BGK");
+
+    // Tau проверка
+    if (lbmParams.tau < 0.51f || lbmParams.tau > 2.0f) { logTestError("  FAIL: tau out of stable range [0.51,2.0]"); ok = false; }
+
+    if (ok) logTest("  LBM performance OK");
+    return ok;
+}
+
 // ===================== RUNNERS =====================
 void runPhysicsTests() {
     struct Case { const char* name; bool (*func)(); };
@@ -619,21 +771,41 @@ void runCodeTests() {
         logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
     }
 }
+void runLBMTests() {
+    struct Case { const char* name; bool (*func)(); };
+    Case tests[] = {
+        {"LBM Physics", testLBMPhysics},
+        {"LBM Conservation", testLBMConservation},
+        {"LBM Vorticity & Q", testLBMVorticity},
+        {"LBM Performance", testLBMPerformance},
+    };
+    for (auto& tc : tests) {
+        bool passed = false; std::string msg = "";
+        try { passed = tc.func(); } catch (const std::exception& e) { msg = std::string("EXCEPTION: ") + e.what(); passed = false; } catch (...) { msg = "UNKNOWN EXCEPTION"; passed = false; }
+        TestResult r; r.name = tc.name; r.category = "LBM"; r.passed = passed; r.message = msg.empty() ? (passed ? "OK" : "FAILED") : msg;
+        lastTestResults.push_back(r);
+        if (passed) lbmTestsPassed++; else lbmTestsFailed++;
+        if (passed) testsPassed++; else testsFailed++;
+        logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
+    }
+}
 void runAllTests() {
     auto t0 = std::chrono::high_resolution_clock::now();
     lastTestResults.clear(); testLog.clear();
-    testsPassed = 0; testsFailed = 0; codeTestsPassed = 0; codeTestsFailed = 0; lastGLError = 0; lastGLErrorStr.clear();
-    logTest("=== Starting Aeros Engine Tests v1.4.0 ===");
-    logTest("Model: " + std::to_string(modelVertexCount) + " vertices, Voxel: " + std::to_string(g_voxNx) + "x" + std::to_string(g_voxNy) + "x" + std::to_string(g_voxNz));
+    testsPassed = 0; testsFailed = 0; codeTestsPassed = 0; codeTestsFailed = 0; lbmTestsPassed = 0; lbmTestsFailed = 0; lastGLError = 0; lastGLErrorStr.clear();
+    logTest("=== Starting Aeros Engine Tests v1.5.0 LBM ===");
+    logTest("Model: " + std::to_string(modelVertexCount) + " vertices, Voxel: " + std::to_string(g_voxNx) + "x" + std::to_string(g_voxNy) + "x" + std::to_string(g_voxNz) + ", LBM: " + std::to_string(lbmNx) + "x" + std::to_string(lbmNy) + "x" + std::to_string(lbmNz));
     logTest("--- Physics Tests ---");
     runPhysicsTests();
     logTest("--- Code Action Tests ---");
     runCodeTests();
+    logTest("--- LBM Tests ---");
+    runLBMTests();
     auto t1 = std::chrono::high_resolution_clock::now();
     lastTestTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
-    logTest("=== Tests finished: " + std::to_string(testsPassed) + " passed, " + std::to_string(testsFailed) + " failed (" + std::to_string(codeTestsPassed) + " code passed, " + std::to_string(codeTestsFailed) + " code failed) in " + std::to_string(lastTestTimeMs) + " ms ===");
-    if (testsFailed > 0) logTestError("!!! ERRORS DETECTED: Physics=" + std::to_string(testsFailed - codeTestsFailed) + " Code=" + std::to_string(codeTestsFailed) + " !!!");
-    else logTest("All tests passed — physics and code OK");
+    logTest("=== Tests finished: " + std::to_string(testsPassed) + " passed, " + std::to_string(testsFailed) + " failed (Physics=" + std::to_string(testsPassed - codeTestsPassed - lbmTestsPassed) + " Code=" + std::to_string(codeTestsPassed) + "/" + std::to_string(codeTestsPassed+codeTestsFailed) + " LBM=" + std::to_string(lbmTestsPassed) + "/" + std::to_string(lbmTestsPassed+lbmTestsFailed) + ") in " + std::to_string(lastTestTimeMs) + " ms ===");
+    if (testsFailed > 0) logTestError("!!! ERRORS DETECTED: Physics=" + std::to_string(testsFailed - codeTestsFailed - lbmTestsFailed) + " Code=" + std::to_string(codeTestsFailed) + " LBM=" + std::to_string(lbmTestsFailed) + " !!!");
+    else logTest("All tests passed — physics, code and LBM OK");
 }
 void validateFrame() {
     if (!testContinuous) return;

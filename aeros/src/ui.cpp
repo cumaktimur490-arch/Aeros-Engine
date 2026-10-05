@@ -12,6 +12,7 @@
 #include "voxel_grid.h"
 #include "atmosphere.h"
 #include "test_mode.h"
+#include "lbm.h"
 #include "ui.h"
 
 // =====================================================
@@ -157,6 +158,47 @@ if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Show Axes", &showAxes);
     ImGui::Checkbox("Lighting", &lightingEnabled);
     ImGui::ColorEdit3("Background", &bgColor[0]);
+}
+
+if (ImGui::CollapsingHeader("LBM - Lattice Boltzmann (v1.5.0)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Checkbox("Enable LBM (High-Accuracy Physics)", &lbmParams.enabled);
+    if (lbmParams.enabled) {
+        ImGui::TextColored(ImVec4(0.2f,1,0.8f,1), "LBM Active — superior to potential flow");
+    } else {
+        ImGui::TextColored(ImVec4(1,0.8f,0.2f,1), "Using potential flow + wake (legacy)");
+    }
+    ImGui::SliderInt("Steps per Frame", &lbmParams.stepsPerFrame, 1, 20);
+    ImGui::SliderFloat("Tau (relaxation)", &lbmParams.tau, 0.51f, 1.5f, "%.3f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) { lbmParams.viscosity = (lbmParams.tau - 0.5f) * 0.333333f; }
+    ImGui::SliderFloat("U0 (lattice speed)", &lbmParams.U0, 0.01f, 0.25f, "%.3f");
+    ImGui::Checkbox("Smagorinsky LES Turbulence", &lbmParams.useTurbulence);
+    if (lbmParams.useTurbulence) {
+        ImGui::SliderFloat("Smagorinsky C", &lbmParams.smagorinskyC, 0.01f, 0.3f, "%.3f");
+    }
+    ImGui::Separator();
+    ImGui::Text("LBM Grid: %dx%dx%d = %d cells", lbmNx, lbmNy, lbmNz, lbmNx*lbmNy*lbmNz);
+    ImGui::Text("Steps: %d | Converged: %s", lbmCurrentStep, lbmConverged ? "YES" : "NO");
+    ImGui::Text("Avg Rho: %.4f | Kinetic: %.6f", lbmAvgRho, lbmAvgKineticEnergy);
+    ImGui::Text("Max Vel LB: %.4f | World: %.2f m/s", lbmMaxVelocityLB, lbmMaxVelocityWorld);
+    ImGui::Text("Reynolds: %.1f | Conv: %.2e | Time: %.1f ms", lbmReynolds, lbmConvergence, lbmTimeMs);
+    ImGui::Text("Cell Size: (%.3f, %.3f, %.3f)", lbmCellSizeX, lbmCellSizeY, lbmCellSizeZ);
+    if (ImGui::Button("Init / Reset LBM")) { initLBM(); }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset LBM Only")) { resetLBM(); }
+    ImGui::SameLine();
+    if (ImGui::Button("Shutdown LBM")) { shutdownLBM(); }
+    if (ImGui::Button("Step 10")) { stepLBMCPU(10); }
+    ImGui::SameLine();
+    if (ImGui::Button("Step 100")) { stepLBMCPU(100); }
+    ImGui::SameLine();
+    if (ImGui::Button("Compute Vorticity/Q")) { computeLBMVorticityAndQ(); }
+    ImGui::Separator();
+    ImGui::Text("LBM provides:");
+    ImGui::BulletText("True Navier-Stokes via Boltzmann");
+    ImGui::BulletText("Automatic flow separation & vortices");
+    ImGui::BulletText("No-slip bounce-back on surface");
+    ImGui::BulletText("LES turbulence (Smagorinsky)");
+    ImGui::BulletText("Vorticity & Q-criterion");
 }
 
 if (ImGui::CollapsingHeader("Compute")) {

@@ -8,6 +8,7 @@
 #include "voxel_grid.h"
 #include "flow_field.h"
 #include "atmosphere.h"
+#include "lbm.h"
 
 // =====================================================
 // FlowParams — v1.4.0 с защитой от ошибок кода
@@ -113,9 +114,22 @@ void updateFlowParams() {
 }
 
 // =====================================================
-// Поле скоростей CPU — v1.4.0 с защитой от ошибок кода
+// Поле скоростей CPU — v1.5.0 LBM + защита
 // =====================================================
 glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
+    // LBM приоритет если включен
+    if (lbmParams.enabled && lbmInitialized) {
+        glm::vec3 vLBM = getLBMVelocityWorld(p);
+        if (std::isfinite(vLBM.x) && std::isfinite(vLBM.y) && std::isfinite(vLBM.z)) {
+            float mag = glm::length(vLBM);
+            if (mag < 1e-6f) {
+                // внутри твердого — небольшой поток для Cp
+                return glm::vec3(prm.vx, prm.vy, prm.vz) * 0.1f;
+            }
+            return vLBM;
+        }
+    }
+
     if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
         return glm::vec3(prm.vx, prm.vy, prm.vz);
     }

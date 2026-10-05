@@ -34,6 +34,7 @@
 #include "forces.h"
 #include "atmosphere.h"
 #include "test_mode.h"
+#include "lbm.h"
 
 int main() {
     if (!glfwInit()) {
@@ -126,9 +127,15 @@ int main() {
 
         processInput(window);
 
+        // LBM обновление — до частиц и сил, чтобы поле было свежим
+        if (lbmParams.enabled) {
+            updateLBM(deltaTime);
+        }
+
         if (showParticles) updateParticles(deltaTime);
         if (showPressure)  updateVertexColors();
         computeLiftDrag();
+        if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
         updateLiftDragArrows();
 
         // Test mode continuous validation

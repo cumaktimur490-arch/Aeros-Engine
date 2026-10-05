@@ -66,6 +66,7 @@ set(SOURCES
     src/ui.cpp
     src/atmosphere.cpp
     src/test_mode.cpp
+    src/lbm.cpp
     src/glad.c
     src/imgui/imgui.cpp
     src/imgui/imgui_draw.cpp
