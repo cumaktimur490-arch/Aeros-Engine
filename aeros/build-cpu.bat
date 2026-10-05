@@ -151,13 +151,28 @@ if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\imgui\imgui_impl_opengl3.cpp /Fo:bin\imgui_impl_opengl3.obj
 if !errorlevel! neq 0 exit /b 1
 
+echo [Aeros CPU] Compiling icon resource...
+if exist src\app_icon.rc (
+    rc /fo bin\app_icon.res src\app_icon.rc
+    if !errorlevel! neq 0 (
+        echo [WARN] Resource compile failed, continuing without icon
+        set "ICON_RES="
+    ) else (
+        set "ICON_RES=bin\app_icon.res"
+        echo [Aeros CPU] Icon resource compiled: !ICON_RES!
+    )
+) else (
+    set "ICON_RES="
+    echo [WARN] app_icon.rc not found, skipping icon
+)
+
 echo [Aeros CPU] Linking (LTCG optimized)...
 link /LTCG /OUT:bin\main-!OUT_ARCH!.exe ^
   bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
   bin\voxel_grid.obj bin\flow_field.obj bin\particles.obj bin\streamlines.obj ^
   bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\cuda_stub.obj bin\glad.obj ^
   bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
-  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj ^
+  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj !ICON_RES! ^
   /LIBPATH:"!LIBDIR!\glfw\!GLFW_LIBDIR!" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^
   /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
 

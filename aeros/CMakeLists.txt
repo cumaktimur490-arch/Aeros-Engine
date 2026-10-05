@@ -105,6 +105,11 @@ else()
     list(APPEND SOURCES src/kernel.cu)
 endif()
 
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/app_icon.rc")
+    list(APPEND SOURCES src/app_icon.rc)
+    message(STATUS "Including app icon resource: src/app_icon.rc")
+endif()
+
 add_executable(main ${SOURCES})
 
 target_include_directories(main PRIVATE

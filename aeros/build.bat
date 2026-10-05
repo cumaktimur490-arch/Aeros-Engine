@@ -172,6 +172,21 @@ echo [Aeros] Libs: !LIBDIR!
 echo [Aeros] GLFW lib dir: !GLFW_LIBDIR!
 echo [Aeros] Checking tools...
 
+rem --- Сборка иконки ---
+if exist src\app_icon.rc (
+    echo [Aeros] Compiling icon resource...
+    rc /fo bin\app_icon.res src\app_icon.rc
+    if !errorlevel! neq 0 (
+        echo [WARN] Icon resource compile failed, continuing without icon
+        set "ICON_RES="
+    ) else (
+        set "ICON_RES=bin\app_icon.res"
+        echo [Aeros] Icon resource compiled: !ICON_RES!
+    )
+) else (
+    set "ICON_RES="
+)
+
 rem --- Сборка ---
 echo [Aeros] Starting nvcc compilation for !OUT_ARCH!...
 
@@ -194,7 +209,7 @@ nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   src\imgui\imgui.cpp src\imgui\imgui_draw.cpp src\imgui\imgui_tables.cpp src\imgui\imgui_widgets.cpp ^
   src\imgui\imgui_impl_glfw.cpp src\imgui\imgui_impl_opengl3.cpp ^
   -L "!LIBDIR!\glfw\!GLFW_LIBDIR!" ^
-  -lglfw3 -lopengl32 -luser32 -lgdi32 -lshell32 -lcomdlg32 ^
+  -lglfw3 -lopengl32 -luser32 -lgdi32 -lshell32 -lcomdlg32 !ICON_RES! ^
   -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup ^
   -o bin\main-!OUT_ARCH!.exe
 
