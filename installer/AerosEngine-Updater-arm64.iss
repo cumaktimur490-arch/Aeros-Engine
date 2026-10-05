@@ -1,9 +1,9 @@
 ; Aeros Engine — Апдейт установщик arm64 (ARM64)
 ; Обновляет существующую установку
-; Сборка: iscc AerosEngine-Updater-arm64.iss /DAppVersion=1.2.1
+; Сборка: iscc AerosEngine-Updater-arm64.iss /DAppVersion=1.3.0
 
 #ifndef AppVersion
-  #define AppVersion "1.2.1"
+  #define AppVersion "1.3.0"
 #endif
 #define Arch "arm64"
 #include "common.iss"

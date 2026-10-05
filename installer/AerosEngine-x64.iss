@@ -1,9 +1,9 @@
 ; Aeros Engine — Полный установщик x64
 ; Требует Inno Setup 6.x (https://jrsoftware.org/isinfo.php)
-; Сборка: iscc AerosEngine-x64.iss /DAppVersion=1.2.1
+; Сборка: iscc AerosEngine-x64.iss /DAppVersion=1.3.0
 
 #ifndef AppVersion
-  #define AppVersion "1.2.1"
+  #define AppVersion "1.3.0"
 #endif
 #define Arch "x64"
 #include "common.iss"

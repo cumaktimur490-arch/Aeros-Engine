@@ -5,6 +5,28 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.3.0] - 2026-10-05
+
+### Добавлено
+- **Режим теста для проверки ошибок вычислений** — новый модуль `test_mode.h/cpp`:
+  - 9 автоматических тестов: Speed Conversion, ISA Atmosphere, SDF Sampling, Velocity Field, Pressure Calculation, Particle System, Force Calculation, Voxel Grid, NaN Checks
+  - Проверка конвертации скорости round-trip для всех единиц (м/с, км/ч, mph, узлы, ft/s) с допуском 0.01
+  - Проверка ISA модели по референсным значениям на 0,1,2,5,10,15,20км с допуском 5% по плотности/давлению, 2K по температуре, монотонность убывания плотности
+  - Проверка SDF: NaN/Inf, дальняя точка положительна, нормаль нормализована, 100 точек без NaN
+  - Проверка поля скоростей: 200 точек домена на NaN, скорость не >5*Vinf (предупреждение) и не >10*Vinf (fail), проверка непротекания у поверхности, внутри объекта скорость <0.5*Vinf
+  - Проверка давления: Cp в [-3.5,1.5], цвета в [0,1], NaN
+  - Проверка частиц: NaN позиций, выход за границы (margin 3*maxDim), валидность цветов
+  - Проверка сил: lift/drag не NaN, не астрономические (>maxDim²*1000)
+  - Проверка воксельной сетки: размеры, соответствие размеров полей, NaN, диапазон, границы
+  - Проверка глобальных переменных на NaN/Inf
+  - Логирование в консоль и в UI, время выполнения, счётчики passed/failed
+  - UI секция **Test Mode (Physics Validation)**: Enable Test Mode, Continuous Validation, Run All Tests, Clear Log, отображение результатов PASS/FAIL с цветами, лог в скроллируемом child, быстрая диагностика кадра (NaN, Vinf, FlowParams, SDF range)
+  - Валидация каждый кадр при `testContinuous`: проверка flowSpeed/altitude/airDensity/lift/drag на NaN, первые 100 частиц на NaN
+- Интеграция в главный цикл `main.cpp`: вызов `validateFrame()` при включённом continuous mode
+
+### Улучшено
+- `build.bat`, `build-cpu.bat`, `CMakeLists.txt`: добавлен `test_mode.cpp`
+
 ## [1.2.1] - 2026-10-05
 
 ### Исправлено

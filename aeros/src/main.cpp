@@ -33,6 +33,7 @@
 #include "streamlines.h"
 #include "forces.h"
 #include "atmosphere.h"
+#include "test_mode.h"
 
 int main() {
     if (!glfwInit()) {
@@ -129,6 +130,9 @@ int main() {
         if (showPressure)  updateVertexColors();
         computeLiftDrag();
         updateLiftDragArrows();
+
+        // Test mode continuous validation
+        if (testContinuous) validateFrame();
 
         if (showStreamlines && (fabs(prevSpeed-flowSpeed) > 1e-3f ||
                                 fabs(prevAz-flowAzimuth) > 1e-3f ||

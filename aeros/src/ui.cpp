@@ -11,6 +11,7 @@
 #include "streamlines.h"
 #include "voxel_grid.h"
 #include "atmosphere.h"
+#include "test_mode.h"
 #include "ui.h"
 
 // =====================================================
@@ -183,6 +184,77 @@ if (ImGui::CollapsingHeader("Compute")) {
     if (ImGui::Button("Open Model")) {
         std::string p = openFileDialog();
         if (!p.empty()) loadModel(p);
+    }
+}
+
+if (ImGui::CollapsingHeader("Test Mode (Physics Validation)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Checkbox("Enable Test Mode", &testModeEnabled);
+    ImGui::Checkbox("Continuous Validation", &testContinuous);
+    ImGui::Text("Tests: %d passed, %d failed", testsPassed, testsFailed);
+    ImGui::Text("Last run: %.1f ms", lastTestTimeMs);
+    if (testsFailed > 0) {
+        ImGui::TextColored(ImVec4(1,0.2f,0.2f,1), "!!! PHYSICS ERRORS DETECTED !!!");
+    } else if (testsPassed > 0) {
+        ImGui::TextColored(ImVec4(0.2f,1,0.2f,1), "All tests passed — physics OK");
+    }
+
+    if (ImGui::Button("Run All Tests")) {
+        runAllTests();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear Log")) {
+        testLog.clear();
+        lastTestResults.clear();
+        testsPassed = 0;
+        testsFailed = 0;
+    }
+
+    if (!lastTestResults.empty()) {
+        ImGui::Separator();
+        ImGui::Text("Test Results:");
+        for (auto& r : lastTestResults) {
+            ImVec4 col = r.passed ? ImVec4(0.2f,1,0.2f,1) : ImVec4(1,0.2f,0.2f,1);
+            ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+            if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                ImGui::SameLine();
+                ImGui::Text(" - %s", r.message.c_str());
+            }
+        }
+    }
+
+    if (!testLog.empty()) {
+        ImGui::Separator();
+        ImGui::Text("Test Log:");
+        ImGui::BeginChild("TestLog", ImVec2(0, 200), true);
+        ImGui::TextUnformatted(testLog.c_str());
+        ImGui::EndChild();
+    }
+
+    // Быстрая диагностика текущего кадра
+    ImGui::Separator();
+    ImGui::Text("Frame Validation:");
+    bool hasNaN = false;
+    if (!std::isfinite(flowSpeed) || !std::isfinite(altitude) || !std::isfinite(airDensity)) hasNaN = true;
+    if (!std::isfinite(liftMagnitude) || !std::isfinite(dragMagnitude)) hasNaN = true;
+    if (hasNaN) {
+        ImGui::TextColored(ImVec4(1,0,0,1), "NaN/Inf detected in globals!");
+    } else {
+        ImGui::TextColored(ImVec4(0,1,0,1), "No NaN in globals");
+    }
+
+    float vinf = sqrtf(flowParams.vx*flowParams.vx + flowParams.vy*flowParams.vy + flowParams.vz*flowParams.vz);
+    ImGui::Text("Vinf: %.3f m/s (%.1f km/h)", vinf, vinf*3.6f);
+    ImGui::Text("FlowParams: (%.2f, %.2f, %.2f)", flowParams.vx, flowParams.vy, flowParams.vz);
+    ImGui::Text("Center: (%.2f, %.2f, %.2f) maxDim %.2f", center.x, center.y, center.z, maxDim);
+    if (!g_distanceField.empty()) {
+        float minD = 1e9f, maxD = -1e9f;
+        for (float d : g_distanceField) {
+            if (std::isfinite(d)) {
+                if (d < minD) minD = d;
+                if (d > maxD) maxD = d;
+            }
+        }
+        ImGui::Text("SDF range: [%.2f, %.2f] voxels", minD, maxD);
     }
 }
     ImGui::End();
