@@ -297,15 +297,16 @@ void stepLBMCPU(int steps) {
     static float prevKinetic = 0.0f;
 
     for (int s = 0; s < steps; ++s) {
-        float maxVelLocal = 0.0f;
+        float maxVelGlobal = 0.0f;
         double avgRhoAcc = 0.0;
         double kineticAcc = 0.0;
 
         // === COLLISION — параллельный ===
         #ifdef _OPENMP
-        #pragma omp parallel reduction(max:maxVelLocal) reduction(+:avgRhoAcc,kineticAcc)
+        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc)
         {
-        #pragma omp for nowait
+            float maxVelLocal = 0.0f;
+            #pragma omp for nowait
         #endif
         for (int cell = 0; cell < total; ++cell) {
             if (solidPtr[cell]) {
@@ -407,11 +408,19 @@ void stepLBMCPU(int steps) {
             uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
 
             float velMag = std::sqrt(usqr);
+#ifdef _OPENMP
             if (velMag > maxVelLocal) maxVelLocal = velMag;
+#else
+            if (velMag > maxVelGlobal) maxVelGlobal = velMag;
+#endif
             avgRhoAcc += rho;
             kineticAcc += usqr;
         }
         #ifdef _OPENMP
+            #pragma omp critical
+            {
+                if (maxVelLocal > maxVelGlobal) maxVelGlobal = maxVelLocal;
+            }
         } // parallel
         #endif
 
@@ -510,12 +519,12 @@ void stepLBMCPU(int steps) {
         lbmCurrentStep++;
         lbmAvgRho = (float)(avgRhoAcc / total);
         lbmAvgKineticEnergy = (float)(kineticAcc / total);
-        lbmMaxVelocityLB = maxVelLocal;
+        lbmMaxVelocityLB = maxVelGlobal;
 
         float scale = flowSpeed / U0mag;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
         if (scale < 0.01f) scale = 0.01f;
-        lbmMaxVelocityWorld = maxVelLocal * scale;
+        lbmMaxVelocityWorld = maxVelGlobal * scale;
 
         lbmConvergence = std::fabs(lbmAvgKineticEnergy - prevKinetic);
         prevKinetic = lbmAvgKineticEnergy;

@@ -100,8 +100,8 @@ echo [Aeros CPU] Compiling C++ files...
 
 set "INCLUDES=/I "!LIBDIR!\glfw\include" /I "!LIBDIR!\glad\include" /I "!LIBDIR!\glm" /I src /I src\imgui"
 set "DEFINES=/DCPU_ONLY /DVERSION_STRING=\"!APP_VERSION!\""
-rem v1.6.0 Optimized: O2, Ot, GL, arch:AVX2, openmp, fp:fast
-set "CXXFLAGS=/std:c++17 /EHsc /MD /W1 /O2 /Ot /GL /arch:AVX2 /openmp /fp:fast !DEFINES! !INCLUDES!"
+rem v1.6.0 Optimized: O2, Ot, GL, arch:AVX2, openmp:llvm, fp:fast
+set "CXXFLAGS=/std:c++17 /EHsc /MD /W1 /O2 /Ot /GL /arch:AVX2 /openmp:llvm /fp:fast !DEFINES! !INCLUDES!"
 
 cl /c !CXXFLAGS! src\main.cpp /Fo:bin\main.obj
 if !errorlevel! neq 0 exit /b 1

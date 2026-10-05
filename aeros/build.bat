@@ -171,7 +171,7 @@ echo [Aeros] Starting nvcc compilation for !OUT_ARCH!...
 
 set "NVCC_ARCH=-arch=sm_75"
 rem Для поддержки новых MSVC (19.51+) добавляем allow-unsupported-compiler
-set "NVCC_FLAGS=-allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp -Xcompiler /arch:AVX2 -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
+set "NVCC_FLAGS=-allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp:llvm -Xcompiler /arch:AVX2 -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
 
 echo nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc -I ... -o bin\main-!OUT_ARCH!.exe (OPTIMIZED)
 

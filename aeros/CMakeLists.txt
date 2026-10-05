@@ -43,7 +43,7 @@ else()
 endif()
 
 if(MSVC)
-    add_compile_options(/O2 /Ot /arch:AVX2 /fp:fast /openmp)
+    add_compile_options(/O2 /Ot /arch:AVX2 /fp:fast /openmp:llvm)
     add_link_options(/LTCG)
 else()
     add_compile_options(-O3 -march=native -ffast-math -fopenmp)
