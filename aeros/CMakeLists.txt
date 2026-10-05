@@ -89,6 +89,7 @@ set(SOURCES
     src/atmosphere.cpp
     src/test_mode.cpp
     src/lbm.cpp
+    src/lang.cpp
     src/glad.c
     src/imgui/imgui.cpp
     src/imgui/imgui_draw.cpp

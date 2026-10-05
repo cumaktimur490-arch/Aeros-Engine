@@ -6,11 +6,11 @@
 // =====================================================
 
 #define AEROS_VERSION_MAJOR 1
-#define AEROS_VERSION_MINOR 9
+#define AEROS_VERSION_MINOR 10
 #define AEROS_VERSION_PATCH 0
 
-#define AEROS_VERSION_STRING "1.9.0"
-#define AEROS_VERSION_FULL   "Aeros Engine v1.9.0 Ultra Realistic+"
+#define AEROS_VERSION_STRING "1.10.0"
+#define AEROS_VERSION_FULL   "Aeros Engine v1.10.0 Multilingual Ultra+"
 
 #define AEROS_APP_NAME       "Aeros Engine"
 #define AEROS_APP_PUBLISHER  "Aeros Team"

@@ -1,5 +1,5 @@
 // =====================================================
-// AeroS Engine — точка входа, главный цикл и рендер v1.9.0 Ultra Realistic+
+// AeroS Engine — точка входа, главный цикл и рендер v1.10.0 Multilingual Ultra+
 // =====================================================
 
 #ifdef _WIN32
@@ -41,12 +41,13 @@
 #include "atmosphere.h"
 #include "test_mode.h"
 #include "lbm.h"
+#include "lang.h"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
-// GL debug callback — v1.9.0 fixed to use GLAD_GL_VERSION_4_3
+// GL debug callback — v1.10.0 fixed to use GLAD_GL_VERSION_4_3
 static void APIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
     (void)source; (void)id; (void)length; (void)userParam;
     if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
@@ -140,11 +141,11 @@ static bool exportForcesCSV(const std::string& path) {
     return f.good();
 }
 
-// Settings save/load — v1.9.0 new (non-static for UI)
+// Settings save/load — v1.10.0 Multilingual (non-static for UI)
 bool saveSettings(const std::string& path) {
     std::ofstream f(path);
     if (!f) return false;
-    f << "# Aeros Engine v1.9.0 Settings\n";
+    f << "# Aeros Engine v1.10.0 Settings\n";
     f << "flowSpeed=" << flowSpeed << "\n";
     f << "flowAzimuth=" << flowAzimuth << "\n";
     f << "flowElevation=" << flowElevation << "\n";
@@ -166,6 +167,10 @@ bool saveSettings(const std::string& path) {
     f << "lbmEnabled=" << (lbmParams.enabled ? 1 : 0) << "\n";
     f << "lbmTau=" << lbmParams.tau << "\n";
     f << "lbmStepsPerFrame=" << lbmParams.stepsPerFrame << "\n";
+    f << "language=" << (int)currentLanguage << "\n";
+    f << "aeroShowParticleTrails=" << (aeroShowParticleTrails ? 1 : 0) << "\n";
+    f << "aeroAdaptiveLBM=" << (aeroAdaptiveLBM ? 1 : 0) << "\n";
+    f << "aeroUseRK4Particles=" << (aeroUseRK4Particles ? 1 : 0) << "\n";
     return f.good();
 }
 
@@ -201,6 +206,10 @@ bool loadSettings(const std::string& path) {
             else if (key == "lbmEnabled") lbmParams.enabled = (std::stoi(val) != 0);
             else if (key == "lbmTau") lbmParams.tau = std::stof(val);
             else if (key == "lbmStepsPerFrame") lbmParams.stepsPerFrame = std::stoi(val);
+            else if (key == "language") currentLanguage = (Language)std::stoi(val);
+            else if (key == "aeroShowParticleTrails") aeroShowParticleTrails = (std::stoi(val) != 0);
+            else if (key == "aeroAdaptiveLBM") aeroAdaptiveLBM = (std::stoi(val) != 0);
+            else if (key == "aeroUseRK4Particles") aeroUseRK4Particles = (std::stoi(val) != 0);
         } catch (...) { /* ignore parse errors */ }
     }
     return true;
@@ -209,7 +218,7 @@ bool loadSettings(const std::string& path) {
 int main() {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.9.0)" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.10.0 Multilingual)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
@@ -239,7 +248,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.9.0 Ultra Realistic+", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.10.0 Multilingual Ultra+", nullptr, nullptr);
     if (!window) {
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
@@ -293,10 +302,14 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.9.0 still compatible
+    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.10.0 still compatible
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // old ImGui doesn't have this
+
+    // v1.10.0: Initialize localization with Cyrillic font support
+    initLocalization();
+
     ImGui::StyleColorsDark();
-    // Improve ImGui style for v1.9.0
+    // Improve ImGui style for v1.10.0
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 4.0f;
     style.FrameRounding = 3.0f;

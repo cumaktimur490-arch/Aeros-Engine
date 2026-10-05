@@ -11,6 +11,7 @@
 #include <string>
 
 #include "flow_params.h"
+#include "lang.h"
 
 // --- Окно ---
 extern const unsigned int SCR_WIDTH;
