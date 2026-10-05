@@ -4,13 +4,16 @@
 #include "voxel_grid.h"
 #include "atmosphere.h"
 #include "forces.h"
+#include "shaders.h"
 
+#include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <cmath>
 #include <chrono>
 #include <sstream>
 #include <iostream>
 #include <limits>
+#include <algorithm>
 
 // Глобальные
 bool testModeEnabled = false;
@@ -18,22 +21,45 @@ bool testContinuous = false;
 std::vector<TestResult> lastTestResults;
 int testsPassed = 0;
 int testsFailed = 0;
+int codeTestsPassed = 0;
+int codeTestsFailed = 0;
 float lastTestTimeMs = 0.0f;
 std::string testLog;
+int lastGLError = 0;
+std::string lastGLErrorStr = "";
 
-static bool isValidFloat(float v) {
-    return !std::isnan(v) && !std::isinf(v);
+static bool isValidFloat(float v) { return !std::isnan(v) && !std::isinf(v); }
+static bool isValidVec3(const glm::vec3& v) { return isValidFloat(v.x) && isValidFloat(v.y) && isValidFloat(v.z); }
+
+void logTest(const std::string& msg) { testLog += msg + "\n"; std::cout << "[TEST] " << msg << std::endl; }
+void logTestError(const std::string& msg) { testLog += "[ERROR] " + msg + "\n"; std::cout << "[TEST][ERROR] " << msg << std::endl; }
+void logTestWarn(const std::string& msg) { testLog += "[WARN] " + msg + "\n"; std::cout << "[TEST][WARN] " << msg << std::endl; }
+
+std::string getGLErrorString(int err) {
+    switch(err) {
+        case GL_NO_ERROR: return "GL_NO_ERROR";
+        case GL_INVALID_ENUM: return "GL_INVALID_ENUM";
+        case GL_INVALID_VALUE: return "GL_INVALID_VALUE";
+        case GL_INVALID_OPERATION: return "GL_INVALID_OPERATION";
+        case GL_INVALID_FRAMEBUFFER_OPERATION: return "GL_INVALID_FRAMEBUFFER_OPERATION";
+        case GL_OUT_OF_MEMORY: return "GL_OUT_OF_MEMORY";
+        case GL_STACK_UNDERFLOW: return "GL_STACK_UNDERFLOW";
+        case GL_STACK_OVERFLOW: return "GL_STACK_OVERFLOW";
+        default: return "UNKNOWN_GL_ERROR_" + std::to_string(err);
+    }
+}
+bool checkGLErrors(const char* where) {
+    bool ok = true; GLenum err;
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        lastGLError = err;
+        lastGLErrorStr = getGLErrorString(err) + std::string(" at ") + where;
+        logTestError("OpenGL error: " + lastGLErrorStr);
+        ok = false;
+    }
+    return ok;
 }
 
-static bool isValidVec3(const glm::vec3& v) {
-    return isValidFloat(v.x) && isValidFloat(v.y) && isValidFloat(v.z);
-}
-
-void logTest(const std::string& msg) {
-    testLog += msg + "\n";
-    std::cout << "[TEST] " << msg << std::endl;
-}
-
+// ===================== PHYSICS TESTS (v1.3.0) =====================
 bool testSpeedConversion() {
     logTest("Testing speed conversion...");
     struct Case { float ms; SpeedUnit unit; float expected; };
@@ -50,37 +76,28 @@ bool testSpeedConversion() {
         float back = speedToMS(converted, c.unit);
         float diff = fabsf(back - c.ms);
         if (diff > 0.01f || !isValidFloat(converted) || !isValidFloat(back)) {
-            logTest("  FAIL: " + std::string(speedUnitShort(c.unit)) + " roundtrip diff=" + std::to_string(diff));
+            logTestError("  FAIL: " + std::string(speedUnitShort(c.unit)) + " roundtrip diff=" + std::to_string(diff));
             ok = false;
         }
         float expDiff = fabsf(converted - c.expected);
         if (expDiff > 0.05f) {
-            logTest("  FAIL: " + std::string(speedUnitShort(c.unit)) + " expected=" + std::to_string(c.expected) + " got=" + std::to_string(converted));
+            logTestError("  FAIL: " + std::string(speedUnitShort(c.unit)) + " expected=" + std::to_string(c.expected) + " got=" + std::to_string(converted));
             ok = false;
         }
     }
-    // Проверка всех единиц
     for (int u = 0; u < SPEED_UNIT_COUNT; u++) {
         float val = 5.0f;
         float toMS = speedToMS(val, (SpeedUnit)u);
         float fromMS = speedFromMS(toMS, (SpeedUnit)u);
-        if (fabsf(fromMS - val) > 0.001f) {
-            logTest("  FAIL: unit " + std::to_string(u) + " roundtrip");
-            ok = false;
-        }
+        if (fabsf(fromMS - val) > 0.001f) { logTestError("  FAIL: unit " + std::to_string(u) + " roundtrip"); ok = false; }
     }
+    float nanTest = speedFromMS(std::numeric_limits<float>::quiet_NaN(), SPEED_KMH);
+    if (!std::isnan(nanTest)) logTestWarn("  WARN: speedFromMS(NaN) should propagate NaN but got " + std::to_string(nanTest));
     return ok;
 }
-
 bool testAtmosphereModel() {
     logTest("Testing ISA atmosphere model...");
-    struct Ref {
-        float alt;
-        float rho;
-        float pressure;
-        float temp;
-    };
-    // Референсные значения ISA (приблизительные, из таблиц)
+    struct Ref { float alt; float rho; float pressure; float temp; };
     Ref refs[] = {
         {0.0f, 1.225f, 101325.0f, 288.15f},
         {1000.0f, 1.1116f, 89874.0f, 281.65f},
@@ -94,401 +111,471 @@ bool testAtmosphereModel() {
     for (auto& r : refs) {
         AtmosphereParams atm = calculateAtmosphere(r.alt);
         if (!isValidFloat(atm.density) || !isValidFloat(atm.pressure) || !isValidFloat(atm.temperature)) {
-            logTest("  FAIL: NaN at alt " + std::to_string(r.alt));
-            ok = false;
-            continue;
+            logTestError("  FAIL: NaN at alt " + std::to_string(r.alt)); ok = false; continue;
         }
         float rhoDiff = fabsf(atm.density - r.rho) / (r.rho + 1e-6f);
         float pDiff = fabsf(atm.pressure - r.pressure) / (r.pressure + 1e-6f);
         float tDiff = fabsf(atm.temperature - r.temp);
-        if (rhoDiff > 0.05f) {
-            logTest("  FAIL: rho at " + std::to_string(r.alt) + "m expected " + std::to_string(r.rho) + " got " + std::to_string(atm.density) + " diff " + std::to_string(rhoDiff*100) + "%");
-            ok = false;
-        }
-        if (pDiff > 0.05f) {
-            logTest("  FAIL: P at " + std::to_string(r.alt) + "m diff " + std::to_string(pDiff*100) + "%");
-            ok = false;
-        }
-        if (tDiff > 2.0f) {
-            logTest("  FAIL: T at " + std::to_string(r.alt) + "m expected " + std::to_string(r.temp) + " got " + std::to_string(atm.temperature));
-            ok = false;
-        }
-        // Плотность должна убывать с высотой
-        if (r.alt > 0 && atm.density >= 1.3f) {
-            logTest("  FAIL: density not decreasing at " + std::to_string(r.alt));
-            ok = false;
-        }
-        // Давление тоже убывает
-        if (atm.pressure > 110000.0f || atm.pressure < 1.0f) {
-            logTest("  FAIL: pressure out of range at " + std::to_string(r.alt));
-            ok = false;
-        }
+        if (rhoDiff > 0.05f) { logTestError("  FAIL: rho at " + std::to_string(r.alt) + "m expected " + std::to_string(r.rho) + " got " + std::to_string(atm.density)); ok = false; }
+        if (pDiff > 0.05f) { logTestError("  FAIL: P at " + std::to_string(r.alt) + "m diff " + std::to_string(pDiff*100) + "%"); ok = false; }
+        if (tDiff > 2.0f) { logTestError("  FAIL: T at " + std::to_string(r.alt) + "m expected " + std::to_string(r.temp) + " got " + std::to_string(atm.temperature)); ok = false; }
+        if (r.alt > 0 && atm.density >= 1.3f) { logTestError("  FAIL: density not decreasing at " + std::to_string(r.alt)); ok = false; }
+        if (atm.pressure > 110000.0f || atm.pressure < 1.0f) { logTestError("  FAIL: pressure out of range at " + std::to_string(r.alt)); ok = false; }
     }
-    // Монотонность
     float prevRho = 10.0f;
     for (float h = 0; h <= 20000; h += 1000) {
         float rho = getAirDensity(h);
-        if (rho > prevRho + 0.001f) {
-            logTest("  FAIL: density not monotonic at " + std::to_string(h));
-            ok = false;
-        }
+        if (rho > prevRho + 0.001f) { logTestError("  FAIL: density not monotonic at " + std::to_string(h)); ok = false; }
         prevRho = rho;
     }
+    AtmosphereParams neg = calculateAtmosphere(-1000.0f);
+    if (!isValidFloat(neg.density) || neg.density < 0.00005f) { logTestError("  FAIL: negative altitude handling"); ok = false; }
+    AtmosphereParams huge = calculateAtmosphere(100000.0f);
+    if (!isValidFloat(huge.density) || !isValidFloat(huge.pressure)) { logTestError("  FAIL: huge altitude NaN"); ok = false; }
     return ok;
 }
-
 bool testSDFSampling() {
     logTest("Testing SDF sampling...");
-    if (g_distanceField.empty()) {
-        logTest("  SKIP: no voxel grid loaded");
-        return true; // не ошибка, просто нет модели
-    }
+    if (g_distanceField.empty()) { logTest("  SKIP: no voxel grid loaded"); return true; }
     bool ok = true;
-    // Точка в центре модели должна быть внутри (отрицательный SDF) или близко
     float dCenter = sampleSDFCPU(center);
-    if (!isValidFloat(dCenter)) {
-        logTest("  FAIL: SDF at center is NaN/Inf");
-        ok = false;
-    }
-    // Далеко от модели — большой положительный SDF
+    if (!isValidFloat(dCenter)) { logTestError("  FAIL: SDF at center is NaN/Inf"); ok = false; }
     glm::vec3 farPoint = center + glm::vec3(maxDim * 10.0f, 0, 0);
     float dFar = sampleSDFCPU(farPoint);
-    if (!isValidFloat(dFar)) {
-        logTest("  FAIL: SDF far point NaN");
-        ok = false;
-    }
-    if (dFar < 0) {
-        logTest("  FAIL: SDF far point should be positive, got " + std::to_string(dFar));
-        ok = false;
-    }
-    // Нормаль должна быть валидной и нормализованной
+    if (!isValidFloat(dFar)) { logTestError("  FAIL: SDF far point NaN"); ok = false; }
+    if (dFar < 0) { logTestError("  FAIL: SDF far point should be positive, got " + std::to_string(dFar)); ok = false; }
     glm::vec3 n = sdfNormalCPU(center + glm::vec3(maxDim*0.6f, 0, 0));
-    if (!isValidVec3(n)) {
-        logTest("  FAIL: SDF normal NaN");
-        ok = false;
-    }
+    if (!isValidVec3(n)) { logTestError("  FAIL: SDF normal NaN"); ok = false; }
     float nLen = glm::length(n);
-    if (fabsf(nLen - 1.0f) > 0.1f && nLen > 0.001f) {
-        logTest("  FAIL: SDF normal not normalized, len=" + std::to_string(nLen));
-        ok = false;
-    }
-    // Проверка на разных точках — не должно быть NaN
+    if (fabsf(nLen - 1.0f) > 0.1f && nLen > 0.001f) { logTestError("  FAIL: SDF normal not normalized, len=" + std::to_string(nLen)); ok = false; }
     for (int i = 0; i < 100; i++) {
         float x = minBB.x + (maxBB.x - minBB.x) * (i / 100.0f);
         glm::vec3 p(x, center.y, center.z);
         float d = sampleSDFCPU(p);
-        if (!isValidFloat(d)) {
-            logTest("  FAIL: SDF NaN at x=" + std::to_string(x));
-            ok = false;
-            break;
-        }
+        if (!isValidFloat(d)) { logTestError("  FAIL: SDF NaN at x=" + std::to_string(x)); ok = false; break; }
     }
+    glm::vec3 oob(1e6f, 1e6f, 1e6f);
+    float dOob = sampleSDFCPU(oob);
+    if (!isValidFloat(dOob) || fabsf(dOob - 1000.0f) > 1.0f) logTestWarn("  WARN: SDF OOB should return ~1000, got " + std::to_string(dOob));
+    glm::vec3 nOob = sdfNormalCPU(oob);
+    if (!isValidVec3(nOob)) { logTestError("  FAIL: SDF normal OOB NaN"); ok = false; }
     return ok;
 }
-
 bool testVelocityField() {
     logTest("Testing velocity field...");
     updateFlowParams();
     bool ok = true;
     float vinf = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
-    if (vinf < 1e-6f) {
-        logTest("  SKIP: zero freestream velocity");
-        return true;
-    }
-
-    // Тест в разных точках домена
-    int nanCount = 0;
-    int negPenetration = 0;
+    if (vinf < 1e-6f) { logTest("  SKIP: zero freestream velocity"); return true; }
+    int nanCount = 0, negPenetration = 0;
     for (int i = 0; i < 200; i++) {
         float fx = (i % 10) / 9.0f;
         float fy = ((i / 10) % 10) / 9.0f;
         float fz = (i / 100) / 2.0f;
-        glm::vec3 p(
-            flowParams.minX + fx * (flowParams.maxX - flowParams.minX),
-            flowParams.minY + fy * (flowParams.maxY - flowParams.minY),
-            flowParams.minZ + fz * (flowParams.maxZ - flowParams.minZ)
-        );
+        glm::vec3 p(flowParams.minX + fx * (flowParams.maxX - flowParams.minX),
+                    flowParams.minY + fy * (flowParams.maxY - flowParams.minY),
+                    flowParams.minZ + fz * (flowParams.maxZ - flowParams.minZ));
         glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
-        if (!isValidVec3(v)) {
-            nanCount++;
-            continue;
-        }
+        if (!isValidVec3(v)) { nanCount++; continue; }
         float speed = glm::length(v);
         if (speed > vinf * 5.0f) {
-            logTest("  WARN: velocity magnitude too high at (" + std::to_string(p.x) + "," + std::to_string(p.y) + "," + std::to_string(p.z) + ") speed=" + std::to_string(speed) + " vinf=" + std::to_string(vinf));
-            // не фейлим, но предупреждаем — ускорение на боках может давать 1.6*vinf, но не 5x
-            if (speed > vinf * 10.0f) {
-                ok = false;
-            }
+            logTestWarn("  WARN: velocity magnitude too high at (" + std::to_string(p.x) + "," + std::to_string(p.y) + "," + std::to_string(p.z) + ") speed=" + std::to_string(speed) + " vinf=" + std::to_string(vinf));
+            if (speed > vinf * 10.0f) ok = false;
         }
-        // Проверка непротекания: если близко к поверхности и скорость внутрь — плохо
         if (!g_distanceField.empty()) {
             float d = sampleSDFCPU(p);
             if (d > 0 && d < flowParams.cellSizeX * 2.0f) {
                 glm::vec3 n = sdfNormalCPU(p);
                 float vn = glm::dot(v, n);
-                // Если точка снаружи и близко, нормальная компонента внутрь (отрицательная) должна быть убрана
-                // Допускаем небольшую погрешность
-                if (vn < -0.1f * vinf) {
-                    negPenetration++;
-                }
+                if (vn < -0.1f * vinf) negPenetration++;
             }
         }
     }
-    if (nanCount > 0) {
-        logTest("  FAIL: velocity field produced " + std::to_string(nanCount) + " NaN/Inf values");
-        ok = false;
-    }
-    if (negPenetration > 10) {
-        logTest("  FAIL: " + std::to_string(negPenetration) + " points with negative penetration near surface");
-        ok = false;
-    }
-    // Проверка внутри объекта — скорость должна быть маленькой
+    if (nanCount > 0) { logTestError("  FAIL: velocity field produced " + std::to_string(nanCount) + " NaN/Inf values"); ok = false; }
+    if (negPenetration > 10) { logTestError("  FAIL: " + std::to_string(negPenetration) + " points with negative penetration near surface"); ok = false; }
     if (!g_distanceField.empty()) {
         glm::vec3 vInside = computeVelocityFieldCPU(center, flowParams);
-        if (!isValidVec3(vInside)) {
-            logTest("  FAIL: velocity inside object NaN");
-            ok = false;
-        } else {
+        if (!isValidVec3(vInside)) { logTestError("  FAIL: velocity inside object NaN"); ok = false; }
+        else {
             float speedInside = glm::length(vInside);
-            if (speedInside > vinf * 0.5f) {
-                logTest("  WARN: velocity inside object too high: " + std::to_string(speedInside));
-            }
+            if (speedInside > vinf * 0.5f) logTestWarn("  WARN: velocity inside object too high: " + std::to_string(speedInside));
         }
     }
     return ok;
 }
-
 bool testPressureCalculation() {
     logTest("Testing pressure calculation...");
-    if (g_vertices.empty()) {
-        logTest("  SKIP: no model loaded");
-        return true;
-    }
+    if (g_vertices.empty()) { logTest("  SKIP: no model loaded"); return true; }
     updateFlowParams();
     bool ok = true;
     float vinf = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
-    if (vinf < 1e-6f) {
-        logTest("  SKIP: zero velocity");
-        return true;
-    }
-    // Тест Cp в нескольких точках
-    int nanCount = 0;
-    int outOfRange = 0;
-    for (size_t i = 0; i < g_vertices.size(); i += 3*10) { // каждая 10-я вершина
+    if (vinf < 1e-6f) { logTest("  SKIP: zero velocity"); return true; }
+    int nanCount = 0, outOfRange = 0;
+    for (size_t i = 0; i < g_vertices.size(); i += 3*10) {
         glm::vec3 p(g_vertices[i], g_vertices[i+1], g_vertices[i+2]);
         glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
         if (!isValidVec3(v)) { nanCount++; continue; }
         float speed = glm::length(v);
         float speedRatio = speed / vinf;
         float cp = 1.0f - speedRatio*speedRatio;
-        // Учитываем след как в forces.cpp
-        float rx = p.x - flowParams.centerX;
-        float ry = p.y - flowParams.centerY;
-        float rz = p.z - flowParams.centerZ;
+        float rx = p.x - flowParams.centerX, ry = p.y - flowParams.centerY, rz = p.z - flowParams.centerZ;
         float fl = 1.0f / vinf;
         float along = rx*(flowParams.vx*fl) + ry*(flowParams.vy*fl) + rz*(flowParams.vz*fl);
         float D = 2.0f * fmaxf(flowParams.radiusY, flowParams.radiusZ);
-        if (along > D * 0.3f) {
-            float w = (along - D*0.3f) / D;
-            if (w > 1.0f) w = 1.0f;
-            cp -= 0.8f * w * w;
-        }
+        if (along > D * 0.3f) { float w = (along - D*0.3f) / D; if (w > 1.0f) w = 1.0f; cp -= 0.8f * w * w; }
         if (!isValidFloat(cp)) { nanCount++; continue; }
         if (cp > 1.5f || cp < -3.5f) outOfRange++;
     }
-    if (nanCount > 0) {
-        logTest("  FAIL: pressure Cp produced " + std::to_string(nanCount) + " NaN");
-        ok = false;
-    }
-    if (outOfRange > (int)(g_vertices.size()/3/10) / 2) {
-        logTest("  FAIL: too many Cp out of range [-3.5,1.5]: " + std::to_string(outOfRange));
-        ok = false;
-    }
-    // Проверка цветов давления
+    if (nanCount > 0) { logTestError("  FAIL: pressure Cp produced " + std::to_string(nanCount) + " NaN"); ok = false; }
+    if (outOfRange > (int)(g_vertices.size()/3/10) / 2) { logTestError("  FAIL: too many Cp out of range [-3.5,1.5]: " + std::to_string(outOfRange)); ok = false; }
     if (!g_vertexColors.empty()) {
         for (size_t i = 0; i < g_vertexColors.size(); i++) {
-            if (!isValidFloat(g_vertexColors[i]) || g_vertexColors[i] < -0.1f || g_vertexColors[i] > 1.1f) {
-                logTest("  FAIL: vertex color out of range or NaN at " + std::to_string(i));
-                ok = false;
-                break;
-            }
+            if (!isValidFloat(g_vertexColors[i]) || g_vertexColors[i] < -0.1f || g_vertexColors[i] > 1.1f) { logTestError("  FAIL: vertex color out of range or NaN at " + std::to_string(i)); ok = false; break; }
         }
     }
     return ok;
 }
-
 bool testParticleSystem() {
     logTest("Testing particle system...");
-    if (particlePositions.empty()) {
-        logTest("  SKIP: no particles");
-        return true;
-    }
+    if (particlePositions.empty()) { logTest("  SKIP: no particles"); return true; }
     bool ok = true;
-    int nanPos = 0;
-    int outOfBounds = 0;
-    int nanCol = 0;
-    int n = particleDrawCount;
-    if (n <= 0) n = numParticles;
+    int nanPos = 0, outOfBounds = 0, nanCol = 0;
+    int n = particleDrawCount; if (n <= 0) n = numParticles;
     n = std::min(n, (int)(particlePositions.size()/3));
     for (int i = 0; i < n; i++) {
         glm::vec3 p(particlePositions[3*i], particlePositions[3*i+1], particlePositions[3*i+2]);
         if (!isValidVec3(p)) { nanPos++; continue; }
-        // Частицы могут быть немного вне границ из-за респавна, но не сильно
         float margin = maxDim * 3.0f;
         if (p.x < flowParams.minX - margin || p.x > flowParams.maxX + margin ||
             p.y < flowParams.minY - margin || p.y > flowParams.maxY + margin ||
-            p.z < flowParams.minZ - margin || p.z > flowParams.maxZ + margin) {
-            outOfBounds++;
-        }
+            p.z < flowParams.minZ - margin || p.z > flowParams.maxZ + margin) outOfBounds++;
         if (i*3+2 < (int)particleColors.size()) {
             glm::vec3 c(particleColors[3*i], particleColors[3*i+1], particleColors[3*i+2]);
-            if (!isValidVec3(c) || c.x < -0.1f || c.x > 1.5f || c.y < -0.1f || c.y > 1.5f || c.z < -0.1f || c.z > 1.5f) {
-                nanCol++;
-            }
+            if (!isValidVec3(c) || c.x < -0.1f || c.x > 1.5f || c.y < -0.1f || c.y > 1.5f || c.z < -0.1f || c.z > 1.5f) nanCol++;
         }
     }
-    if (nanPos > 0) {
-        logTest("  FAIL: " + std::to_string(nanPos) + " particles with NaN/Inf positions");
-        ok = false;
-    }
-    if (outOfBounds > n/2) {
-        logTest("  FAIL: too many particles out of bounds: " + std::to_string(outOfBounds) + "/" + std::to_string(n));
-        ok = false;
-    }
-    if (nanCol > 0) {
-        logTest("  FAIL: " + std::to_string(nanCol) + " particles with invalid colors");
-        ok = false;
-    }
+    if (nanPos > 0) { logTestError("  FAIL: " + std::to_string(nanPos) + " particles with NaN/Inf positions"); ok = false; }
+    if (outOfBounds > n/2) { logTestError("  FAIL: too many particles out of bounds: " + std::to_string(outOfBounds) + "/" + std::to_string(n)); ok = false; }
+    if (nanCol > 0) { logTestError("  FAIL: " + std::to_string(nanCol) + " particles with invalid colors"); ok = false; }
     return ok;
 }
-
 bool testForceCalculation() {
     logTest("Testing force calculation...");
-    if (g_vertices.empty()) {
-        logTest("  SKIP: no model");
-        return true;
-    }
+    if (g_vertices.empty()) { logTest("  SKIP: no model"); return true; }
     bool ok = true;
-    if (!isValidFloat(liftMagnitude) || !isValidFloat(dragMagnitude)) {
-        logTest("  FAIL: lift/drag NaN: lift=" + std::to_string(liftMagnitude) + " drag=" + std::to_string(dragMagnitude));
-        ok = false;
-    }
-    if (!isValidVec3(liftVector) || !isValidVec3(dragVector)) {
-        logTest("  FAIL: lift/drag vector NaN");
-        ok = false;
-    }
-    if (!isValidVec3(centerOfPressure)) {
-        logTest("  FAIL: centerOfPressure NaN");
-        ok = false;
-    }
-    // Силы не должны быть астрономическими
-    float maxReasonable = maxDim * maxDim * 1000.0f; // эвристика
-    if (fabsf(liftMagnitude) > maxReasonable || fabsf(dragMagnitude) > maxReasonable) {
-        logTest("  FAIL: forces too large: lift=" + std::to_string(liftMagnitude) + " drag=" + std::to_string(dragMagnitude) + " maxReasonable=" + std::to_string(maxReasonable));
-        ok = false;
-    }
+    if (!isValidFloat(liftMagnitude) || !isValidFloat(dragMagnitude)) { logTestError("  FAIL: lift/drag NaN: lift=" + std::to_string(liftMagnitude) + " drag=" + std::to_string(dragMagnitude)); ok = false; }
+    if (!isValidVec3(liftVector) || !isValidVec3(dragVector)) { logTestError("  FAIL: lift/drag vector NaN"); ok = false; }
+    if (!isValidVec3(centerOfPressure)) { logTestError("  FAIL: centerOfPressure NaN"); ok = false; }
+    float maxReasonable = maxDim * maxDim * 1000.0f;
+    if (fabsf(liftMagnitude) > maxReasonable || fabsf(dragMagnitude) > maxReasonable) { logTestError("  FAIL: forces too large: lift=" + std::to_string(liftMagnitude) + " drag=" + std::to_string(dragMagnitude)); ok = false; }
     return ok;
 }
-
 bool testVoxelGrid() {
     logTest("Testing voxel grid...");
     bool ok = true;
-    if (g_distanceField.empty()) {
-        logTest("  SKIP: no voxel grid");
-        return true;
-    }
-    if (g_voxNx <= 0 || g_voxNy <= 0 || g_voxNz <= 0) {
-        logTest("  FAIL: invalid voxel dimensions");
-        return false;
-    }
+    if (g_distanceField.empty()) { logTest("  SKIP: no voxel grid"); return true; }
+    if (g_voxNx <= 0 || g_voxNy <= 0 || g_voxNz <= 0) { logTestError("  FAIL: invalid voxel dimensions"); return false; }
     int total = g_voxNx * g_voxNy * g_voxNz;
-    if ((int)g_distanceField.size() != total) {
-        logTest("  FAIL: distance field size mismatch: " + std::to_string(g_distanceField.size()) + " vs " + std::to_string(total));
-        ok = false;
-    }
-    if ((int)g_voxelData.size() != total) {
-        logTest("  FAIL: voxel data size mismatch");
-        ok = false;
-    }
-    // Проверка на NaN в distance field
-    int nanCount = 0;
-    float minD = std::numeric_limits<float>::max();
-    float maxD = std::numeric_limits<float>::lowest();
-    for (float d : g_distanceField) {
-        if (!isValidFloat(d)) nanCount++;
-        else {
-            if (d < minD) minD = d;
-            if (d > maxD) maxD = d;
-        }
-    }
-    if (nanCount > 0) {
-        logTest("  FAIL: " + std::to_string(nanCount) + " NaN in distance field");
-        ok = false;
-    }
+    if ((int)g_distanceField.size() != total) { logTestError("  FAIL: distance field size mismatch"); ok = false; }
+    if ((int)g_voxelData.size() != total) { logTestError("  FAIL: voxel data size mismatch"); ok = false; }
+    int nanCount = 0; float minD = std::numeric_limits<float>::max(), maxD = std::numeric_limits<float>::lowest();
+    for (float d : g_distanceField) { if (!isValidFloat(d)) nanCount++; else { minD = std::min(minD,d); maxD = std::max(maxD,d); } }
+    if (nanCount > 0) { logTestError("  FAIL: " + std::to_string(nanCount) + " NaN in distance field"); ok = false; }
     logTest("  Distance field range: [" + std::to_string(minD) + ", " + std::to_string(maxD) + "]");
-    if (minD > 0) {
-        logTest("  WARN: distance field has no negative values (no inside?)");
-    }
-    if (maxD < 0) {
-        logTest("  WARN: distance field all negative");
-    }
-    // Проверка границ воксельной сетки
-    if (g_voxMinX >= g_voxMaxX || g_voxMinY >= g_voxMaxY || g_voxMinZ >= g_voxMaxZ) {
-        logTest("  FAIL: invalid voxel bounds");
-        ok = false;
-    }
+    if (minD > 0) logTestWarn("  WARN: distance field has no negative values");
+    if (maxD < 0) logTestWarn("  WARN: distance field all negative");
+    if (g_voxMinX >= g_voxMaxX || g_voxMinY >= g_voxMaxY || g_voxMinZ >= g_voxMaxZ) { logTestError("  FAIL: invalid voxel bounds"); ok = false; }
     return ok;
 }
-
 bool testNaNChecks() {
     logTest("Testing for NaN/Inf in globals...");
     bool ok = true;
-    // Проверка всех важных глобальных переменных на NaN
     struct Check { const char* name; float val; };
-    Check checks[] = {
-        {"flowSpeed", flowSpeed},
-        {"flowAzimuth", flowAzimuth},
-        {"flowElevation", flowElevation},
-        {"timeScale", timeScale},
-        {"strouhal", strouhal},
-        {"wakeStrength", wakeStrength},
-        {"wakeLength", wakeLength},
-        {"altitude", altitude},
-        {"airDensity", airDensity},
-        {"airPressure", airPressure},
-        {"airTemperature", airTemperature},
-        {"maxDim", maxDim},
-        {"deltaTime", deltaTime},
-    };
-    for (auto& c : checks) {
-        if (!isValidFloat(c.val)) {
-            logTest(std::string("  FAIL: ") + c.name + " is NaN/Inf: " + std::to_string(c.val));
-            ok = false;
-        }
-    }
-    if (!isValidVec3(cameraPos) || !isValidVec3(cameraFront) || !isValidVec3(center)) {
-        logTest("  FAIL: camera or center NaN");
-        ok = false;
-    }
+    Check checks[] = { {"flowSpeed", flowSpeed}, {"flowAzimuth", flowAzimuth}, {"flowElevation", flowElevation}, {"timeScale", timeScale}, {"strouhal", strouhal}, {"wakeStrength", wakeStrength}, {"wakeLength", wakeLength}, {"altitude", altitude}, {"airDensity", airDensity}, {"airPressure", airPressure}, {"airTemperature", airTemperature}, {"maxDim", maxDim}, {"deltaTime", deltaTime}, };
+    for (auto& c : checks) if (!isValidFloat(c.val)) { logTestError(std::string("  FAIL: ") + c.name + " is NaN/Inf: " + std::to_string(c.val)); ok = false; }
+    if (!isValidVec3(cameraPos) || !isValidVec3(cameraFront) || !isValidVec3(center)) { logTestError("  FAIL: camera or center NaN"); ok = false; }
     return ok;
 }
 
-void runAllTests() {
-    auto t0 = std::chrono::high_resolution_clock::now();
-    lastTestResults.clear();
-    testLog.clear();
-    testsPassed = 0;
-    testsFailed = 0;
+// ===================== CODE TESTS (v1.4.0) =====================
+bool testOpenGLState() {
+    logTest("Testing OpenGL state (code errors)...");
+    bool ok = true;
+    GLenum err; int errCount = 0;
+    while ((err = glGetError()) != GL_NO_ERROR) { logTestError("  FAIL: GL error before test: " + getGLErrorString(err)); errCount++; }
+    if (errCount > 0) ok = false;
+    if (display_w <= 0 || display_h <= 0) { logTestError("  FAIL: display_w/h invalid: " + std::to_string(display_w) + "x" + std::to_string(display_h)); ok = false; }
+    if (display_w > 10000 || display_h > 10000) logTestWarn("  WARN: display size huge");
+    if (!isValidFloat(maxDim) || maxDim <= 1e-6f) { logTestError("  FAIL: maxDim invalid: " + std::to_string(maxDim)); ok = false; }
+    if (maxDim > 1e6f) logTestWarn("  WARN: maxDim extremely large: " + std::to_string(maxDim));
+    if (!g_vertices.empty()) {
+        if (modelVAO == 0) { logTestError("  FAIL: modelVAO is 0 but model loaded"); ok = false; }
+        else if (!glIsVertexArray(modelVAO)) { logTestError("  FAIL: modelVAO is not a valid VAO"); ok = false; }
+        if (modelVBO_vertices == 0 || modelVBO_normals == 0) { logTestError("  FAIL: model VBOs zero"); ok = false; }
+    }
+    if (showParticles && !particlePositions.empty()) {
+        if (particleVAO == 0) { logTestError("  FAIL: particleVAO zero but particles shown"); ok = false; }
+        if (particleVBO_pos == 0 || particleVBO_col == 0) { logTestError("  FAIL: particle VBOs zero"); ok = false; }
+    }
+    if (showStreamlines && streamlineVertexCount > 0 && streamlineVAO == 0) logTestWarn("  WARN: streamlineVAO zero but streamlines shown");
+    if (!checkGLErrors("testOpenGLState")) ok = false;
+    if (ok) logTest("  OpenGL state OK");
+    return ok;
+}
+bool testBufferIntegrity() {
+    logTest("Testing buffer integrity (code errors)...");
+    bool ok = true;
+    if (!particlePositions.empty() || !particleColors.empty()) {
+        if (particlePositions.size() % 3 != 0) { logTestError("  FAIL: particlePositions size not %3: " + std::to_string(particlePositions.size())); ok = false; }
+        if (particleColors.size() % 3 != 0) { logTestError("  FAIL: particleColors size not %3"); ok = false; }
+        if (particlePositions.size() != particleColors.size()) { logTestError("  FAIL: particle pos/col size mismatch"); ok = false; }
+        int allocCount = particlePositions.size() / 3;
+        if (particleDrawCount < 0) { logTestError("  FAIL: particleDrawCount negative: " + std::to_string(particleDrawCount)); ok = false; }
+        if (particleDrawCount > allocCount) { logTestError("  FAIL: particleDrawCount > alloc: " + std::to_string(particleDrawCount) + " > " + std::to_string(allocCount)); ok = false; }
+    } else if (particleDrawCount != 0) logTestWarn("  WARN: particle vectors empty but drawCount=" + std::to_string(particleDrawCount));
+    if (!g_vertices.empty()) {
+        if (g_vertices.size() % 3 != 0) { logTestError("  FAIL: g_vertices not %3"); ok = false; }
+        if (g_vertices.size() % 9 != 0) { logTestError("  FAIL: g_vertices not %9"); ok = false; }
+        if (g_normals.size() != g_vertices.size()) { logTestError("  FAIL: g_normals size mismatch"); ok = false; }
+        if (!g_vertexColors.empty() && g_vertexColors.size() != g_vertices.size()) { logTestError("  FAIL: g_vertexColors size mismatch"); ok = false; }
+        int expectedVC = g_vertices.size() / 3;
+        if (modelVertexCount != expectedVC) { logTestError("  FAIL: modelVertexCount mismatch"); ok = false; }
+    }
+    if (!g_distanceField.empty() || !g_voxelData.empty()) {
+        int total = g_voxNx * g_voxNy * g_voxNz;
+        if (total <= 0) { logTestError("  FAIL: voxel total <=0"); ok = false; }
+        if ((int)g_distanceField.size() != total) { logTestError("  FAIL: distanceField size != total"); ok = false; }
+        if ((int)g_voxelData.size() != total) { logTestError("  FAIL: voxelData size != total"); ok = false; }
+    }
+    if (streamlineVertexCount < 0) { logTestError("  FAIL: streamlineVertexCount negative"); ok = false; }
+    if (streamlineVertexCount % 2 != 0) logTestWarn("  WARN: streamlineVertexCount odd");
+    if (!g_vertices.empty()) { if (bboxVAO == 0) logTestWarn("  WARN: bboxVAO zero"); if (axesVAO == 0) logTestWarn("  WARN: axesVAO zero"); }
+    if (showObstacle && obstacleVAO == 0) logTestWarn("  WARN: obstacleVAO zero but showObstacle true");
+    if (ok) logTest("  Buffer integrity OK");
+    return ok;
+}
+bool testModelIntegrity() {
+    logTest("Testing model integrity (code errors)...");
+    if (g_vertices.empty()) { logTest("  SKIP: no model"); return true; }
+    bool ok = true;
+    int nanVerts = 0, nanNorms = 0, degenerate = 0, zeroNorm = 0, nonNormalizedNorm = 0;
+    for (size_t i = 0; i < g_vertices.size(); i += 3) { glm::vec3 v(g_vertices[i], g_vertices[i+1], g_vertices[i+2]); if (!isValidVec3(v)) nanVerts++; }
+    for (size_t i = 0; i < g_normals.size(); i += 3) {
+        glm::vec3 n(g_normals[i], g_normals[i+1], g_normals[i+2]);
+        if (!isValidVec3(n)) nanNorms++;
+        else { float len = glm::length(n); if (len < 1e-6f) zeroNorm++; else if (fabsf(len - 1.0f) > 0.2f) nonNormalizedNorm++; }
+    }
+    for (size_t i = 0; i + 8 < g_vertices.size(); i += 9) {
+        glm::vec3 v0(g_vertices[i], g_vertices[i+1], g_vertices[i+2]);
+        glm::vec3 v1(g_vertices[i+3], g_vertices[i+4], g_vertices[i+5]);
+        glm::vec3 v2(g_vertices[i+6], g_vertices[i+7], g_vertices[i+8]);
+        glm::vec3 e1 = v1 - v0, e2 = v2 - v0;
+        float area = 0.5f * glm::length(glm::cross(e1, e2));
+        if (area < 1e-12f) degenerate++;
+    }
+    if (nanVerts > 0) { logTestError("  FAIL: " + std::to_string(nanVerts) + " vertices NaN"); ok = false; }
+    if (nanNorms > 0) { logTestError("  FAIL: " + std::to_string(nanNorms) + " normals NaN"); ok = false; }
+    if (degenerate > (int)(g_vertices.size()/9)/10) { logTestError("  FAIL: too many degenerate: " + std::to_string(degenerate)); ok = false; }
+    else if (degenerate > 0) logTestWarn("  WARN: " + std::to_string(degenerate) + " degenerate triangles");
+    if (zeroNorm > 0) logTestWarn("  WARN: " + std::to_string(zeroNorm) + " zero-length normals");
+    if (nonNormalizedNorm > (int)(g_normals.size()/3)/2) logTestWarn("  WARN: many non-normalized normals: " + std::to_string(nonNormalizedNorm));
+    if (!isValidVec3(minBB) || !isValidVec3(maxBB)) { logTestError("  FAIL: minBB/maxBB NaN"); ok = false; }
+    if (minBB.x > maxBB.x || minBB.y > maxBB.y || minBB.z > maxBB.z) { logTestError("  FAIL: minBB > maxBB"); ok = false; }
+    if (!isValidVec3(center)) { logTestError("  FAIL: center NaN"); ok = false; }
+    else {
+        glm::vec3 expectedCenter = (minBB + maxBB) * 0.5f;
+        float centerErr = glm::length(center - expectedCenter);
+        if (centerErr > maxDim * 0.01f + 1e-4f) { logTestError("  FAIL: center mismatch err=" + std::to_string(centerErr)); ok = false; }
+        if (center.x < minBB.x - 1e-4f || center.x > maxBB.x + 1e-4f || center.y < minBB.y - 1e-4f || center.y > maxBB.y + 1e-4f || center.z < minBB.z - 1e-4f || center.z > maxBB.z + 1e-4f) { logTestError("  FAIL: center outside BB"); ok = false; }
+    }
+    float computedMaxDim = glm::length(maxBB - minBB);
+    if (fabsf(computedMaxDim - maxDim) > computedMaxDim * 0.01f + 1e-4f) { logTestError("  FAIL: maxDim mismatch"); ok = false; }
+    if (maxDim < 1e-6f) { logTestError("  FAIL: maxDim too small"); ok = false; }
+    if (ok) logTest("  Model integrity OK");
+    return ok;
+}
+bool testFlowParamsSanity() {
+    logTest("Testing FlowParams sanity (code errors)...");
+    updateFlowParams();
+    bool ok = true;
+    if (!isValidFloat(flowParams.cellSizeX) || flowParams.cellSizeX < 1e-8f) { logTestError("  FAIL: cellSizeX invalid"); ok = false; }
+    if (!isValidFloat(flowParams.cellSizeY) || flowParams.cellSizeY < 1e-8f) { logTestError("  FAIL: cellSizeY invalid"); ok = false; }
+    if (!isValidFloat(flowParams.cellSizeZ) || flowParams.cellSizeZ < 1e-8f) { logTestError("  FAIL: cellSizeZ invalid"); ok = false; }
+    if (flowParams.minX >= flowParams.maxX || flowParams.minY >= flowParams.maxY || flowParams.minZ >= flowParams.maxZ) { logTestError("  FAIL: flow domain min>=max"); ok = false; }
+    if (!g_distanceField.empty()) {
+        if (flowParams.gridMinX >= flowParams.gridMaxX || flowParams.gridMinY >= flowParams.gridMaxY || flowParams.gridMinZ >= flowParams.gridMaxZ) { logTestError("  FAIL: voxel grid min>=max"); ok = false; }
+        if (flowParams.gridNx <= 0 || flowParams.gridNy <= 0 || flowParams.gridNz <= 0) { logTestError("  FAIL: grid Nx/Ny/Nz <=0"); ok = false; }
+        int total = flowParams.gridNx * flowParams.gridNy * flowParams.gridNz;
+        if (total != flowParams.gridCellCount) { logTestError("  FAIL: gridCellCount mismatch"); ok = false; }
+    }
+    if (!isValidFloat(flowParams.radiusX) || flowParams.radiusX < 1e-6f) { logTestError("  FAIL: radiusX invalid"); ok = false; }
+    if (!isValidFloat(flowParams.radiusY) || flowParams.radiusY < 1e-6f) { logTestError("  FAIL: radiusY invalid"); ok = false; }
+    if (!isValidFloat(flowParams.radiusZ) || flowParams.radiusZ < 1e-6f) { logTestError("  FAIL: radiusZ invalid"); ok = false; }
+    float vinf = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
+    if (!isValidFloat(vinf)) { logTestError("  FAIL: Vinf NaN"); ok = false; }
+    else { float diff = fabsf(vinf - flowSpeed); if (diff > 0.01f && flowSpeed > 1e-6f) { logTestError("  FAIL: Vinf vs flowSpeed mismatch"); ok = false; } }
+    if (!isValidFloat(flowParams.time) || flowParams.time < -1.0f) { logTestError("  FAIL: time invalid"); ok = false; }
+    if (!isValidFloat(flowParams.timeScale) || flowParams.timeScale <= 0 || flowParams.timeScale > 10.0f) { logTestError("  FAIL: timeScale out of range"); ok = false; }
+    if (!isValidFloat(flowParams.strouhal) || flowParams.strouhal <= 0 || flowParams.strouhal > 1.0f) { logTestError("  FAIL: strouhal out of range"); ok = false; }
+    if (!isValidFloat(flowParams.wakeStrength) || flowParams.wakeStrength < 0 || flowParams.wakeStrength > 5.0f) { logTestError("  FAIL: wakeStrength out of range"); ok = false; }
+    if (!isValidFloat(flowParams.wakeLength) || flowParams.wakeLength < 0 || flowParams.wakeLength > 100.0f) { logTestError("  FAIL: wakeLength out of range"); ok = false; }
+    if (!isValidFloat(flowParams.airDensity) || flowParams.airDensity < 0.00005f || flowParams.airDensity > 5.0f) { logTestError("  FAIL: airDensity out of range"); ok = false; }
+    if (!isValidFloat(flowParams.airPressure) || flowParams.airPressure < 0.5f || flowParams.airPressure > 200000.0f) { logTestError("  FAIL: airPressure out of range"); ok = false; }
+    if (!isValidFloat(flowParams.airTemperature) || flowParams.airTemperature < 100.0f || flowParams.airTemperature > 500.0f) { logTestError("  FAIL: airTemperature out of range"); ok = false; }
+    if (!isValidFloat(flowParams.speedOfSound) || flowParams.speedOfSound < 100.0f || flowParams.speedOfSound > 500.0f) { logTestError("  FAIL: speedOfSound out of range"); ok = false; }
+    if (!isValidFloat(flowParams.maxSpeed) || flowParams.maxSpeed <= 0) { logTestError("  FAIL: maxSpeed invalid"); ok = false; }
+    if (ok) logTest("  FlowParams sanity OK");
+    return ok;
+}
+bool testTimeAndCamera() {
+    logTest("Testing time and camera (code errors)...");
+    bool ok = true;
+    if (!isValidFloat(deltaTime)) { logTestError("  FAIL: deltaTime NaN/Inf"); ok = false; }
+    else { if (deltaTime <= 0) { logTestError("  FAIL: deltaTime <=0"); ok = false; } if (deltaTime > 0.5f) logTestWarn("  WARN: deltaTime large: " + std::to_string(deltaTime)); }
+    if (!isValidFloat(lastFrame) || lastFrame < 0) { logTestError("  FAIL: lastFrame invalid"); ok = false; }
+    if (!isValidVec3(cameraPos)) { logTestError("  FAIL: cameraPos NaN"); ok = false; }
+    if (!isValidVec3(cameraFront)) { logTestError("  FAIL: cameraFront NaN"); ok = false; }
+    else { float len = glm::length(cameraFront); if (fabsf(len - 1.0f) > 0.05f) { logTestError("  FAIL: cameraFront not normalized len=" + std::to_string(len)); ok = false; } }
+    if (!isValidVec3(cameraUp)) { logTestError("  FAIL: cameraUp NaN"); ok = false; }
+    else { float len = glm::length(cameraUp); if (fabsf(len - 1.0f) > 0.05f) { logTestError("  FAIL: cameraUp not normalized"); ok = false; } float dotFU = glm::dot(cameraFront, cameraUp); if (fabsf(dotFU) > 0.1f) { logTestError("  FAIL: front not orthogonal to up dot=" + std::to_string(dotFU)); ok = false; } }
+    if (!isValidFloat(yaw) || yaw < -1000 || yaw > 1000) logTestWarn("  WARN: yaw out of range");
+    if (!isValidFloat(pitch)) { logTestError("  FAIL: pitch NaN"); ok = false; } else if (pitch < -89.5f || pitch > 89.5f) logTestWarn("  WARN: pitch near gimbal lock");
+    if (!isValidFloat(fov) || fov < 1.0f || fov > 120.0f) { logTestError("  FAIL: fov out of range"); ok = false; }
+    if (display_w <= 0 || display_h <= 0) { logTestError("  FAIL: display_w/h invalid"); ok = false; }
+    if (!isValidVec3(center)) { logTestError("  FAIL: center NaN"); ok = false; }
+    float distToCenter = glm::length(cameraPos - center);
+    if (distToCenter < 1e-4f) { logTestError("  FAIL: cameraPos == center (lookAt singularity)"); ok = false; }
+    if (ok) logTest("  Time and camera OK");
+    return ok;
+}
+bool testMemorySafety() {
+    logTest("Testing memory safety (code errors)...");
+    bool ok = true;
+    if (g_voxNx > 0) {
+        long long total = (long long)g_voxNx * g_voxNy * g_voxNz;
+        if (total > 20LL * 1024 * 1024) { logTestError("  FAIL: voxel grid too large: " + std::to_string(total)); ok = false; }
+        if (total > 8LL * 1024 * 1024) logTestWarn("  WARN: voxel grid large: " + std::to_string(total));
+        if (total > std::numeric_limits<int>::max()) { logTestError("  FAIL: voxel total overflow int"); ok = false; }
+    }
+    if (!g_voxelData.empty()) { int invalid = 0; for (int v : g_voxelData) if (v != 0 && v != 1) invalid++; if (invalid > 0) { logTestError("  FAIL: voxelData invalid values: " + std::to_string(invalid)); ok = false; } }
+    if (!g_distanceField.empty()) {
+        float minD = std::numeric_limits<float>::max(), maxD = std::numeric_limits<float>::lowest(); int nanC = 0;
+        for (float d : g_distanceField) { if (!isValidFloat(d)) nanC++; else { minD = std::min(minD,d); maxD = std::max(maxD,d); } }
+        if (nanC > 0) { logTestError("  FAIL: distanceField NaN count: " + std::to_string(nanC)); ok = false; }
+        if (fabsf(minD) > 10000 || fabsf(maxD) > 10000) { logTestError("  FAIL: distanceField range huge"); ok = false; }
+    }
+    size_t vertBytes = g_vertices.size() * sizeof(float);
+    size_t particleBytes = particlePositions.size() * sizeof(float) + particleColors.size() * sizeof(float);
+    size_t voxelBytes = g_distanceField.size() * sizeof(float) + g_voxelData.size() * sizeof(int);
+    size_t totalBytes = vertBytes + particleBytes + voxelBytes;
+    float totalMB = totalBytes / (1024.0f*1024.0f);
+    logTest("  Memory: verts " + std::to_string(vertBytes/1024) + "KB, particles " + std::to_string(particleBytes/1024) + "KB, voxels " + std::to_string(voxelBytes/1024) + "KB, total " + std::to_string(totalMB) + "MB");
+    if (totalMB > 1024) { logTestError("  FAIL: total memory >1GB"); ok = false; } else if (totalMB > 512) logTestWarn("  WARN: total memory >512MB");
+    if (numParticles < 0) { logTestError("  FAIL: numParticles negative"); ok = false; }
+    if (numParticles > 1000000) { logTestError("  FAIL: numParticles too large >1M"); ok = false; }
+    try {
+        glm::vec3 testP(1e6f, 1e6f, 1e6f);
+        float d = sampleSDFCPU(testP); glm::vec3 n = sdfNormalCPU(testP);
+        if (!isValidFloat(d) || !isValidVec3(n)) { logTestError("  FAIL: SDF OOB returned NaN"); ok = false; }
+    } catch (...) { logTestError("  FAIL: SDF OOB threw"); ok = false; }
+    try {
+        FlowParams zero = {}; zero.vx = 0; zero.vy = 0; zero.vz = 0; zero.cellSizeX = 0.1f; zero.cellSizeY = 0.1f; zero.cellSizeZ = 0.1f; zero.radiusY = 0.5f; zero.radiusZ = 0.5f; zero.wakeLength = 8.0f; zero.time = 0;
+        glm::vec3 v = computeVelocityFieldCPU(glm::vec3(0), zero);
+        if (!isValidVec3(v)) { logTestError("  FAIL: computeVelocityField zero params NaN"); ok = false; }
+    } catch (...) { logTestError("  FAIL: computeVelocityField zero params threw"); ok = false; }
+    if (ok) logTest("  Memory safety OK");
+    return ok;
+}
+bool testDivisionByZeroRisks() {
+    logTest("Testing division by zero risks (code errors)...");
+    bool ok = true;
+    if (maxDim < 1e-6f) { logTestError("  FAIL: maxDim near zero: " + std::to_string(maxDim)); ok = false; } else logTest("  maxDim=" + std::to_string(maxDim) + " OK");
+    float vinf = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
+    if (vinf < 1e-6f) logTestWarn("  WARN: Vinf near zero: " + std::to_string(vinf));
+    if (flowParams.cellSizeX < 1e-8f || flowParams.cellSizeY < 1e-8f || flowParams.cellSizeZ < 1e-8f) { logTestError("  FAIL: cellSize near zero"); ok = false; }
+    float D = 2.0f * fmaxf(flowParams.radiusY, flowParams.radiusZ);
+    if (D < 1e-6f) { logTestError("  FAIL: D near zero"); ok = false; }
+    if (airDensity < 1e-8f) { logTestError("  FAIL: airDensity near zero"); ok = false; }
+    if (speedOfSound < 1e-6f) { logTestError("  FAIL: speedOfSound near zero"); ok = false; }
+    if (maxSpeedForColor < 1e-6f) { logTestError("  FAIL: maxSpeedForColor near zero"); ok = false; }
+    if (deltaTime < 1e-8f) { logTestError("  FAIL: deltaTime near zero"); ok = false; }
+    if (flowParams.maxSpeed < 1e-6f) { logTestError("  FAIL: flowParams.maxSpeed near zero"); ok = false; }
+    float dragScale = 0.5f / (maxDim + 1e-6f);
+    if (!isValidFloat(dragScale)) { logTestError("  FAIL: dragScale NaN"); ok = false; }
+    float q = 0.5f * airDensity * flowSpeed * flowSpeed;
+    if (q < 1e-8f && flowSpeed > 0.1f) logTestWarn("  WARN: dynamic pressure q near zero: " + std::to_string(q));
+    try {
+        FlowParams p = flowParams; p.radiusY = 0; p.radiusZ = 0;
+        glm::vec3 v = computeVelocityFieldCPU(center + glm::vec3(1,0,0), p);
+        if (!isValidVec3(v)) { logTestError("  FAIL: velocity field with zero radius NaN"); ok = false; }
+    } catch (...) { logTestError("  FAIL: velocity field zero radius threw"); ok = false; }
+    if (ok) logTest("  Division by zero risks OK");
+    return ok;
+}
+bool testInputAndState() {
+    logTest("Testing input and state (code errors)...");
+    bool ok = true;
+    if (useCUDA != 0 && useCUDA != 1) { logTestError("  FAIL: useCUDA invalid: " + std::to_string(useCUDA)); ok = false; }
+    if (voxelResolution < 8 || voxelResolution > 256) { logTestError("  FAIL: voxelResolution out of range [8,256]"); ok = false; }
+    if (voxelResolution < 16 || voxelResolution > 128) logTestWarn("  WARN: voxelResolution outside recommended [16,128]");
+    if (particleSize <= 0 || particleSize > 50.0f) { logTestError("  FAIL: particleSize out of range"); ok = false; }
+    if (streamlineWidth <= 0 || streamlineWidth > 20.0f) { logTestError("  FAIL: streamlineWidth out of range"); ok = false; }
+    if (obstacleAlpha < 0 || obstacleAlpha > 1.0f) { logTestError("  FAIL: obstacleAlpha out of [0,1]"); ok = false; }
+    if (streamlineAlpha < 0 || streamlineAlpha > 1.0f) { logTestError("  FAIL: streamlineAlpha out of [0,1]"); ok = false; }
+    if (flowAzimuth < -360 || flowAzimuth > 720) { logTestError("  FAIL: flowAzimuth out of range"); ok = false; }
+    if (flowElevation < -90 || flowElevation > 90) { logTestError("  FAIL: flowElevation out of [-90,90]"); ok = false; }
+    if (timeScale <= 0 || timeScale > 10.0f) { logTestError("  FAIL: timeScale out of (0,10]"); ok = false; }
+    if (strouhal <= 0 || strouhal > 1.0f) { logTestError("  FAIL: strouhal out of (0,1]"); ok = false; }
+    if (wakeStrength < 0 || wakeStrength > 5.0f) { logTestError("  FAIL: wakeStrength out of [0,5]"); ok = false; }
+    if (wakeLength <= 0 || wakeLength > 100.0f) { logTestError("  FAIL: wakeLength out of (0,100]"); ok = false; }
+    if (showParticles && particleDrawCount == 0) logTestWarn("  WARN: showParticles true but drawCount==0");
+    if (showParticles && particlePositions.empty()) { logTestError("  FAIL: showParticles true but positions empty"); ok = false; }
+    if (showStreamlines && streamlineVertexCount == 0) logTestWarn("  WARN: showStreamlines true but vertexCount==0");
+    if (showPressure && g_vertexColors.empty()) logTestWarn("  WARN: showPressure true but colors empty");
+    if (showModel && modelVAO == 0 && !g_vertices.empty()) { logTestError("  FAIL: showModel true but VAO==0"); ok = false; }
+    if (numStreamlines <= 0) { logTestError("  FAIL: numStreamlines <=0"); ok = false; }
+    if (streamlineSteps <= 0) { logTestError("  FAIL: streamlineSteps <=0"); ok = false; }
+    if (streamlineStepSize <= 0) { logTestError("  FAIL: streamlineStepSize <=0"); ok = false; }
+    if (limitFPS && maxFPS <= 0) { logTestError("  FAIL: limitFPS true but maxFPS <=0"); ok = false; }
+    if (ok) logTest("  Input and state OK");
+    return ok;
+}
+bool testShaderAndResources() {
+    logTest("Testing shaders and resources (code errors)...");
+    bool ok = true;
+    if (vertexShaderSource == nullptr || strlen(vertexShaderSource) < 10) { logTestError("  FAIL: vertexShaderSource empty"); ok = false; }
+    if (fragmentShaderSource == nullptr || strlen(fragmentShaderSource) < 10) { logTestError("  FAIL: fragmentShaderSource empty"); ok = false; }
+    if (particleVertexShaderSource == nullptr || strlen(particleVertexShaderSource) < 10) { logTestError("  FAIL: particleVertexShaderSource empty"); ok = false; }
+    if (particleFragmentShaderSource == nullptr || strlen(particleFragmentShaderSource) < 10) { logTestError("  FAIL: particleFragmentShaderSource empty"); ok = false; }
+    if (lineVertexShaderSource == nullptr || strlen(lineVertexShaderSource) < 10) { logTestError("  FAIL: lineVertexShaderSource empty"); ok = false; }
+    if (lineFragmentShaderSource == nullptr || strlen(lineFragmentShaderSource) < 10) { logTestError("  FAIL: lineFragmentShaderSource empty"); ok = false; }
+    if (!g_vertices.empty()) { if (modelVAO == 0) { logTestError("  FAIL: modelVAO not generated"); ok = false; } if (modelVBO_vertices == 0) { logTestError("  FAIL: modelVBO_vertices not generated"); ok = false; } }
+    if (!checkGLErrors("testShaderAndResources")) ok = false;
+    int totalVAOs = (modelVAO!=0) + (particleVAO!=0) + (streamlineVAO!=0) + (bboxVAO!=0) + (axesVAO!=0) + (obstacleVAO!=0) + (liftDragVAO!=0);
+    logTest("  VAOs active: " + std::to_string(totalVAOs) + "/7");
+    if (totalVAOs == 0 && !g_vertices.empty()) { logTestError("  FAIL: no VAOs active but model loaded"); ok = false; }
+    if (ok) logTest("  Shaders and resources OK");
+    return ok;
+}
+bool testErrorHandling() {
+    logTest("Testing error handling (code action)...");
+    bool ok = true;
+    try { glm::vec3 nanPos(std::numeric_limits<float>::quiet_NaN(), 0, 0); float d = sampleSDFCPU(nanPos); if (!isValidFloat(d)) logTestWarn("  WARN: sampleSDFCPU(NaN) returned NaN"); } catch (const std::exception& e) { logTestError(std::string("  FAIL: sampleSDFCPU(NaN) threw: ") + e.what()); ok = false; } catch (...) { logTestError("  FAIL: sampleSDFCPU(NaN) threw unknown"); ok = false; }
+    try { glm::vec3 nanPos(std::numeric_limits<float>::quiet_NaN(), 0, 0); glm::vec3 v = computeVelocityFieldCPU(nanPos, flowParams); if (!isValidVec3(v)) logTestWarn("  WARN: computeVelocityField(NaN) NaN"); } catch (...) { logTestError("  FAIL: computeVelocityField(NaN) threw"); ok = false; }
+    try { AtmosphereParams atm = calculateAtmosphere(std::numeric_limits<float>::quiet_NaN()); if (!isValidFloat(atm.density)) logTestWarn("  WARN: atmosphere(NaN) NaN"); } catch (...) { logTestError("  FAIL: atmosphere(NaN) threw"); ok = false; }
+    try { float inf = std::numeric_limits<float>::infinity(); float ms = speedToMS(inf, SPEED_KMH); if (!std::isinf(ms)) logTestWarn("  WARN: speedToMS(Inf) should propagate Inf"); } catch (...) { logTestError("  FAIL: speedToMS(Inf) threw"); ok = false; }
+    try { glm::vec3 huge(1e10f, 1e10f, 1e10f); glm::vec3 v = computeVelocityFieldCPU(huge, flowParams); if (!isValidVec3(v)) { logTestError("  FAIL: velocity huge NaN"); ok = false; } } catch (...) { logTestError("  FAIL: velocity huge threw"); ok = false; }
+    try { FlowParams p = flowParams; p.vx = 0; p.vy = 0; p.vz = 0; glm::vec3 pos = center; glm::vec3 v = computeVelocityFieldCPU(pos, p); if (!isValidVec3(v)) { logTestError("  FAIL: velocity zero vinf NaN"); ok = false; } } catch (...) { logTestError("  FAIL: velocity zero vinf threw"); ok = false; }
+    if (g_vertices.empty() && !g_distanceField.empty()) logTestWarn("  WARN: distanceField exists but no vertices");
+    try { std::string longMsg(10000, 'A'); logTest("Long message test: " + longMsg.substr(0,100) + "..."); } catch (...) { logTestError("  FAIL: logTest long threw"); ok = false; }
+    if (ok) logTest("  Error handling OK");
+    return ok;
+}
 
-    logTest("=== Starting Aeros Engine Tests v1.3.0 ===");
-    logTest("Model: " + std::to_string(modelVertexCount) + " vertices, Voxel: " + std::to_string(g_voxNx) + "x" + std::to_string(g_voxNy) + "x" + std::to_string(g_voxNz));
-
-    struct TestCase {
-        const char* name;
-        bool (*func)();
-    };
-    TestCase tests[] = {
+// ===================== RUNNERS =====================
+void runPhysicsTests() {
+    struct Case { const char* name; bool (*func)(); };
+    Case tests[] = {
         {"Speed Conversion", testSpeedConversion},
         {"ISA Atmosphere", testAtmosphereModel},
         {"SDF Sampling", testSDFSampling},
@@ -499,54 +586,75 @@ void runAllTests() {
         {"Voxel Grid", testVoxelGrid},
         {"NaN Checks", testNaNChecks},
     };
-
     for (auto& tc : tests) {
-        bool passed = false;
-        std::string msg = "";
-        try {
-            passed = tc.func();
-        } catch (const std::exception& e) {
-            msg = std::string("EXCEPTION: ") + e.what();
-            passed = false;
-        } catch (...) {
-            msg = "UNKNOWN EXCEPTION";
-            passed = false;
-        }
-        TestResult r;
-        r.name = tc.name;
-        r.passed = passed;
-        r.message = msg.empty() ? (passed ? "OK" : "FAILED") : msg;
+        bool passed = false; std::string msg = "";
+        try { passed = tc.func(); } catch (const std::exception& e) { msg = std::string("EXCEPTION: ") + e.what(); passed = false; } catch (...) { msg = "UNKNOWN EXCEPTION"; passed = false; }
+        TestResult r; r.name = tc.name; r.category = "Physics"; r.passed = passed; r.message = msg.empty() ? (passed ? "OK" : "FAILED") : msg;
         lastTestResults.push_back(r);
         if (passed) testsPassed++; else testsFailed++;
-        logTest(std::string(tc.name) + ": " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
-    }
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    lastTestTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
-    logTest("=== Tests finished: " + std::to_string(testsPassed) + " passed, " + std::to_string(testsFailed) + " failed in " + std::to_string(lastTestTimeMs) + " ms ===");
-
-    if (testsFailed > 0) {
-        logTest("!!! PHYSICS ERRORS DETECTED !!!");
-    } else {
-        logTest("All tests passed — physics OK");
+        logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
     }
 }
-
+void runCodeTests() {
+    struct Case { const char* name; bool (*func)(); };
+    Case tests[] = {
+        {"OpenGL State", testOpenGLState},
+        {"Buffer Integrity", testBufferIntegrity},
+        {"Model Integrity", testModelIntegrity},
+        {"FlowParams Sanity", testFlowParamsSanity},
+        {"Time & Camera", testTimeAndCamera},
+        {"Memory Safety", testMemorySafety},
+        {"Division by Zero Risks", testDivisionByZeroRisks},
+        {"Input & State", testInputAndState},
+        {"Shaders & Resources", testShaderAndResources},
+        {"Error Handling", testErrorHandling},
+    };
+    for (auto& tc : tests) {
+        bool passed = false; std::string msg = "";
+        try { passed = tc.func(); } catch (const std::exception& e) { msg = std::string("EXCEPTION: ") + e.what(); passed = false; } catch (...) { msg = "UNKNOWN EXCEPTION"; passed = false; }
+        TestResult r; r.name = tc.name; r.category = "Code"; r.passed = passed; r.message = msg.empty() ? (passed ? "OK" : "FAILED") : msg;
+        lastTestResults.push_back(r);
+        if (passed) codeTestsPassed++; else codeTestsFailed++;
+        if (passed) testsPassed++; else testsFailed++;
+        logTest(std::string(tc.name) + " [" + r.category + "]: " + (passed ? "PASS" : "FAIL") + (msg.empty() ? "" : " - " + msg));
+    }
+}
+void runAllTests() {
+    auto t0 = std::chrono::high_resolution_clock::now();
+    lastTestResults.clear(); testLog.clear();
+    testsPassed = 0; testsFailed = 0; codeTestsPassed = 0; codeTestsFailed = 0; lastGLError = 0; lastGLErrorStr.clear();
+    logTest("=== Starting Aeros Engine Tests v1.4.0 ===");
+    logTest("Model: " + std::to_string(modelVertexCount) + " vertices, Voxel: " + std::to_string(g_voxNx) + "x" + std::to_string(g_voxNy) + "x" + std::to_string(g_voxNz));
+    logTest("--- Physics Tests ---");
+    runPhysicsTests();
+    logTest("--- Code Action Tests ---");
+    runCodeTests();
+    auto t1 = std::chrono::high_resolution_clock::now();
+    lastTestTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+    logTest("=== Tests finished: " + std::to_string(testsPassed) + " passed, " + std::to_string(testsFailed) + " failed (" + std::to_string(codeTestsPassed) + " code passed, " + std::to_string(codeTestsFailed) + " code failed) in " + std::to_string(lastTestTimeMs) + " ms ===");
+    if (testsFailed > 0) logTestError("!!! ERRORS DETECTED: Physics=" + std::to_string(testsFailed - codeTestsFailed) + " Code=" + std::to_string(codeTestsFailed) + " !!!");
+    else logTest("All tests passed — physics and code OK");
+}
 void validateFrame() {
     if (!testContinuous) return;
-    // Быстрая проверка каждый кадр — только критичное
     bool hasError = false;
     if (!isValidFloat(flowSpeed) || !isValidFloat(altitude) || !isValidFloat(airDensity)) hasError = true;
     if (!isValidFloat(liftMagnitude) || !isValidFloat(dragMagnitude)) hasError = true;
-    if (hasError) {
-        logTest("FRAME VALIDATION FAILED at t=" + std::to_string(flowParams.time));
-    }
-    // Проверка частиц на NaN — первые 100
+    if (hasError) logTestError("FRAME VALIDATION FAILED at t=" + std::to_string(flowParams.time));
     for (int i = 0; i < std::min(100, particleDrawCount); i++) {
         glm::vec3 p(particlePositions[3*i], particlePositions[3*i+1], particlePositions[3*i+2]);
-        if (!isValidVec3(p)) {
-            logTest("Particle NaN at frame " + std::to_string(flowParams.time) + " idx " + std::to_string(i));
-            break;
-        }
+        if (!isValidVec3(p)) { logTestError("Particle NaN at frame " + std::to_string(flowParams.time) + " idx " + std::to_string(i)); break; }
+    }
+    validateFrameCode();
+}
+void validateFrameCode() {
+    if (!isValidFloat(deltaTime) || deltaTime <= 0 || deltaTime > 0.5f) logTestError("FRAME CODE: deltaTime invalid: " + std::to_string(deltaTime));
+    if (!isValidVec3(cameraPos) || !isValidVec3(cameraFront)) logTestError("FRAME CODE: camera NaN");
+    if (particleDrawCount < 0 || particleDrawCount > (int)(particlePositions.size()/3 + 1)) logTestError("FRAME CODE: particleDrawCount out of bounds: " + std::to_string(particleDrawCount));
+    if (g_voxNx * g_voxNy * g_voxNz != (int)g_distanceField.size() && !g_distanceField.empty()) logTestError("FRAME CODE: voxel size mismatch");
+    static float lastCheck = 0;
+    if (flowParams.time - lastCheck > 1.0f) {
+        lastCheck = flowParams.time;
+        GLenum err; while ((err = glGetError()) != GL_NO_ERROR) logTestError("FRAME CODE: GL error: " + getGLErrorString(err));
     }
 }

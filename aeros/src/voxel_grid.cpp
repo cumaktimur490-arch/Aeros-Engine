@@ -11,36 +11,62 @@
 #include "voxel_grid.h"
 
 // =====================================================
-// SDF sampling (CPU)
+// SDF sampling (CPU) — v1.4.0: защита от деления на ноль и NaN
 // =====================================================
+static bool isValidFloatSafe(float v) { return !std::isnan(v) && !std::isinf(v); }
+static bool isValidVec3Safe(const glm::vec3& v) { return isValidFloatSafe(v.x) && isValidFloatSafe(v.y) && isValidFloatSafe(v.z); }
+
 float sampleSDFCPU(const glm::vec3& p) {
-    if (g_distanceField.empty() || g_voxNx <= 0) return 1000.0f;
-    int ix = (int)((p.x - g_voxMinX) / flowParams.cellSizeX);
-    int iy = (int)((p.y - g_voxMinY) / flowParams.cellSizeY);
-    int iz = (int)((p.z - g_voxMinZ) / flowParams.cellSizeZ);
+    if (g_distanceField.empty() || g_voxNx <= 0 || g_voxNy <= 0 || g_voxNz <= 0) return 1000.0f;
+    if (!isValidVec3Safe(p)) return 1000.0f;
+    float csx = flowParams.cellSizeX;
+    float csy = flowParams.cellSizeY;
+    float csz = flowParams.cellSizeZ;
+    if (!isValidFloatSafe(csx) || fabsf(csx) < 1e-8f) return 1000.0f;
+    if (!isValidFloatSafe(csy) || fabsf(csy) < 1e-8f) return 1000.0f;
+    if (!isValidFloatSafe(csz) || fabsf(csz) < 1e-8f) return 1000.0f;
+    int ix = (int)((p.x - g_voxMinX) / csx);
+    int iy = (int)((p.y - g_voxMinY) / csy);
+    int iz = (int)((p.z - g_voxMinZ) / csz);
     if (ix < 0 || ix >= g_voxNx || iy < 0 || iy >= g_voxNy || iz < 0 || iz >= g_voxNz)
         return 1000.0f;
-    // Поле хранится в ВОКСЕЛЯХ (шаг BFS = 1), переводим в мировые единицы,
-    // иначе зоны влияния зависят от разрешения сетки.
-    return g_distanceField[(iz * g_voxNy + iy) * g_voxNx + ix] * flowParams.cellSizeX;
+    int idx = (iz * g_voxNy + iy) * g_voxNx + ix;
+    if (idx < 0 || idx >= (int)g_distanceField.size()) return 1000.0f;
+    float raw = g_distanceField[idx];
+    if (!isValidFloatSafe(raw)) return 1000.0f;
+    float world = raw * csx;
+    if (!isValidFloatSafe(world)) return 1000.0f;
+    return world;
 }
 
 glm::vec3 sdfNormalCPU(const glm::vec3& p) {
-    if (g_distanceField.empty()) return glm::vec3(0,1,0);
-    int ix = (int)((p.x - g_voxMinX) / flowParams.cellSizeX);
-    int iy = (int)((p.y - g_voxMinY) / flowParams.cellSizeY);
-    int iz = (int)((p.z - g_voxMinZ) / flowParams.cellSizeZ);
+    if (g_distanceField.empty() || g_voxNx <= 1 || g_voxNy <= 1 || g_voxNz <= 1) return glm::vec3(0,1,0);
+    if (!isValidVec3Safe(p)) return glm::vec3(0,1,0);
+    float csx = flowParams.cellSizeX;
+    float csy = flowParams.cellSizeY;
+    float csz = flowParams.cellSizeZ;
+    if (!isValidFloatSafe(csx) || fabsf(csx) < 1e-8f) return glm::vec3(0,1,0);
+    if (!isValidFloatSafe(csy) || fabsf(csy) < 1e-8f) return glm::vec3(0,1,0);
+    if (!isValidFloatSafe(csz) || fabsf(csz) < 1e-8f) return glm::vec3(0,1,0);
+    int ix = (int)((p.x - g_voxMinX) / csx);
+    int iy = (int)((p.y - g_voxMinY) / csy);
+    int iz = (int)((p.z - g_voxMinZ) / csz);
     if (ix <= 0 || ix >= g_voxNx-1 || iy <= 0 || iy >= g_voxNy-1 || iz <= 0 || iz >= g_voxNz-1)
         return glm::vec3(0,1,0);
-    float dx = g_distanceField[(iz*g_voxNy+iy)*g_voxNx + (ix+1)]
-             - g_distanceField[(iz*g_voxNy+iy)*g_voxNx + (ix-1)];
-    float dy = g_distanceField[(iz*g_voxNy+(iy+1))*g_voxNx + ix]
-             - g_distanceField[(iz*g_voxNy+(iy-1))*g_voxNx + ix];
-    float dz = g_distanceField[((iz+1)*g_voxNy+iy)*g_voxNx + ix]
-             - g_distanceField[((iz-1)*g_voxNy+iy)*g_voxNx + ix];
+    auto safeGet = [&](int x, int y, int z) -> float {
+        if (x < 0 || x >= g_voxNx || y < 0 || y >= g_voxNy || z < 0 || z >= g_voxNz) return 0.0f;
+        int id = (z*g_voxNy + y)*g_voxNx + x;
+        if (id < 0 || id >= (int)g_distanceField.size()) return 0.0f;
+        float v = g_distanceField[id];
+        return isValidFloatSafe(v) ? v : 0.0f;
+    };
+    float dx = safeGet(ix+1,iy,iz) - safeGet(ix-1,iy,iz);
+    float dy = safeGet(ix,iy+1,iz) - safeGet(ix,iy-1,iz);
+    float dz = safeGet(ix,iy,iz+1) - safeGet(ix,iy,iz-1);
     glm::vec3 n(dx, dy, dz);
+    if (!isValidVec3Safe(n)) return glm::vec3(0,1,0);
     float len = glm::length(n);
-    if (len < 1e-6f) return glm::vec3(0,1,0);
+    if (!isValidFloatSafe(len) || len < 1e-6f) return glm::vec3(0,1,0);
     return n / len;
 }
 

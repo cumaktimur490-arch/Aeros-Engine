@@ -15,30 +15,25 @@
 #include "ui.h"
 
 // =====================================================
-// Панель управления — v1.2.0: единицы скорости + атмосфера
+// Панель управления — v1.4.0: расширенный тест ошибок кода
 // =====================================================
 void drawUI() {
 ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
-ImGui::SetNextWindowSize(ImVec2(400, 800), ImGuiCond_Once);
+ImGui::SetNextWindowSize(ImVec2(420, 900), ImGuiCond_Once);
 ImGui::Begin("AeroS Control");
-ImGui::Text("FPS: %.1f", 1.0f/deltaTime);
+ImGui::Text("FPS: %.1f", deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f);
 ImGui::Text("Vertices: %d", modelVertexCount);
 ImGui::Text("Triangles: %d", modelVertexCount/3);
 ImGui::Text("Voxel Grid: %dx%dx%d", g_voxNx, g_voxNy, g_voxNz);
 ImGui::Separator();
 
 if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
-    // Выбор единиц измерения скорости
     const char* unitItems[] = { "m/s (м/с)", "km/h (км/ч)", "mph (миль/ч)", "kts (узлы)", "ft/s (фут/с)" };
     int unitIdx = (int)speedUnit;
     if (ImGui::Combo("Speed Unit", &unitIdx, unitItems, IM_ARRAYSIZE(unitItems))) {
-        // При смене единицы — конвертируем текущее значение чтобы сохранить физическую скорость
         speedUnit = (SpeedUnit)unitIdx;
     }
-
-    // Показываем скорость в выбранных единицах, но храним внутри в м/с
     float displaySpeed = speedFromMS(flowSpeed, speedUnit);
-    // Диапазоны в зависимости от единицы
     float maxDisplay = 10.0f;
     switch (speedUnit) {
         case SPEED_MS: maxDisplay = 10.0f; break;
@@ -48,7 +43,6 @@ if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
         case SPEED_FTS: maxDisplay = 33.0f; break;
         default: break;
     }
-
     if (ImGui::SliderFloat("##speed", &displaySpeed, 0.0f, maxDisplay, "%.2f")) {
         flowSpeed = speedToMS(displaySpeed, speedUnit);
     }
@@ -59,15 +53,12 @@ if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
     }
     ImGui::SameLine();
     ImGui::Text("%s", speedUnitShort(speedUnit));
-
-    // Показываем конвертацию во все единицы для наглядности
     ImGui::Text("  = %.2f m/s | %.1f km/h | %.1f mph | %.1f kts | %.1f ft/s",
         flowSpeed,
         speedFromMS(flowSpeed, SPEED_KMH),
         speedFromMS(flowSpeed, SPEED_MPH),
         speedFromMS(flowSpeed, SPEED_KNOTS),
         speedFromMS(flowSpeed, SPEED_FTS));
-
     ImGui::SliderFloat("Azimuth", &flowAzimuth, 0.0f, 360.0f);
     ImGui::SameLine(); ImGui::SetNextItemWidth(80);
     ImGui::InputFloat("##az", &flowAzimuth, 0, 0, "%.1f");
@@ -83,13 +74,9 @@ if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
 if (ImGui::CollapsingHeader("Atmosphere (ISA)", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Use Real Air Density", &useRealDensity);
     ImGui::Text("Altitude affects drag/lift via rho");
-
-    // Слайдер высоты в метрах
     ImGui::SliderFloat("Altitude (m)", &altitude, 0.0f, 20000.0f, "%.0f m");
     ImGui::SameLine(); ImGui::SetNextItemWidth(80);
     ImGui::InputFloat("##alt", &altitude, 0, 0, "%.0f");
-
-    // Быстрые пресеты
     if (ImGui::Button("Sea Level")) altitude = 0.0f;
     ImGui::SameLine();
     if (ImGui::Button("5 km")) altitude = 5000.0f;
@@ -97,8 +84,6 @@ if (ImGui::CollapsingHeader("Atmosphere (ISA)", ImGuiTreeNodeFlags_DefaultOpen))
     if (ImGui::Button("10 km")) altitude = 10000.0f;
     ImGui::SameLine();
     if (ImGui::Button("15 km")) altitude = 15000.0f;
-
-    // Показываем параметры атмосферы
     ImGui::Separator();
     ImGui::Text("Air Density: %.4f kg/m3", airDensity);
     ImGui::Text("Pressure: %.0f Pa (%.2f atm)", airPressure, airPressure/101325.0f);
@@ -106,8 +91,6 @@ if (ImGui::CollapsingHeader("Atmosphere (ISA)", ImGuiTreeNodeFlags_DefaultOpen))
     ImGui::Text("Speed of Sound: %.1f m/s", speedOfSound);
     float mach = (speedOfSound > 1e-3f) ? flowSpeed / speedOfSound : 0.0f;
     ImGui::Text("Mach: %.3f", mach);
-
-    // Таблица плотности по высотам
     if (ImGui::TreeNode("Density Table")) {
         ImGui::Text(" Alt (m) | rho (kg/m3) | P (hPa) | T (C)");
         ImGui::Separator();
@@ -120,7 +103,6 @@ if (ImGui::CollapsingHeader("Atmosphere (ISA)", ImGuiTreeNodeFlags_DefaultOpen))
         }
         ImGui::TreePop();
     }
-
     float q = 0.5f * airDensity * flowSpeed * flowSpeed;
     ImGui::Text("Dynamic Pressure q: %.1f Pa", q);
 }
@@ -187,75 +169,109 @@ if (ImGui::CollapsingHeader("Compute")) {
     }
 }
 
-if (ImGui::CollapsingHeader("Test Mode (Physics Validation)", ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader("Test Mode (Physics + Code Errors)", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Enable Test Mode", &testModeEnabled);
     ImGui::Checkbox("Continuous Validation", &testContinuous);
-    ImGui::Text("Tests: %d passed, %d failed", testsPassed, testsFailed);
+    ImGui::Text("Total: %d passed, %d failed", testsPassed, testsFailed);
+    ImGui::Text("  Physics: %d / Code: %d passed", testsPassed - codeTestsPassed, codeTestsPassed);
+    if (codeTestsFailed > 0) ImGui::Text("  Code failed: %d", codeTestsFailed);
     ImGui::Text("Last run: %.1f ms", lastTestTimeMs);
+    if (lastGLError != 0) {
+        ImGui::TextColored(ImVec4(1,0.3f,0.1f,1), "GL Error: %s", lastGLErrorStr.c_str());
+    }
     if (testsFailed > 0) {
-        ImGui::TextColored(ImVec4(1,0.2f,0.2f,1), "!!! PHYSICS ERRORS DETECTED !!!");
+        ImGui::TextColored(ImVec4(1,0.2f,0.2f,1), "!!! ERRORS DETECTED: Physics=%d Code=%d !!!", testsFailed - codeTestsFailed, codeTestsFailed);
     } else if (testsPassed > 0) {
-        ImGui::TextColored(ImVec4(0.2f,1,0.2f,1), "All tests passed — physics OK");
+        ImGui::TextColored(ImVec4(0.2f,1,0.2f,1), "All tests passed — physics & code OK");
     }
 
     if (ImGui::Button("Run All Tests")) {
         runAllTests();
     }
     ImGui::SameLine();
+    if (ImGui::Button("Run Physics Only")) {
+        lastTestResults.clear(); testLog.clear(); testsPassed=0; testsFailed=0; codeTestsPassed=0; codeTestsFailed=0;
+        runPhysicsTests();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Run Code Only")) {
+        lastTestResults.clear(); testLog.clear(); testsPassed=0; testsFailed=0; codeTestsPassed=0; codeTestsFailed=0;
+        runCodeTests();
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Clear Log")) {
         testLog.clear();
         lastTestResults.clear();
-        testsPassed = 0;
-        testsFailed = 0;
+        testsPassed = 0; testsFailed = 0;
+        codeTestsPassed = 0; codeTestsFailed = 0;
+        lastGLError = 0; lastGLErrorStr.clear();
     }
 
     if (!lastTestResults.empty()) {
         ImGui::Separator();
-        ImGui::Text("Test Results:");
-        for (auto& r : lastTestResults) {
-            ImVec4 col = r.passed ? ImVec4(0.2f,1,0.2f,1) : ImVec4(1,0.2f,0.2f,1);
-            ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
-            if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
-                ImGui::SameLine();
-                ImGui::Text(" - %s", r.message.c_str());
+        int physPass = 0, physFail = 0;
+        for (auto& r : lastTestResults) if (r.category=="Physics") { if (r.passed) physPass++; else physFail++; }
+        if (ImGui::TreeNode(("Physics Tests (" + std::to_string(physPass) + "/" + std::to_string(physPass+physFail) + ")").c_str())) {
+            for (auto& r : lastTestResults) if (r.category=="Physics") {
+                ImVec4 col = r.passed ? ImVec4(0.2f,1,0.2f,1) : ImVec4(1,0.2f,0.2f,1);
+                ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                    ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                }
             }
+            ImGui::TreePop();
+        }
+        int codePass = 0, codeFail = 0;
+        for (auto& r : lastTestResults) if (r.category=="Code") { if (r.passed) codePass++; else codeFail++; }
+        if (ImGui::TreeNode(("Code Action Tests (" + std::to_string(codePass) + "/" + std::to_string(codePass+codeFail) + ")").c_str())) {
+            for (auto& r : lastTestResults) if (r.category=="Code") {
+                ImVec4 col = r.passed ? ImVec4(0.4f,0.8f,1.0f,1) : ImVec4(1,0.3f,0.1f,1);
+                ImGui::TextColored(col, "%s: %s", r.name.c_str(), r.passed ? "PASS" : "FAIL");
+                if (!r.message.empty() && r.message != "OK" && r.message != "FAILED") {
+                    ImGui::SameLine(); ImGui::Text(" - %s", r.message.c_str());
+                }
+            }
+            ImGui::TreePop();
         }
     }
 
     if (!testLog.empty()) {
         ImGui::Separator();
         ImGui::Text("Test Log:");
-        ImGui::BeginChild("TestLog", ImVec2(0, 200), true);
+        ImGui::BeginChild("TestLog", ImVec2(0, 250), true);
         ImGui::TextUnformatted(testLog.c_str());
         ImGui::EndChild();
     }
 
-    // Быстрая диагностика текущего кадра
     ImGui::Separator();
-    ImGui::Text("Frame Validation:");
+    ImGui::Text("Frame Validation (real-time):");
     bool hasNaN = false;
     if (!std::isfinite(flowSpeed) || !std::isfinite(altitude) || !std::isfinite(airDensity)) hasNaN = true;
     if (!std::isfinite(liftMagnitude) || !std::isfinite(dragMagnitude)) hasNaN = true;
-    if (hasNaN) {
-        ImGui::TextColored(ImVec4(1,0,0,1), "NaN/Inf detected in globals!");
-    } else {
-        ImGui::TextColored(ImVec4(0,1,0,1), "No NaN in globals");
-    }
+    if (!std::isfinite(deltaTime) || !std::isfinite(maxDim)) hasNaN = true;
+    if (hasNaN) ImGui::TextColored(ImVec4(1,0,0,1), "NaN/Inf detected in globals!");
+    else ImGui::TextColored(ImVec4(0,1,0,1), "No NaN in globals");
+
+    bool bufOk = true;
+    if (particleDrawCount < 0 || particleDrawCount > (int)(particlePositions.size()/3+1)) bufOk = false;
+    if (!g_distanceField.empty() && (int)g_distanceField.size() != g_voxNx*g_voxNy*g_voxNz) bufOk = false;
+    if (!bufOk) ImGui::TextColored(ImVec4(1,0.3f,0,1), "Buffer integrity issue!");
+    else ImGui::TextColored(ImVec4(0,1,0,1), "Buffers OK");
 
     float vinf = sqrtf(flowParams.vx*flowParams.vx + flowParams.vy*flowParams.vy + flowParams.vz*flowParams.vz);
-    ImGui::Text("Vinf: %.3f m/s (%.1f km/h)", vinf, vinf*3.6f);
-    ImGui::Text("FlowParams: (%.2f, %.2f, %.2f)", flowParams.vx, flowParams.vy, flowParams.vz);
+    ImGui::Text("Vinf: %.3f m/s (%.1f km/h) | dt=%.4f", vinf, vinf*3.6f, deltaTime);
+    ImGui::Text("FlowParams: (%.2f, %.2f, %.2f) cs=(%.3f,%.3f,%.3f)", flowParams.vx, flowParams.vy, flowParams.vz, flowParams.cellSizeX, flowParams.cellSizeY, flowParams.cellSizeZ);
     ImGui::Text("Center: (%.2f, %.2f, %.2f) maxDim %.2f", center.x, center.y, center.z, maxDim);
+    ImGui::Text("Camera: pos(%.1f,%.1f,%.1f) front(%.2f,%.2f,%.2f)", cameraPos.x, cameraPos.y, cameraPos.z, cameraFront.x, cameraFront.y, cameraFront.z);
     if (!g_distanceField.empty()) {
         float minD = 1e9f, maxD = -1e9f;
-        for (float d : g_distanceField) {
-            if (std::isfinite(d)) {
-                if (d < minD) minD = d;
-                if (d > maxD) maxD = d;
-            }
-        }
-        ImGui::Text("SDF range: [%.2f, %.2f] voxels", minD, maxD);
+        for (float d : g_distanceField) if (std::isfinite(d)) { if (d < minD) minD = d; if (d > maxD) maxD = d; }
+        ImGui::Text("SDF range: [%.2f, %.2f] voxels | total mem %.1f MB", minD, maxD,
+            (g_vertices.size()*4 + g_distanceField.size()*4 + particlePositions.size()*4)/1024.0f/1024.0f);
     }
+    ImGui::Text("Particles: %d/%d | Streamlines: %d verts | VAOs: M%d P%d S%d B%d",
+        particleDrawCount, numParticles, streamlineVertexCount,
+        modelVAO!=0, particleVAO!=0, streamlineVAO!=0, bboxVAO!=0);
 }
     ImGui::End();
 }

@@ -5,6 +5,30 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.4.0] - 2026-10-05
+
+### Добавлено
+- **Расширенный режим теста на ошибки в коде (Code Action Tests)** — 10 новых тестов в дополнение к 9 физике:
+  - **OpenGL State**: проверка `glGetError`, `display_w/h`, `maxDim`, валидность VAO/VBO через `glIsVertexArray`, наличие буферов при загруженной модели
+  - **Buffer Integrity**: размеры `particlePositions` %3, соответствие `pos/col`, `drawCount <= alloc`, `g_vertices` %9, соответствие `normals`/`colors`, `modelVertexCount`, `voxelData` vs `distanceField`, `streamlineVertexCount` чётность
+  - **Model Integrity**: NaN в вершинах/нормалях, вырожденные треугольники (area<1e-12), нулевые/ненормализованные нормали, `minBB <= maxBB`, `center` внутри BB и совпадает с `(min+max)/2`, `maxDim` соответствует `length(max-min)`
+  - **FlowParams Sanity**: `cellSize >1e-6`, `min<max` для домена и воксельной сетки, `gridNx*Ny*Nz == gridCellCount`, `radius>0`, `Vinf` vs `flowSpeed`, `time>=0`, `timeScale (0,10]`, `strouhal (0,1]`, `wakeStrength [0,5]`, `wakeLength (0,100]`, `airDensity/P/T/a` в диапазонах
+  - **Time & Camera**: `deltaTime (0,0.5]`, `lastFrame>=0`, `cameraPos` finite, `cameraFront` нормализован, `cameraUp` нормализован и ортогонален, `yaw/pitch/fov` в диапазонах, `dist(camera,center)>1e-4`
+  - **Memory Safety**: `voxel total <20M`, `g_voxelData` только 0/1, `distanceField` диапазон <10000, память <1GB, `numParticles` [0,1M], OOB тесты `sampleSDFCPU(1e6)`, `computeVelocityField` с zero params не крашится
+  - **Division by Zero Risks**: проверка критичных делителей `maxDim`, `Vinf`, `cellSize`, `D`, `airDensity`, `speedOfSound`, `maxSpeedForColor`, `deltaTime`, `maxSpeed`, симуляция `D=0`, `radius=0`, `q~0`
+  - **Input & State**: `useCUDA 0/1`, `voxelResolution [8,256]` (рекомендовано [16,128]), `particleSize (0,50]`, `alpha [0,1]`, `azimuth [-360,720]`, `elevation [-90,90]`, противоречивые состояния `showParticles && drawCount==0`, `showModel && VAO==0` и т.д.
+  - **Shaders & Resources**: непустые `*ShaderSource`, `VAO` сгенерированы, `glGetError` после операций, подсчёт активных VAO
+  - **Error Handling**: `sampleSDFCPU(NaN)`, `computeVelocityField(NaN)`, `atmosphere(NaN)`, `speedToMS(Inf)`, `huge pos 1e10`, `zero vinf`, `long log message` — все в try/catch, не должны крашиться
+  - Новые утилиты: `checkGLErrors()`, `getGLErrorString()`, `logTestError()`, `logTestWarn()`, `validateFrameCode()`, `runPhysicsTests()`, `runCodeTests()`
+  - UI: разделение на Physics и Code группы с отдельными TreeNode, кнопки Run Physics Only / Run Code Only, отображение `GL Error`, расширенная Frame Validation (buffers, camera, Vinf, dt, SDF mem, VAOs)
+  - Глобальные счётчики `codeTestsPassed/Failed`, `lastGLError/Str`
+
+### Исправлено (защита от ошибок в действии кода)
+- `voxel_grid.cpp`: `sampleSDFCPU` и `sdfNormalCPU` теперь защищены от деления на ноль (`cellSize<1e-8` → 1000), NaN входа, OOB индексов, NaN в `distanceField`, безопасный `safeGet`
+- `flow_field.cpp`: `updateFlowParams()` полностью переписан с защитой от NaN/Inf, clamp всех параметров, гарантия `min<max`, `cellSize>1e-6`; `computeVelocityFieldCPU()` защита NaN входа, `csx` и `k` проверка, `safeWakeLen`, `st` проверка, `D` проверка
+- `particles.cpp`: `initParticles()` проверка `numParticles` [100,500k], `min/max` finite, `try/catch bad_alloc` fallback, NaN проверка `r1/r2` и позиций; `updateParticles()` проверка `dt`, `drawCount` vs alloc, `pos/col` size match, `cellSize` защита, NaN частиц респавн, OOB проверка `idx`, `surfDist` finite, `push` finite, `perpFactor` finite, `np` finite, GL error после `BufferSubData`
+- `forces.cpp`: `updateVertexColors()` проверка `vertices==normals`, `try/catch resize`, `vinf` finite, `p` finite, `v` finite, `speedRatio` finite, `cp` finite, `fl` finite, `D` finite, `t` finite; `computeLiftDrag()` проверка размеров, `vinf` finite, `flowDir` len, `rho` clamp [0.0001,10], `q` finite, `D` finite, треугольники NaN/len/area проверки, `vel` finite, `cp` finite, `along` finite, `pressureForce` finite, `skinFriction` finite, `totalForce` finite, `dragMagnitude` finite, `liftDir` len, `centerOfPressure` finite
+
 ## [1.3.0] - 2026-10-05
 
 ### Добавлено
