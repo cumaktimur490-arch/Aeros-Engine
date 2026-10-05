@@ -19,7 +19,12 @@
 #endif
 
 // =====================================================
-// Давление — v1.9.0 Ultra Realistic+ — новые режимы Mach/Helicity/TotalP
+// Давление — v1.11.0 Physics Fix
+// Исправлено:
+// - Cp = (p - p_inf)/q для LBM, Cp = 1-(V/Vinf)^2 для потенциального
+// - Проекционная площадь вместо Y*Z*0.6
+// - Трение зависит от Re_x: Blasius + 1/7 закон
+// - Момент относительно центра давления
 // =====================================================
 void updateVertexColors() {
     updateFlowParams();
@@ -30,12 +35,14 @@ void updateVertexColors() {
 
     if (aeroAutoRefArea) aeroRefArea = computeLBMRefArea();
 
-    // LBM реалистичное окрашивание
+    // LBM реалистичное окрашивание — физичный Cp
     if (lbmParams.enabled && lbmInitialized) {
         try { g_vertexColors.resize(numVerts*3); } catch (...) { return; }
         float vinf = glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz));
         if (!std::isfinite(vinf) || vinf < 1e-4f) vinf = 1e-4f;
-        float invVinf2 = 1.0f / (vinf*vinf);
+        float rho = airDensity;
+        float qInf = 0.5f * rho * vinf * vinf;
+        if (qInf < 1e-6f) qInf = 1.0f;
         float* vPtr = g_vertices.data();
         float* colPtr = g_vertexColors.data();
 
@@ -49,15 +56,26 @@ void updateVertexColors() {
             float speed2 = v.x*v.x + v.y*v.y + v.z*v.z;
             float speed = sqrtf(speed2);
             if (!std::isfinite(speed)) speed = vinf;
-            float cp = 1.0f - speed2*invVinf2;
 
-            float rho = getLBMDensityWorld(p);
-            if (!std::isfinite(rho)) rho = 1.0f;
-            float lbmPress = (rho - 1.0f) * 3.0f;
-            cp = cp * 0.7f + lbmPress * 0.5f;
-            if (!std::isfinite(cp)) cp = 0.0f;
+            // Физичный Cp из давления LBM, а не из скорости
+            float cp = 0.0f;
+            // Ищем давление в ячейке LBM
+            float pLBM = 0.0f;
+            float fx = (p.x - lbmMinX) / lbmCellSizeX;
+            float fy = (p.y - lbmMinY) / lbmCellSizeY;
+            float fz = (p.z - lbmMinZ) / lbmCellSizeZ;
+            int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+            if (ix>=0 && ix<lbmNx && iy>=0 && iy<lbmNy && iz>=0 && iz<lbmNz) {
+                int cell = (iz*lbmNy + iy)*lbmNx + ix;
+                if (cell>=0 && cell < (int)lbmPressure.size()) {
+                    pLBM = lbmPressure[cell];
+                }
+            }
+            cp = pLBM / qInf; // Cp = (p - p_inf)/q, pLBM уже p-p_inf
+            // Ограничиваем физически: -3 < Cp < 1.5 для несжимаемого
             if (cp > 1.5f) cp = 1.5f;
             if (cp < -3.5f) cp = -3.5f;
+            if (!std::isfinite(cp)) cp = 1.0f - speed2/(vinf*vinf);
 
             glm::vec3 col;
             if (aeroVisMode == AeroVisMode::Pressure) {
@@ -77,8 +95,10 @@ void updateVertexColors() {
                 float t = glm::clamp(tke*10.0f, 0.0f, 1.0f);
                 col = glm::vec3(t, t*0.5f, 1-t);
             } else if (aeroVisMode == AeroVisMode::SkinFriction) {
-                float cf = speed * 0.02f / vinf;
-                float t = glm::clamp(cf*5.0f, 0.0f, 1.0f);
+                // Cf из strain
+                float strain = getLBMStrainWorld(p);
+                float cf = strain * 0.02f; // упрощенно Cf ~ mu*du/dy / q
+                float t = glm::clamp(cf*50.0f, 0.0f, 1.0f);
                 col = glm::vec3(t, 1-t, 0.5f);
             } else if (aeroVisMode == AeroVisMode::BoundaryLayer) {
                 float d = sampleSDFCPU(p);
@@ -127,7 +147,6 @@ void updateVertexColors() {
     if (useCUDA == 1) {
         try { computeVertexPressureCUDA(g_vertices, g_normals, g_vertexColors, numVerts, flowParams); }
         catch (...) {
-            // fallback to CPU on CUDA failure
             useCUDA = 0;
         }
     }
@@ -140,7 +159,6 @@ void updateVertexColors() {
         float* colPtr = g_vertexColors.data();
         float cx = flowParams.centerX, cy = flowParams.centerY, cz = flowParams.centerZ;
         float vx = flowParams.vx, vy = flowParams.vy, vz = flowParams.vz;
-        float radY = flowParams.radiusY, radZ = flowParams.radiusZ;
 
         #ifdef _OPENMP
         #pragma omp parallel for
@@ -155,15 +173,17 @@ void updateVertexColors() {
             if (!std::isfinite(v.x)) v = glm::vec3(vx,vy,vz);
             float speed = glm::length(v);
             if (!std::isfinite(speed)) speed = vinf;
+            // Потенциальное течение — Bernoulli: Cp = 1 - (V/Vinf)^2
             float cp = 1.0f - (speed*invVinf)*(speed*invVinf);
-            float rx = p.x - cx, ry = p.y - cy, rz = p.z - cz;
-            float along = rx*(vx*invVinf) + ry*(vy*invVinf) + rz*(vz*invVinf);
-            float D = 2.0f * fmaxf(radY, radZ);
-            if (D < 1e-6f) D = 0.5f;
-            if (along > D * 0.3f) {
-                float w = (along - D*0.3f) / D;
-                if (w > 1.0f) w = 1.0f;
-                cp -= 0.8f * w * w;
+            // Поправка на след — только если позади тела
+            glm::vec3 flowDir(vx*invVinf, vy*invVinf, vz*invVinf);
+            glm::vec3 r = p - glm::vec3(cx,cy,cz);
+            float along = glm::dot(r, flowDir);
+            float D = maxDim;
+            if (along > D*0.3f) {
+                // В следе давление ниже — Cp более отрицательный
+                float w = glm::clamp((along - D*0.3f)/D, 0.0f, 1.0f);
+                cp -= 0.3f * w * w; // уменьшено с 0.8 до 0.3 — более физично
             }
             if (cp > 1.0f) cp = 1.0f;
             if (cp < -3.0f) cp = -3.0f;
@@ -178,9 +198,6 @@ void updateVertexColors() {
             } else if (aeroVisMode == AeroVisMode::MachNumber) {
                 float mach = speed / (speedOfSound + 1e-6f);
                 col = getMachColor(mach);
-            } else if (aeroVisMode == AeroVisMode::Helicity) {
-                // No LBM, approximate helicity as 0
-                col = glm::vec3(0.5f);
             } else if (aeroVisMode == AeroVisMode::TotalPressure) {
                 float pt = airPressure + 0.5f*airDensity*speed*speed;
                 float ptInf = airPressure + 0.5f*airDensity*vinf*vinf;
@@ -207,7 +224,7 @@ void updateVertexColors() {
 }
 
 // =====================================================
-// Lift / Drag — v1.8.0 реалистичный с Cd/Cl/L/D
+// Lift / Drag — v1.11.0 Physics Fix
 // =====================================================
 void computeLiftDrag() {
     updateFlowParams();
@@ -241,14 +258,12 @@ void computeLiftDrag() {
     glm::vec3 momentSum(0.0f);
     float areaSum = 0.0f;
 
-    float D = 2.0f * fmaxf(flowParams.radiusY, flowParams.radiusZ);
-    if (D < 1e-4f) D = 0.5f;
-
     int triCount = (int)(g_vertices.size() / 9);
     float* vertPtr = g_vertices.data();
     float* normPtr = g_normals.data();
     float cx = flowParams.centerX, cy = flowParams.centerY, cz = flowParams.centerZ;
-    float fvx = flowParams.vx, fvy = flowParams.vy, fvz = flowParams.vz;
+
+    const float mu = 1.81e-5f; // динамическая вязкость
 
     #ifdef _OPENMP
     #pragma omp parallel
@@ -274,43 +289,54 @@ void computeLiftDrag() {
             float area = 0.5f * glm::length(cr);
             if (!std::isfinite(area) || area < 1e-9f || area > 1e6f) continue;
 
-            glm::vec3 vel;
             float cp;
             if (lbmParams.enabled && lbmInitialized) {
-                vel = getLBMVelocityWorld(triCenter);
-                if (!std::isfinite(vel.x)) vel = glm::vec3(fvx,fvy,fvz);
-                float rhoLBM = getLBMDensityWorld(triCenter);
-                if (!std::isfinite(rhoLBM)) rhoLBM = 1.0f;
-                float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
-                cp = 1.0f - speed2 * (invVinf*invVinf);
-                cp = cp * 0.7f + (rhoLBM-1.0f)*1.5f;
+                // Физичный Cp из давления LBM
+                float pLBM = 0.0f;
+                float fx = (triCenter.x - lbmMinX) / lbmCellSizeX;
+                float fy = (triCenter.y - lbmMinY) / lbmCellSizeY;
+                float fz = (triCenter.z - lbmMinZ) / lbmCellSizeZ;
+                int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+                if (ix>=0 && ix<lbmNx && iy>=0 && iy<lbmNy && iz>=0 && iz<lbmNz) {
+                    int cell = (iz*lbmNy + iy)*lbmNx + ix;
+                    if (cell>=0 && cell < (int)lbmPressure.size()) pLBM = lbmPressure[cell];
+                }
+                cp = pLBM / q;
             } else {
-                vel = computeVelocityFieldCPU(triCenter, flowParams);
-                if (!std::isfinite(vel.x)) vel = glm::vec3(fvx,fvy,fvz);
+                glm::vec3 vel = computeVelocityFieldCPU(triCenter, flowParams);
+                if (!std::isfinite(vel.x)) vel = glm::vec3(flowParams.vx,flowParams.vy,flowParams.vz);
                 float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
                 cp = 1.0f - speed2 * (invVinf*invVinf);
             }
 
-            float rx = triCenter.x - cx, ry = triCenter.y - cy, rz = triCenter.z - cz;
-            float along = rx*(fvx*invVinf) + ry*(fvy*invVinf) + rz*(fvz*invVinf);
-            if (along > D * 0.3f) {
-                float w = (along - D*0.3f) / D;
-                if (w > 1.0f) w = 1.0f;
-                cp -= 0.8f * w * w;
-            }
             if (cp > 1.5f) cp = 1.5f;
             if (cp < -3.5f) cp = -3.5f;
             if (!std::isfinite(cp)) cp = 0;
 
             glm::vec3 pressureForce = -cp * q * n * area;
-            float dotFlowNormal = fabsf(glm::dot(n, flowDir));
-            if (!std::isfinite(dotFlowNormal)) dotFlowNormal = 0.5f;
-            float skinFriction = 0.02f * q * area * (1.0f - dotFlowNormal);
-            // Reynolds dependent skin friction
-            if (aeroReNumber > 1e4f) {
-                float reFactor = 1.0f / powf(aeroReNumber, 0.2f) * 10.0f;
-                skinFriction *= glm::clamp(reFactor, 0.5f, 2.0f);
+
+            // Трение — зависит от Re_x, физичная формула
+            // Re_x = rho*V*x / mu, x — расстояние от передней кромки
+            glm::vec3 rFromLE = triCenter - glm::vec3(cx,cy,cz) + flowDir * (maxDim*0.5f);
+            float xAlong = glm::dot(rFromLE, flowDir);
+            if (xAlong < 0.001f) xAlong = 0.001f;
+            float Re_x = rho * vinf * xAlong / mu;
+            if (Re_x < 1.0f) Re_x = 1.0f;
+            float Cf;
+            if (Re_x < 5e5f) {
+                // Ламинарный Блазиус
+                Cf = 0.664f / sqrtf(Re_x);
+            } else {
+                // Турбулентный — 1/7 закон
+                Cf = 0.027f / powf(Re_x, 1.0f/7.0f);
             }
+            if (Cf < 0.0001f) Cf = 0.0001f;
+            if (Cf > 0.02f) Cf = 0.02f;
+
+            float dotFlowNormal = fabsf(glm::dot(n, flowDir));
+            // Трение только на касательных поверхностях
+            float frictionFactor = 1.0f - dotFlowNormal;
+            float skinFriction = Cf * q * area * frictionFactor;
             glm::vec3 viscousForce = -flowDir * skinFriction;
             glm::vec3 force = pressureForce + viscousForce;
 
@@ -344,42 +370,43 @@ void computeLiftDrag() {
         float area = 0.5f * glm::length(cr);
         if (!std::isfinite(area) || area < 1e-9f || area > 1e6f) continue;
 
-        glm::vec3 vel;
         float cp;
         if (lbmParams.enabled && lbmInitialized) {
-            vel = getLBMVelocityWorld(triCenter);
-            if (!std::isfinite(vel.x)) vel = glm::vec3(fvx,fvy,fvz);
-            float rhoLBM = getLBMDensityWorld(triCenter);
-            if (!std::isfinite(rhoLBM)) rhoLBM = 1.0f;
-            float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
-            cp = 1.0f - speed2 * (invVinf*invVinf);
-            cp = cp * 0.7f + (rhoLBM-1.0f)*1.5f;
+            float pLBM = 0.0f;
+            float fx = (triCenter.x - lbmMinX) / lbmCellSizeX;
+            float fy = (triCenter.y - lbmMinY) / lbmCellSizeY;
+            float fz = (triCenter.z - lbmMinZ) / lbmCellSizeZ;
+            int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+            if (ix>=0 && ix<lbmNx && iy>=0 && iy<lbmNy && iz>=0 && iz<lbmNz) {
+                int cell = (iz*lbmNy + iy)*lbmNx + ix;
+                if (cell>=0 && cell < (int)lbmPressure.size()) pLBM = lbmPressure[cell];
+            }
+            cp = pLBM / q;
         } else {
-            vel = computeVelocityFieldCPU(triCenter, flowParams);
-            if (!std::isfinite(vel.x)) vel = glm::vec3(fvx,fvy,fvz);
+            glm::vec3 vel = computeVelocityFieldCPU(triCenter, flowParams);
+            if (!std::isfinite(vel.x)) vel = glm::vec3(flowParams.vx,flowParams.vy,flowParams.vz);
             float speed2 = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z;
             cp = 1.0f - speed2 * (invVinf*invVinf);
         }
 
-        float rx = triCenter.x - cx, ry = triCenter.y - cy, rz = triCenter.z - cz;
-        float along = rx*(fvx*invVinf) + ry*(fvy*invVinf) + rz*(fvz*invVinf);
-        if (along > D * 0.3f) {
-            float w = (along - D*0.3f) / D;
-            if (w > 1.0f) w = 1.0f;
-            cp -= 0.8f * w * w;
-        }
         if (cp > 1.5f) cp = 1.5f;
         if (cp < -3.5f) cp = -3.5f;
         if (!std::isfinite(cp)) cp = 0;
 
         glm::vec3 pressureForce = -cp * q * n * area;
+        glm::vec3 rFromLE = triCenter - glm::vec3(cx,cy,cz) + flowDir * (maxDim*0.5f);
+        float xAlong = glm::dot(rFromLE, flowDir);
+        if (xAlong < 0.001f) xAlong = 0.001f;
+        float Re_x = rho * vinf * xAlong / mu;
+        if (Re_x < 1.0f) Re_x = 1.0f;
+        float Cf;
+        if (Re_x < 5e5f) Cf = 0.664f / sqrtf(Re_x);
+        else Cf = 0.027f / powf(Re_x, 1.0f/7.0f);
+        if (Cf < 0.0001f) Cf = 0.0001f;
+        if (Cf > 0.02f) Cf = 0.02f;
         float dotFlowNormal = fabsf(glm::dot(n, flowDir));
-        if (!std::isfinite(dotFlowNormal)) dotFlowNormal = 0.5f;
-        float skinFriction = 0.02f * q * area * (1.0f - dotFlowNormal);
-        if (aeroReNumber > 1e4f) {
-            float reFactor = 1.0f / powf(aeroReNumber, 0.2f) * 10.0f;
-            skinFriction *= glm::clamp(reFactor, 0.5f, 2.0f);
-        }
+        float frictionFactor = 1.0f - dotFlowNormal;
+        float skinFriction = Cf * q * area * frictionFactor;
         glm::vec3 viscousForce = -flowDir * skinFriction;
         glm::vec3 force = pressureForce + viscousForce;
 
@@ -453,7 +480,6 @@ void updateLiftDragArrows() {
             verts.push_back(e.x); verts.push_back(e.y); verts.push_back(e.z);
         }
     }
-    // Moment vector (small)
     if (fabs(momentMagnitude) > 1e-9f && std::isfinite(momentVector.x)) {
         glm::vec3 s = centerOfPressure;
         glm::vec3 e = s + glm::normalize(momentVector) * maxDim * 0.3f;

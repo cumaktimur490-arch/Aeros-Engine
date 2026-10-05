@@ -18,35 +18,46 @@
 #endif
 
 // =====================================================
-// Частицы — v1.9.0 Ultra Realistic+ + RK4 + Trails
+// Частицы — v1.11.0 Physics Fix
+// - RK4 с проверкой коллизий на промежуточных шагах
+// - Физичный отскок: сохранение касательной компоненты, гашение нормальной
+// - Убран произвольный slideBoost
 // =====================================================
 
-// v1.9.0: RK4 step for particles
 static inline glm::vec3 particleRK4Step(const glm::vec3& p, float dt, const FlowParams& prm) {
     if (!std::isfinite(p.x) || dt < 1e-8f) return p;
-    glm::vec3 v1 = computeVelocityFieldCPU(p, prm);
-    if (!std::isfinite(v1.x)) return p;
+    // v1.11.0: проверяем коллизию на каждом подшаге
+    auto safeVel = [&](const glm::vec3& pos)->glm::vec3 {
+        glm::vec3 v = computeVelocityFieldCPU(pos, prm);
+        if (!std::isfinite(v.x)) return glm::vec3(prm.vx, prm.vy, prm.vz);
+        // Если внутри тела — возвращаем 0 чтобы RK4 не заходил внутрь
+        if (!g_distanceField.empty()) {
+            float d = sampleSDFCPU(pos);
+            if (d <= 0.0f) return glm::vec3(0.0f);
+        }
+        return v;
+    };
+
+    glm::vec3 v1 = safeVel(p);
     glm::vec3 k1 = v1 * dt;
 
     glm::vec3 p2 = p + k1 * 0.5f;
-    glm::vec3 v2 = computeVelocityFieldCPU(p2, prm);
-    if (!std::isfinite(v2.x)) v2 = v1;
+    glm::vec3 v2 = safeVel(p2);
     glm::vec3 k2 = v2 * dt;
 
     glm::vec3 p3 = p + k2 * 0.5f;
-    glm::vec3 v3 = computeVelocityFieldCPU(p3, prm);
-    if (!std::isfinite(v3.x)) v3 = v2;
+    glm::vec3 v3 = safeVel(p3);
     glm::vec3 k3 = v3 * dt;
 
     glm::vec3 p4 = p + k3;
-    glm::vec3 v4 = computeVelocityFieldCPU(p4, prm);
-    if (!std::isfinite(v4.x)) v4 = v3;
+    glm::vec3 v4 = safeVel(p4);
     glm::vec3 k4 = v4 * dt;
 
     glm::vec3 res = p + (k1 + 2.0f*k2 + 2.0f*k3 + k4) * (1.0f/6.0f);
     if (!std::isfinite(res.x)) return p + k1;
     return res;
 }
+
 void initParticles() {
     updateFlowParams();
     if (numParticles <= 0) numParticles = 100;
@@ -116,7 +127,7 @@ void initParticles() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
-    std::cout << "[Particles] Initialized " << numParticles << std::endl;
+    std::cout << "[Particles] Initialized " << numParticles << " v1.11.0 Physics Fix" << std::endl;
 }
 
 void updateParticles(float dt) {
@@ -178,7 +189,6 @@ void updateParticles(float dt) {
             glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
             if (!std::isfinite(v.x)) v = glm::vec3(vxInf, vyInf, vzInf);
 
-            // v1.9.0: RK4 option for more accurate advection
             glm::vec3 np;
             if (aeroUseRK4Particles) {
                 np = particleRK4Step(p, dt * timeScale, flowParams);
@@ -199,31 +209,48 @@ void updateParticles(float dt) {
                         if (rawDist > 1e4f || rawDist < -1e4f) rawDist = 1000.0f;
                         surfDist = rawDist * csx;
                         if (rawDist < 0.0f) {
+                            // Внутри тела — физичный отскок
                             glm::vec3 nrm = sdfNormalCPU(np);
                             if (!std::isfinite(nrm.x)) nrm = glm::vec3(0,1,0);
-                            float push = fabsf(surfDist) + 0.5f * csx;
-                            if (push > 10.0f) push = csx;
+                            nrm = glm::normalize(nrm);
+                            // Выталкиваем наружу на безопасное расстояние
+                            float push = fabsf(surfDist) + 0.6f * csx;
+                            if (push > csx*2.0f) push = csx*2.0f;
                             np += nrm * push;
-                            glm::vec3 Vinf(vxInf, vyInf, vzInf);
-                            float vinf_n = glm::dot(Vinf, nrm);
-                            glm::vec3 vinf_t = Vinf - vinf_n * nrm;
+
+                            // Скорость: убираем нормальную компоненту (no-penetration), сохраняем касательную с трением
                             float vn = glm::dot(v, nrm);
-                            v -= vn * nrm;
-                            float perpFactor = fabsf(vinf_n) / vInfMag;
-                            float slideBoost = 1.2f + 0.8f * perpFactor;
-                            v += vinf_t * slideBoost * 0.6f;
-                            float spd = glm::length(v);
-                            if (!std::isfinite(spd) || spd < 0.3f * vInfMag) v = vinf_t * slideBoost;
+                            if (vn < 0) {
+                                // Неупругий отскок — гасим нормальную, касательную оставляем с трением 0.9
+                                glm::vec3 v_n = nrm * vn;
+                                glm::vec3 v_t = v - v_n;
+                                // Трение в погранслое
+                                float friction = 0.85f;
+                                v = v_t * friction;
+                                // Минимальная скорость чтобы не застревать
+                                float vtMag = glm::length(v);
+                                if (vtMag < 0.1f * vInfMag) {
+                                    // Добавляем небольшую скорость вдоль потока чтобы частица скользила
+                                    glm::vec3 flowDir(vxInf, vyInf, vzInf);
+                                    flowDir = glm::normalize(flowDir);
+                                    glm::vec3 flowTang = flowDir - nrm * glm::dot(flowDir, nrm);
+                                    if (glm::length(flowTang) > 1e-6f) {
+                                        flowTang = glm::normalize(flowTang);
+                                        v += flowTang * (0.2f * vInfMag);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
             if (aeroGroundEffect) {
-                if (np.y < groundY + csy) {
-                    np.y = groundY + csy;
-                    v.y = fabsf(v.y) * 0.5f;
-                    if (v.y < 1e-3f) v.y = 0;
+                if (np.y < groundY + csy*0.5f) {
+                    np.y = groundY + csy*0.5f;
+                    // Отражение от земли с трением
+                    if (v.y < 0) v.y = -v.y * 0.2f; // неупругий
+                    v.x *= 0.95f; v.z *= 0.95f; // трение
                 }
             }
 
@@ -251,7 +278,6 @@ void updateParticles(float dt) {
                 if (aeroVisMode == AeroVisMode::VelocityMagnitude || aeroColorStreamlinesByVelocity) {
                     float velMag = glm::length(v);
                     if (!std::isfinite(velMag)) velMag = vInfMag;
-                    if (aeroGroundEffect && np.y < center.y) velMag *= 1.15f;
                     c = getVelocityMagnitudeColor(velMag, maxSpeed);
                 } else if (aeroVisMode == AeroVisMode::Vorticity) {
                     float vort = getLBMVorticityWorld(np);

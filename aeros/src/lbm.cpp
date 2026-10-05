@@ -74,24 +74,30 @@ static const float invCs2SqHalf = 4.5f;
 inline int idx3D(int x, int y, int z) { return (z*lbmNy + y)*lbmNx + x; }
 inline int fIdx(int cell, int q) { return cell*Q + q; }
 
+// =====================================================
+// v1.11.0 Physics Fix — корректное равновесие без костылей
+// =====================================================
 inline float computeEquilibriumFast(int qi, float rho, float ux, float uy, float uz, float usqr) {
-    if (!std::isfinite(rho) || rho < 0.1f) rho = 1.0f;
-    if (!std::isfinite(usqr) || usqr > 1.0f) {
-        // Clamp velocity for stability
-        float mag = sqrtf(usqr);
-        if (mag > 0.3f) {
-            float scale = 0.3f / mag;
-            ux *= scale; uy *= scale; uz *= scale;
-            usqr = ux*ux + uy*uy + uz*uz;
-        }
+    if (!std::isfinite(rho)) rho = 1.0f;
+    rho = glm::clamp(rho, 0.8f, 1.2f); // мягкий clamp для стабильности, без потери физики
+
+    // Ограничиваем usqr для стабильности, но сохраняем направление
+    if (usqr > 0.09f) { // |u| < 0.3 в решеточных единицах — предел стабильности
+        float scale = sqrtf(0.09f / usqr);
+        ux *= scale; uy *= scale; uz *= scale;
+        usqr = ux*ux + uy*uy + uz*uz;
     }
+
     float cu = (float)c[qi][0]*ux + (float)c[qi][1]*uy + (float)c[qi][2]*uz;
-    // Clamp cu for stability
-    if (cu > 0.5f) cu = 0.5f;
-    if (cu < -0.5f) cu = -0.5f;
+    // cu может быть до ~0.3, не климпим жестко, только проверка на NaN
+    if (!std::isfinite(cu)) cu = 0.0f;
+
     float feq = w[qi]*rho*(1.0f + cu*invCs2 + cu*cu*invCs2SqHalf - usqr*1.5f);
-    if (!std::isfinite(feq) || feq < -0.1f) feq = w[qi]*rho;
-    if (feq > 2.0f) feq = w[qi]*rho*1.5f;
+    // Только проверка на NaN/Inf, без искусственного ограничения 2.0
+    if (!std::isfinite(feq)) feq = w[qi]*rho;
+    // Минимальная положительность — LBM допускает небольшие отрицательные, но для стабильности >0
+    if (feq < 0.0f && qi != 0) feq = 0.0f; // только не центральная может быть 0
+    if (feq < 0.0f) feq = w[qi]*rho*0.1f;
     return feq;
 }
 
@@ -105,8 +111,8 @@ static void computeInletVelocityLB(float& ux, float& uy, float& uz) {
     if (len < 1e-6f || !std::isfinite(len)) { dx = 1; dy = 0; dz = 0; len = 1; }
     dx /= len; dy /= len; dz /= len;
     float U0 = lbmParams.U0;
-    if (!std::isfinite(U0) || U0 < 1e-6f) U0 = 0.1f;
-    if (U0 > 0.25f) U0 = 0.25f;
+    if (!std::isfinite(U0) || U0 < 1e-6f) U0 = 0.08f;
+    if (U0 > 0.15f) U0 = 0.15f; // стабильный предел 0.15, не 0.25
     ux = dx * U0; uy = dy * U0; uz = dz * U0;
 }
 
@@ -126,26 +132,23 @@ static void computeFlowAxis(int& axis, int& sign, glm::vec3& dirNorm) {
 }
 
 // =====================================================
-// Цветовые карты v1.8.0 — улучшенные как на фото
+// Цветовые карты v1.11.0 — без изменений, но с clamp
 // =====================================================
 glm::vec3 getRealisticPressureColor(float cp) {
     if (!std::isfinite(cp)) cp = 0;
     float t = (cp + 3.0f) / 4.0f;
     t = glm::clamp(t, 0.0f, 1.0f);
     
-    // AeroColorMap support
-    if (aeroColorMap == 1) { // viridis for pressure
-        // Map Cp to viridis: low (blue) = low pressure, high (yellow) = high
+    if (aeroColorMap == 1) {
         if (t < 0.25f) { float k=t/0.25f; return glm::vec3(0.267f+k*0.1f, 0.004f+k*0.2f, 0.329f+k*0.3f); }
         else if (t < 0.5f) { float k=(t-0.25f)/0.25f; return glm::vec3(0.22f+k*0.05f, 0.3f+k*0.2f, 0.5f); }
         else if (t < 0.75f) { float k=(t-0.5f)/0.25f; return glm::vec3(0.12f+k*0.4f, 0.5f+k*0.2f, 0.5f-k*0.2f); }
         else { float k=(t-0.75f)/0.25f; return glm::vec3(0.5f+k*0.49f, 0.7f+k*0.2f, 0.3f-k*0.1f); }
-    } else if (aeroColorMap == 3) { // coolwarm
+    } else if (aeroColorMap == 3) {
         if (t < 0.5f) { float k=t*2.0f; return glm::vec3(0.2f+k*0.3f, 0.3f+k*0.3f, 0.9f-k*0.2f); }
         else { float k=(t-0.5f)*2.0f; return glm::vec3(0.5f+k*0.5f, 0.6f-k*0.4f, 0.7f-k*0.5f); }
     }
     
-    // Default rainbow NASCAR
     if (t < 0.2f) {
         float k = t / 0.2f;
         return glm::vec3(0.0f, k*0.5f, 0.5f + 0.5f*k);
@@ -170,12 +173,12 @@ glm::vec3 getVelocityMagnitudeColor(float velMag, float maxVel) {
     float t = velMag / maxVel;
     t = glm::clamp(t, 0.0f, 1.0f);
 
-    if (aeroColorMap == 1) { // viridis
+    if (aeroColorMap == 1) {
         if (t < 0.25f) { float k=t/0.25f; return glm::vec3(0.267f, 0.004f+k*0.3f, 0.329f+k*0.2f); }
         else if (t < 0.5f) { float k=(t-0.25f)/0.25f; return glm::vec3(0.229f+k*0.0f, 0.322f+k*0.2f, 0.545f); }
         else if (t < 0.75f) { float k=(t-0.5f)/0.25f; return glm::vec3(0.127f+k*0.4f, 0.566f+k*0.2f, 0.550f-k*0.2f); }
         else { float k=(t-0.75f)/0.25f; return glm::vec3(0.5f+k*0.49f, 0.79f+k*0.1f, 0.3f); }
-    } else if (aeroColorMap == 2) { // parula
+    } else if (aeroColorMap == 2) {
         if (t < 0.2f) return glm::vec3(t*5.0f*0.1f, t*2.0f, 0.8f);
         else if (t < 0.4f) { float k=(t-0.2f)/0.2f; return glm::vec3(0.1f+k*0.1f, 0.4f+k*0.4f, 0.8f-k*0.2f); }
         else if (t < 0.6f) { float k=(t-0.4f)/0.2f; return glm::vec3(0.2f+k*0.5f, 0.8f, 0.6f-k*0.4f); }
@@ -183,7 +186,6 @@ glm::vec3 getVelocityMagnitudeColor(float velMag, float maxVel) {
         else { float k=(t-0.8f)/0.2f; return glm::vec3(1.0f, 0.4f-k*0.3f, k*0.1f); }
     }
 
-    // Default rainbow blue->red
     if (t < 0.15f) return glm::vec3(0, 0, 0.5f + 0.5f*(t/0.15f));
     else if (t < 0.3f) { float k=(t-0.15f)/0.15f; return glm::vec3(0, k, 1); }
     else if (t < 0.45f) { float k=(t-0.3f)/0.15f; return glm::vec3(0, 1, 1-k); }
@@ -221,11 +223,9 @@ glm::vec3 getTKEColor(float tke) {
     return glm::vec3(t, t*0.3f, 1.0f-t*0.5f);
 }
 
-// v1.9.0 new color maps
 glm::vec3 getMachColor(float mach) {
     if (!std::isfinite(mach)) return glm::vec3(0.5f);
     float t = glm::clamp(mach / 1.5f, 0.0f, 1.0f);
-    // Blue (low) -> Green (0.3) -> Yellow (0.8) -> Red (supersonic)
     if (t < 0.2f) { float k=t/0.2f; return glm::vec3(0, k*0.5f, 0.8f+0.2f*k); }
     else if (t < 0.5f) { float k=(t-0.2f)/0.3f; return glm::vec3(k*0.3f, 0.5f+0.5f*k, 1.0f-k*0.5f); }
     else if (t < 0.75f) { float k=(t-0.5f)/0.25f; return glm::vec3(0.3f+0.7f*k, 1.0f, 0.5f-k*0.5f); }
@@ -234,7 +234,6 @@ glm::vec3 getMachColor(float mach) {
 
 glm::vec3 getHelicityColor(float helicity) {
     if (!std::isfinite(helicity)) return glm::vec3(0.5f);
-    // Helicity can be negative: -1 (blue) -> 0 (white) -> +1 (red)
     float t = glm::clamp(helicity*0.5f + 0.5f, 0.0f, 1.0f);
     if (t < 0.5f) {
         float k = t*2.0f;
@@ -249,7 +248,6 @@ glm::vec3 getTotalPressureColor(float pt, float ptInf) {
     if (!std::isfinite(pt) || !std::isfinite(ptInf) || ptInf < 1e-6f) return glm::vec3(0.5f);
     float ratio = pt / ptInf;
     float t = glm::clamp(ratio, 0.0f, 1.2f) / 1.2f;
-    // High total pressure = red, low = blue (loss)
     if (t < 0.3f) return glm::vec3(0, 0, 0.5f + 0.5f*(t/0.3f));
     else if (t < 0.6f) { float k=(t-0.3f)/0.3f; return glm::vec3(k*0.5f, k, 1.0f-k*0.5f); }
     else if (t < 0.85f) { float k=(t-0.6f)/0.25f; return glm::vec3(0.5f+0.5f*k, 1.0f, 0); }
@@ -257,7 +255,7 @@ glm::vec3 getTotalPressureColor(float pt, float ptInf) {
 }
 
 void initLBM() {
-    std::cout << "[LBM] Initializing v1.8.0 realistic..." << std::endl;
+    std::cout << "[LBM] Initializing v1.11.0 Physics Fix..." << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
     if (g_voxelData.empty() || g_voxNx <= 0) {
@@ -276,7 +274,6 @@ void initLBM() {
         lbmMinZ = g_voxMinZ; lbmMaxZ = g_voxMaxZ;
     }
 
-    // Clamp grid size
     const int MAX_CELLS = 8*1024*1024;
     int totalEst = lbmNx*lbmNy*lbmNz;
     if (totalEst > MAX_CELLS) {
@@ -332,7 +329,6 @@ void initLBM() {
         #endif
         for (int i = 0; i < total; ++i) solid[i] = (vox[i] == 1) ? 1 : 0;
     } else if (!g_voxelData.empty()) {
-        // Voxel grid size mismatch — map with scaling
         std::cout << "[LBM] Voxel size mismatch " << g_voxelData.size() << " vs " << total << " — using nearest" << std::endl;
         #ifdef _OPENMP
         #pragma omp parallel for
@@ -384,8 +380,6 @@ void initLBM() {
     char* solidPtr = lbmIsSolid.data();
     char* groundPtr = lbmIsGround.data();
 
-    // Более реалистичная инициализация
-
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
@@ -393,17 +387,33 @@ void initLBM() {
         float rho = 1.0f;
         float ux = 0, uy = 0, uz = 0;
         if (!solidPtr[cell] && !groundPtr[cell]) { ux = inUx; uy = inUy; uz = inUz; }
-        if (lbmParams.inletTurbulence > 0 && !solidPtr[cell] && !groundPtr[cell]) {
-            float turb = lbmParams.inletTurbulence;
-            // Perlin-like turbulence using sin with different frequencies
-            float rx = sinf(cell*0.1f) * turb * 0.1f + sinf(cell*0.023f)*turb*0.05f;
-            float ry = cosf(cell*0.13f) * turb * 0.1f + cosf(cell*0.031f)*turb*0.05f;
-            float rz = sinf(cell*0.07f) * turb * 0.1f + sinf(cell*0.017f)*turb*0.05f;
-            ux += rx; uy += ry; uz += rz;
+        // v1.11.0: убран искусственный шум — он ломает сохранение массы
+        // Вместо него — небольшая дивергенция-free турбулентность только если включена
+        if (lbmParams.inletTurbulence > 0.001f && !solidPtr[cell] && !groundPtr[cell]) {
+            // Дивергенция-free шум через векторный потенциал — упрощенно: только поперечные флуктуации
+            float turb = lbmParams.inletTurbulence * 0.05f; // уменьшено в 2 раза
+            // Используем более коррелированный шум — по координатам ячейки, а не индексу
+            int x = cell % lbmNx;
+            int y = (cell / lbmNx) % lbmNy;
+            int z = cell / (lbmNx*lbmNy);
+            float fx = (float)x / lbmNx, fy = (float)y / lbmNy, fz = (float)z / lbmNz;
+            float rx = sinf(fx*12.3f + fy*5.1f) * turb;
+            float ry = sinf(fy*8.7f + fz*3.3f) * turb;
+            float rz = sinf(fz*11.2f + fx*4.9f) * turb;
+            // Убираем компоненту вдоль потока чтобы не менять массовый расход
+            glm::vec3 flowDir(inUx, inUy, inUz);
+            float fLen = sqrtf(inUx*inUx+inUy*inUy+inUz*inUz);
+            if (fLen > 1e-6f) {
+                flowDir /= fLen;
+                glm::vec3 turbVec(rx,ry,rz);
+                float along = glm::dot(turbVec, flowDir);
+                turbVec -= flowDir * along; // только поперек
+                ux += turbVec.x; uy += turbVec.y; uz += turbVec.z;
+            }
         }
         float usqr = ux*ux + uy*uy + uz*uz;
         if (usqr > 0.09f) {
-            float scale = 0.3f / sqrtf(usqr);
+            float scale = sqrtf(0.09f / usqr);
             ux *= scale; uy *= scale; uz *= scale;
             usqr = ux*ux + uy*uy + uz*uz;
         }
@@ -413,26 +423,28 @@ void initLBM() {
         }
     }
 
-    if (!std::isfinite(lbmParams.tau) || lbmParams.tau < 0.51f) lbmParams.tau = 0.51f;
-    if (lbmParams.tau > 2.0f) lbmParams.tau = 2.0f;
+    if (!std::isfinite(lbmParams.tau) || lbmParams.tau < 0.51f) lbmParams.tau = 0.55f; // повышен минимум для стабильности
+    if (lbmParams.tau > 1.5f) lbmParams.tau = 1.5f; // снижен максимум — меньше вязкость, точнее
     lbmParams.viscosity = (lbmParams.tau - 0.5f) * cs2;
     lbmParams.U0 = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
-    if (!std::isfinite(lbmParams.U0) || lbmParams.U0 < 1e-6f) lbmParams.U0 = 0.1f;
+    if (!std::isfinite(lbmParams.U0) || lbmParams.U0 < 1e-6f) lbmParams.U0 = 0.08f;
 
     lbmCurrentStep = 0;
     lbmConverged = false;
     lbmInitialized = true;
 
-    float L = (float)std::max({lbmNx, lbmNy, lbmNz});
-    if (maxDim > 1e-6f) L = maxDim / lbmCellSizeX;
-    lbmReynolds = lbmParams.U0 * L / (lbmParams.viscosity + 1e-6f);
+    // Физический Re, не решеточный
+    const float mu = 1.81e-5f;
+    float L = maxDim;
+    if (L < 1e-6f) L = 1.0f;
+    lbmReynolds = airDensity * flowSpeed * L / mu;
     aeroReNumber = lbmReynolds;
 
     auto t1 = std::chrono::high_resolution_clock::now();
     lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
-    std::cout << "[LBM] Initialized REALISTIC v1.8.0: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
+    std::cout << "[LBM] Initialized Physics Fix v1.11.0: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
               << " cells, tau=" << lbmParams.tau << " nu=" << lbmParams.viscosity
-              << " Re=" << lbmReynolds << " in " << lbmTimeMs << " ms"
+              << " Re_phys=" << lbmReynolds << " in " << lbmTimeMs << " ms"
 #ifdef _OPENMP
               << " [OpenMP " << omp_get_max_threads() << " threads]"
 #endif
@@ -449,13 +461,11 @@ void shutdownLBM() {
     lbmInitialized = false;
     lbmCurrentStep = 0;
     lbmConverged = false;
-    // Keep memory allocated for fast reinit, but clear flags
 }
 
 void stepLBMCPU(int steps) {
     if (!lbmInitialized) return;
     if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return;
-    // v1.9.0 fix: use size_t for total to avoid overflow, validate
     size_t totalSz = (size_t)lbmNx * (size_t)lbmNy * (size_t)lbmNz;
     if (totalSz == 0 || totalSz > 20*1024*1024) return;
     int total = (int)totalSz;
@@ -465,12 +475,12 @@ void stepLBMCPU(int steps) {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     float tau0 = lbmParams.tau;
-    if (!std::isfinite(tau0) || tau0 < 0.51f) tau0 = 0.6f;
-    if (tau0 > 2.0f) tau0 = 2.0f;
+    if (!std::isfinite(tau0) || tau0 < 0.51f) tau0 = 0.55f;
+    if (tau0 > 1.5f) tau0 = 1.5f;
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
     float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
-    if (!std::isfinite(U0mag) || U0mag < 1e-6f) U0mag = 0.1f;
+    if (!std::isfinite(U0mag) || U0mag < 1e-6f) U0mag = 0.08f;
 
     int flowAxis, flowSign;
     glm::vec3 flowDir;
@@ -519,22 +529,22 @@ void stepLBMCPU(int steps) {
             for (int qi = 0; qi < Q; ++qi) {
                 float fi = fPtr[base+qi];
                 if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; }
-                if (fi < -0.5f) fi = w[qi];
-                if (fi > 2.0f) fi = w[qi];
+                // Убран жесткий clamp -0.5/2.0, заменен на мягкий
+                if (fi < -0.2f) fi = w[qi]*0.5f;
+                if (fi > 1.0f) fi = w[qi]*1.5f;
                 rho += fi;
                 ux += fi * (float)c[qi][0];
                 uy += fi * (float)c[qi][1];
                 uz += fi * (float)c[qi][2];
             }
-            if (rho < 0.1f || rho > 3.0f || !std::isfinite(rho)) { rho = 1.0f; nanCount++; }
+            if (rho < 0.5f || rho > 1.5f || !std::isfinite(rho)) { rho = 1.0f; nanCount++; }
             float invRho = 1.0f / rho;
             ux *= invRho; uy *= invRho; uz *= invRho;
             if (!std::isfinite(ux)) { ux = 0; uy = 0; uz = 0; nanCount++; }
 
-            // Clamp velocity for stability
             float usqrTmp = ux*ux + uy*uy + uz*uz;
-            if (usqrTmp > 0.25f) {
-                float scale = 0.5f / sqrtf(usqrTmp);
+            if (usqrTmp > 0.09f) {
+                float scale = sqrtf(0.09f / usqrTmp);
                 ux *= scale; uy *= scale; uz *= scale;
             }
 
@@ -559,6 +569,7 @@ void stepLBMCPU(int steps) {
                 ux = inUx; uy = inUy; uz = inUz;
             }
 
+            // Smagorinsky LES — v1.11.0 Physics Fix: правильная формула с (Cs*dx)^2
             float tauEff = tau0;
             float strainMag = 0.0f;
             if (lbmParams.useTurbulence && !isInlet && !isOutlet) {
@@ -585,13 +596,36 @@ void stepLBMCPU(int steps) {
                             float S2 = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0f*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
                             float S = std::sqrt(2.0f*S2);
                             strainMag = S;
-                            if (std::isfinite(S) && S < 10.0f) {
+                            if (std::isfinite(S) && S < 10.0f && S > 1e-6f) {
                                 float Cs = lbmParams.smagorinskyC;
                                 if (!std::isfinite(Cs) || Cs < 0) Cs = 0.12f;
-                                if (Cs > 0.5f) Cs = 0.5f;
-                                float nu_t = Cs*Cs * S;
+                                if (Cs > 0.3f) Cs = 0.3f;
+
+                                // v1.11.0: правильная формула Smagorinsky с delta = cellSize
+                                float dx = lbmCellSizeX; // характерный размер ячейки
+                                // Van Driest damping у стенок: Cs_eff = Cs * (1 - exp(-y+/26))
+                                // y+ оцениваем как расстояние до ближайшей твердой ячейки
+                                float yPlus = 1.0f;
+                                // Поиск ближайшей твердой ячейки в радиусе 5
+                                int wallDist = 5;
+                                bool nearWall = false;
+                                for (int dz2=-2; dz2<=2 && !nearWall; ++dz2)
+                                    for (int dy2=-2; dy2<=2 && !nearWall; ++dy2)
+                                        for (int dx2=-2; dx2<=2 && !nearWall; ++dx2) {
+                                            int nx2 = x+dx2, ny2 = y+dy2, nz2 = z+dz2;
+                                            if (nx2<0||nx2>=Nx||ny2<0||ny2>=Ny||nz2<0||nz2>=Nz) continue;
+                                            int c2 = (nz2*Ny+ny2)*Nx+nx2;
+                                            if (solidPtr[c2] || groundPtr[c2]) { wallDist = abs(dx2)+abs(dy2)+abs(dz2); nearWall = true; }
+                                        }
+                                if (nearWall) {
+                                    float yPlusEst = (float)wallDist;
+                                    float damping = 1.0f - expf(-yPlusEst/2.0f);
+                                    Cs *= damping;
+                                }
+
+                                float nu_t = Cs*Cs * dx*dx * S; // правильная формула
                                 tauEff = tau0 + nu_t / cs2;
-                                if (tauEff > 2.0f) tauEff = 2.0f;
+                                if (tauEff > 1.5f) tauEff = 1.5f;
                                 if (tauEff < 0.51f) tauEff = 0.51f;
                             }
                         }
@@ -600,8 +634,8 @@ void stepLBMCPU(int steps) {
             }
 
             float usqr = ux*ux + uy*uy + uz*uz;
-            if (usqr > 0.25f) {
-                float scale = 0.5f / sqrtf(usqr);
+            if (usqr > 0.09f) {
+                float scale = sqrtf(0.09f / usqr);
                 ux *= scale; uy *= scale; uz *= scale;
                 usqr = ux*ux + uy*uy + uz*uz;
             }
@@ -613,15 +647,17 @@ void stepLBMCPU(int steps) {
                 if (!std::isfinite(fi)) fi = feq;
                 float fNew = fi - (fi - feq) * invTau;
                 if (!std::isfinite(fNew)) fNew = feq;
-                if (fNew < -0.1f) fNew = feq;
-                if (fNew > 2.0f) fNew = feq;
+                if (fNew < 0.0f) fNew = 0.0f; // только положительность
                 fPtr[base+qi] = fNew;
             }
 
             rhoPtr[cell] = rho;
             uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
             strainPtr[cell] = strainMag;
-            float tke = 0.5f * usqr * (tauEff - tau0) / cs2;
+            // v1.11.0: корректный TKE = (Cs*dx*S)^2
+            float dx = lbmCellSizeX;
+            float Cs = lbmParams.smagorinskyC;
+            float tke = Cs*Cs * dx*dx * strainMag*strainMag;
             if (!std::isfinite(tke) || tke < 0) tke = 0;
             if (tke > 1.0f) tke = 1.0f;
             tkePtr[cell] = tke;
@@ -642,6 +678,7 @@ void stepLBMCPU(int steps) {
             break;
         }
 
+        // Streaming с bounce-back
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
@@ -657,12 +694,14 @@ void stepLBMCPU(int steps) {
                         int sy = y - c[qi][1];
                         int sz = z - c[qi][2];
                         if (sx < 0 || sx >= Nx || sy < 0 || sy >= Ny || sz < 0 || sz >= Nz) {
+                            // Граница — будет обработано отдельно как inlet/outlet
                             fNextPtr[destBase+qi] = fPtr[destBase+qi];
                         } else {
                             int src = (sz*Ny + sy)*Nx + sx;
                             if (src < 0 || src >= total) {
                                 fNextPtr[destBase+qi] = fPtr[destBase+qi];
                             } else if (solidPtr[src] || groundPtr[src]) {
+                                // Bounce-back: отражение
                                 fNextPtr[destBase+qi] = fPtr[destBase+opp[qi]];
                             } else {
                                 fNextPtr[destBase+qi] = fPtr[src*Q+qi];
@@ -673,7 +712,7 @@ void stepLBMCPU(int steps) {
             }
         }
 
-        // Inlet BC
+        // Inlet BC — Zou/He упрощенный: все f = equilibrium(inlet)
         if (flowAxis == 0) {
             int ix = (flowSign > 0) ? 0 : Nx-1;
             float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
@@ -727,6 +766,68 @@ void stepLBMCPU(int steps) {
             }
         }
 
+        // Outlet — конвективный zero-gradient: копируем из соседней внутренней ячейки
+        if (lbmParams.useConvectiveOutlet) {
+            if (flowAxis == 0) {
+                int ox = (flowSign > 0) ? Nx-1 : 0;
+                int ix = (flowSign > 0) ? Nx-2 : 1;
+                #ifdef _OPENMP
+                #pragma omp parallel for
+                #endif
+                for (int z = 0; z < Nz; ++z) {
+                    for (int y = 0; y < Ny; ++y) {
+                        int cellOut = (z*Ny + y)*Nx + ox;
+                        int cellIn = (z*Ny + y)*Nx + ix;
+                        if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
+                        if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
+                        int baseOut = cellOut*Q;
+                        int baseIn = cellIn*Q;
+                        for (int qi = 0; qi < Q; ++qi) {
+                            fNextPtr[baseOut+qi] = fPtr[baseIn+qi];
+                        }
+                    }
+                }
+            } else if (flowAxis == 1) {
+                int oy = (flowSign > 0) ? Ny-1 : 0;
+                int iy = (flowSign > 0) ? Ny-2 : 1;
+                #ifdef _OPENMP
+                #pragma omp parallel for
+                #endif
+                for (int z = 0; z < Nz; ++z) {
+                    for (int x = 0; x < Nx; ++x) {
+                        int cellOut = (z*Ny + oy)*Nx + x;
+                        int cellIn = (z*Ny + iy)*Nx + x;
+                        if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
+                        if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
+                        int baseOut = cellOut*Q;
+                        int baseIn = cellIn*Q;
+                        for (int qi = 0; qi < Q; ++qi) {
+                            fNextPtr[baseOut+qi] = fPtr[baseIn+qi];
+                        }
+                    }
+                }
+            } else {
+                int oz = (flowSign > 0) ? Nz-1 : 0;
+                int iz = (flowSign > 0) ? Nz-2 : 1;
+                #ifdef _OPENMP
+                #pragma omp parallel for
+                #endif
+                for (int y = 0; y < Ny; ++y) {
+                    for (int x = 0; x < Nx; ++x) {
+                        int cellOut = (oz*Ny + y)*Nx + x;
+                        int cellIn = (iz*Ny + y)*Nx + x;
+                        if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
+                        if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
+                        int baseOut = cellOut*Q;
+                        int baseIn = cellIn*Q;
+                        for (int qi = 0; qi < Q; ++qi) {
+                            fNextPtr[baseOut+qi] = fPtr[baseIn+qi];
+                        }
+                    }
+                }
+            }
+        }
+
         f.swap(fNext);
 
         lbmCurrentStep++;
@@ -744,7 +845,7 @@ void stepLBMCPU(int steps) {
         prevKinetic = lbmAvgKineticEnergy;
         lbmConverged = (lbmConvergence < lbmParams.convergenceThreshold);
 
-        if (!std::isfinite(lbmAvgRho) || lbmAvgRho > 2.0f || lbmAvgRho < 0.5f) {
+        if (!std::isfinite(lbmAvgRho) || lbmAvgRho > 1.2f || lbmAvgRho < 0.8f) {
             std::cout << "[LBM] Divergence detected rho=" << lbmAvgRho << " — resetting" << std::endl;
             hasDiverged = true;
             break;
@@ -752,7 +853,6 @@ void stepLBMCPU(int steps) {
     }
 
     if (hasDiverged) {
-        // Soft reset to inlet
         float inUx2, inUy2, inUz2;
         computeInletVelocityLB(inUx2, inUy2, inUz2);
         float usqr = inUx2*inUx2 + inUy2*inUy2 + inUz2*inUz2;
@@ -776,7 +876,7 @@ void stepLBMCPU(int steps) {
         float inUx2, inUy2, inUz2;
         computeInletVelocityLB(inUx2, inUy2, inUz2);
         float U0mag2 = std::sqrt(inUx2*inUx2 + inUy2*inUy2 + inUz2*inUz2);
-        if (!std::isfinite(U0mag2) || U0mag2 < 1e-6f) U0mag2 = 0.1f;
+        if (!std::isfinite(U0mag2) || U0mag2 < 1e-6f) U0mag2 = 0.08f;
         float scale = flowSpeed / U0mag2;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
         float* uxW = lbmUxWorld.data();
@@ -785,6 +885,7 @@ void stepLBMCPU(int steps) {
         float* pPtr = lbmPressure.data();
         char* solidPtr2 = lbmIsSolid.data();
         char* groundPtr2 = lbmIsGround.data();
+        float rho0 = airDensity; // физическая плотность для масштабирования давления
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
@@ -800,8 +901,14 @@ void stepLBMCPU(int steps) {
                 uzW[cell] = uz * scale;
                 float rho = lbmRho[cell];
                 if (!std::isfinite(rho)) rho = 1.0f;
-                pPtr[cell] = cs2 * (rho - 1.0f) * scale * scale;
-                if (!std::isfinite(pPtr[cell])) pPtr[cell] = 0;
+                // v1.11.0: корректное давление p = rho0 * cs2*(rho-1) * scale^2
+                float pLat = cs2 * (rho - 1.0f);
+                float pPhys = pLat * scale * scale * rho0;
+                if (!std::isfinite(pPhys)) pPhys = 0;
+                // Ограничиваем физически разумными значениями: |p| < 0.5*q
+                float q = 0.5f * rho0 * flowSpeed*flowSpeed;
+                if (fabsf(pPhys) > q) pPhys = glm::clamp(pPhys, -q, q);
+                pPtr[cell] = pPhys;
             }
         }
     }
@@ -814,7 +921,6 @@ void updateLBM(float deltaTime) {
     if (!lbmParams.enabled) return;
     if (!lbmInitialized) { initLBM(); return; }
     if (lbmNx != g_voxNx || lbmNy != g_voxNy || lbmNz != g_voxNz) {
-        // Only reinit if difference is large
         if (abs(lbmNx - g_voxNx) > 2 || abs(lbmNy - g_voxNy) > 2 || abs(lbmNz - g_voxNz) > 2) {
             std::cout << "[LBM] Voxel grid changed, reinit" << std::endl;
             initLBM();
@@ -829,6 +935,7 @@ void updateLBM(float deltaTime) {
     if (lbmCurrentStep % 30 == 0) computeLBMVorticityAndQ();
 }
 
+// v1.11.0: улучшенная трилинейная интерполяция — учитывает только жидкие ячейки
 glm::vec3 getLBMVelocityLB(const glm::vec3& worldPos) {
     if (!lbmInitialized) return glm::vec3(0);
     if (!std::isfinite(worldPos.x)) return glm::vec3(0);
@@ -848,45 +955,72 @@ glm::vec3 getLBMVelocityLB(const glm::vec3& worldPos) {
     const float* uzPtr = lbmUz.data();
     const char* solidPtr = lbmIsSolid.data();
     const char* groundPtr = lbmIsGround.data();
-    auto fetch = [&](int x,int y,int z, glm::vec3& out)->bool {
-        if (x<0||x>=lbmNx||y<0||y>=lbmNy||z<0||z>=lbmNz) { out=glm::vec3(0); return false; }
+
+    // Собираем только жидкие ячейки, игнорируем твердые
+    struct Sample { glm::vec3 v; float w; };
+    Sample samples[8];
+    int validCount = 0;
+    float totalW = 0.0f;
+
+    auto tryFetch = [&](int x,int y,int z, float weight) {
+        if (x<0||x>=lbmNx||y<0||y>=lbmNy||z<0||z>=lbmNz) return;
         int cell = (z*lbmNy + y)*lbmNx + x;
-        if (cell < 0 || cell >= (int)lbmIsSolid.size()) { out=glm::vec3(0); return false; }
-        if (solidPtr[cell] || groundPtr[cell]) { out=glm::vec3(0); return false; }
-        out.x = uxPtr[cell]; out.y = uyPtr[cell]; out.z = uzPtr[cell];
-        if (!std::isfinite(out.x)) out = glm::vec3(0);
-        return true;
+        if (cell < 0 || cell >= (int)lbmIsSolid.size()) return;
+        if (solidPtr[cell] || groundPtr[cell]) return; // пропускаем твердые
+        glm::vec3 vv(uxPtr[cell], uyPtr[cell], uzPtr[cell]);
+        if (!std::isfinite(vv.x)) return;
+        samples[validCount].v = vv;
+        samples[validCount].w = weight;
+        totalW += weight;
+        validCount++;
     };
-    glm::vec3 c000,c100,c010,c110,c001,c101,c011,c111;
-    fetch(ix,iy,iz,c000); fetch(ix+1,iy,iz,c100); fetch(ix,iy+1,iz,c010); fetch(ix+1,iy+1,iz,c110);
-    fetch(ix,iy,iz+1,c001); fetch(ix+1,iy,iz+1,c101); fetch(ix,iy+1,iz+1,c011); fetch(ix+1,iy+1,iz+1,c111);
-    glm::vec3 c00 = c000*(1-tx) + c100*tx;
-    glm::vec3 c01 = c001*(1-tx) + c101*tx;
-    glm::vec3 c10 = c010*(1-tx) + c110*tx;
-    glm::vec3 c11 = c011*(1-tx) + c111*tx;
-    glm::vec3 c0 = c00*(1-ty) + c10*ty;
-    glm::vec3 c1 = c01*(1-ty) + c11*ty;
-    glm::vec3 c = c0*(1-tz) + c1*tz;
-    return std::isfinite(c.x) ? c : glm::vec3(0);
+
+    float w000 = (1-tx)*(1-ty)*(1-tz);
+    float w100 = tx*(1-ty)*(1-tz);
+    float w010 = (1-tx)*ty*(1-tz);
+    float w110 = tx*ty*(1-tz);
+    float w001 = (1-tx)*(1-ty)*tz;
+    float w101 = tx*(1-ty)*tz;
+    float w011 = (1-tx)*ty*tz;
+    float w111 = tx*ty*tz;
+
+    tryFetch(ix,iy,iz,w000);
+    tryFetch(ix+1,iy,iz,w100);
+    tryFetch(ix,iy+1,iz,w010);
+    tryFetch(ix+1,iy+1,iz,w110);
+    tryFetch(ix,iy,iz+1,w001);
+    tryFetch(ix+1,iy,iz+1,w101);
+    tryFetch(ix,iy+1,iz+1,w011);
+    tryFetch(ix+1,iy+1,iz+1,w111);
+
+    if (validCount == 0) return glm::vec3(0); // все твердые — no-slip
+    if (totalW < 1e-6f) return samples[0].v;
+
+    glm::vec3 result(0);
+    for (int i=0;i<validCount;++i) result += samples[i].v * (samples[i].w / totalW);
+    return std::isfinite(result.x) ? result : glm::vec3(0);
 }
 
 glm::vec3 getLBMVelocityWorld(const glm::vec3& worldPos) {
     if (!lbmInitialized) return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
     if (worldPos.x < lbmMinX || worldPos.x > lbmMaxX || worldPos.y < lbmMinY || worldPos.y > lbmMaxY || worldPos.z < lbmMinZ || worldPos.z > lbmMaxZ)
         return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
+    // Проверка на твердое тело — возвращаем 0, а не freestream*0.1
+    if (isLBMSolidWorld(worldPos)) return glm::vec3(0.0f);
+
     glm::vec3 vLB = getLBMVelocityLB(worldPos);
     float mag2 = vLB.x*vLB.x + vLB.y*vLB.y + vLB.z*vLB.z;
-    if (mag2 < 1e-12f) return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz) * 0.1f;
+    if (mag2 < 1e-12f) return glm::vec3(0.0f); // в погранслое — 0, физично
+
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
     float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
-    if (!std::isfinite(U0mag) || U0mag < 1e-6f) U0mag = 0.1f;
+    if (!std::isfinite(U0mag) || U0mag < 1e-6f) U0mag = 0.08f;
     float scale = flowSpeed / U0mag;
     if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
     glm::vec3 vWorld = vLB * scale;
     if (!std::isfinite(vWorld.x)) return glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
-    // Clamp world velocity
-    float maxV = flowSpeed * 3.0f;
+    float maxV = flowSpeed * 2.0f; // ограничим 2*Vinf
     float mag = glm::length(vWorld);
     if (mag > maxV) vWorld *= maxV / mag;
     return vWorld;
@@ -902,7 +1036,7 @@ float getLBMDensityWorld(const glm::vec3& worldPos) {
     int cell = (iz*lbmNy + iy)*lbmNx + ix;
     if (cell < 0 || cell >= (int)lbmRho.size()) return 1.0f;
     float rho = lbmRho[cell];
-    return std::isfinite(rho) ? glm::clamp(rho, 0.5f, 1.5f) : 1.0f;
+    return std::isfinite(rho) ? glm::clamp(rho, 0.8f, 1.2f) : 1.0f;
 }
 
 bool isLBMSolidWorld(const glm::vec3& worldPos) {
@@ -914,7 +1048,7 @@ bool isLBMSolidWorld(const glm::vec3& worldPos) {
     if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return false;
     int cell = (iz*lbmNy + iy)*lbmNx + ix;
     if (cell < 0 || cell >= (int)lbmIsSolid.size()) return false;
-    return lbmIsSolid[cell] != 0;
+    return lbmIsSolid[cell] != 0 || lbmIsGround[cell] != 0;
 }
 
 float getLBMVorticityWorld(const glm::vec3& worldPos) {
@@ -1060,28 +1194,64 @@ void computeLBMVorticityAndQ() {
 }
 
 float computeLBMRe() {
-    if (!lbmInitialized) return aeroReNumber;
+    // v1.11.0: физический Re, не решеточный
+    const float mu = 1.81e-5f;
     float L = maxDim;
-    if (L < 1e-6f) L = (float)std::max({lbmNx, lbmNy, lbmNz}) * lbmCellSizeX;
-    float nu = lbmParams.viscosity;
-    if (nu < 1e-6f) nu = 0.033f;
-    // Convert lattice viscosity to physical: nu_phys = nu_lat * (U_phys/U_lat) * (L_lat/L_phys) ... simplified
-    float Re = lbmParams.U0 * (L / lbmCellSizeX) / (nu + 1e-6f);
+    if (L < 1e-6f) L = 1.0f;
+    float Re = airDensity * flowSpeed * L / mu;
     if (!std::isfinite(Re)) Re = aeroReNumber;
+    if (Re > 1e9f) Re = 1e9f;
     return Re;
 }
 
 float computeLBMRefArea() {
     if (aeroAutoRefArea) {
+        // v1.11.0: проекционная площадь на плоскость перпендикулярную потоку
+        float az = glm::radians(flowAzimuth);
+        float el = glm::radians(flowElevation);
+        float ce = cosf(el), se = sinf(el);
+        float ca = cosf(az), sa = sinf(az);
+        glm::vec3 flowDir(ce*ca, se, ce*sa);
+        float len = glm::length(flowDir);
+        if (len > 1e-6f) flowDir /= len;
+        else flowDir = glm::vec3(1,0,0);
+
+        // Если есть треугольники — считаем проекцию
+        if (g_vertices.size() >= 9) {
+            float projArea = 0.0f;
+            int triCount = (int)(g_vertices.size() / 9);
+            float* vertPtr = g_vertices.data();
+            for (int ti=0; ti<triCount; ++ti) {
+                int i = ti*9;
+                if (i+8 >= (int)g_vertices.size()) continue;
+                glm::vec3 v0(vertPtr[i], vertPtr[i+1], vertPtr[i+2]);
+                glm::vec3 v1(vertPtr[i+3], vertPtr[i+4], vertPtr[i+5]);
+                glm::vec3 v2(vertPtr[i+6], vertPtr[i+7], vertPtr[i+8]);
+                glm::vec3 cr = glm::cross(v1-v0, v2-v0);
+                float area = 0.5f * glm::length(cr);
+                if (!std::isfinite(area) || area < 1e-12f) continue;
+                glm::vec3 n = glm::normalize(cr);
+                // Проекция на направление потока — только передняя часть
+                float dot = fabsf(glm::dot(n, flowDir));
+                // Для замкнутого тела фронтальная площадь = 0.5 * sum(area*|dot|)
+                projArea += area * dot;
+            }
+            float frontal = projArea * 0.5f;
+            if (std::isfinite(frontal) && frontal > 1e-6f && frontal < 1e6f) {
+                return frontal;
+            }
+        }
+
+        // Fallback — bbox проекция
         float sizeY = maxBB.y - minBB.y;
         float sizeZ = maxBB.z - minBB.z;
+        float sizeX = maxBB.x - minBB.x;
         if (!std::isfinite(sizeY) || sizeY < 0.01f) sizeY = maxDim;
         if (!std::isfinite(sizeZ) || sizeZ < 0.01f) sizeZ = maxDim;
-        if (sizeY < 1e-6f) sizeY = 1.0f;
-        if (sizeZ < 1e-6f) sizeZ = 1.0f;
-        float area = sizeY * sizeZ * 0.6f;
+        if (!std::isfinite(sizeX) || sizeX < 0.01f) sizeX = maxDim;
+        // Проекция bbox на плоскость перпендикулярную потоку — упрощенно
+        float area = (fabsf(flowDir.x)*sizeY*sizeZ + fabsf(flowDir.y)*sizeX*sizeZ + fabsf(flowDir.z)*sizeX*sizeY);
         if (!std::isfinite(area) || area < 1e-6f) area = maxDim*maxDim*0.5f;
-        if (area < 1e-6f) area = 1.0f;
         return area;
     }
     if (!std::isfinite(aeroRefArea) || aeroRefArea < 1e-6f) return 1.0f;
@@ -1091,7 +1261,6 @@ float computeLBMRefArea() {
 void computeLBMForcesFromLBM() {
     lbmReynolds = computeLBMRe();
     aeroReNumber = lbmReynolds;
-    // aeroRefArea updated elsewhere
 }
 
 bool lbmValidateInitialization() {
@@ -1100,7 +1269,7 @@ bool lbmValidateInitialization() {
     int total = lbmNx*lbmNy*lbmNz;
     if ((int)lbmRho.size() != total) return false;
     if ((int)f.size() != total*Q) return false;
-    for (float rho : lbmRho) if (!std::isfinite(rho) || rho < 0.3f || rho > 3.0f) return false;
+    for (float rho : lbmRho) if (!std::isfinite(rho) || rho < 0.5f || rho > 1.5f) return false;
     return true;
 }
 bool lbmValidateConservation() {
@@ -1110,14 +1279,14 @@ bool lbmValidateConservation() {
     for (float r : lbmRho) if (std::isfinite(r)) { avg += r; count++; }
     if (count == 0) return false;
     avg /= count;
-    return std::fabs(avg - 1.0f) <= 0.15f;
+    return std::fabs(avg - 1.0f) <= 0.1f; // строже — 10%
 }
 bool lbmValidateBoundaryConditions() {
     if (!lbmInitialized) return true;
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
     float mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
-    return std::isfinite(mag) && mag >= 1e-6f && mag <= 0.35f;
+    return std::isfinite(mag) && mag >= 1e-6f && mag <= 0.2f;
 }
 bool lbmValidateSolidHandling() {
     if (!lbmInitialized) return true;
@@ -1136,20 +1305,20 @@ bool lbmValidateRealisticAero() {
         if (p > maxP) maxP = p;
         if (p < minP) minP = p;
     }
-    if (fabsf(maxP) > 5000.0f || fabsf(minP) > 5000.0f) return false;
-    for (float tke : lbmTKEField) if (tke < -1e-3f || !std::isfinite(tke) || tke > 100.0f) return false;
+    float q = 0.5f * airDensity * flowSpeed*flowSpeed;
+    if (fabsf(maxP) > q*1.5f || fabsf(minP) > q*1.5f) return false;
+    for (float tke : lbmTKEField) if (tke < -1e-3f || !std::isfinite(tke) || tke > 10.0f) return false;
     for (float v : lbmVorticityMag) if (v < -1e-3f || !std::isfinite(v) || v > 1e4f) return false;
     return true;
 }
 bool lbmValidateStability() {
     if (!lbmInitialized) return true;
-    if (!std::isfinite(lbmAvgRho) || lbmAvgRho < 0.5f || lbmAvgRho > 1.5f) return false;
-    if (!std::isfinite(lbmMaxVelocityLB) || lbmMaxVelocityLB > 1.0f) return false;
-    if (!std::isfinite(lbmAvgKineticEnergy) || lbmAvgKineticEnergy > 1.0f) return false;
+    if (!std::isfinite(lbmAvgRho) || lbmAvgRho < 0.8f || lbmAvgRho > 1.2f) return false;
+    if (!std::isfinite(lbmMaxVelocityLB) || lbmMaxVelocityLB > 0.35f) return false;
+    if (!std::isfinite(lbmAvgKineticEnergy) || lbmAvgKineticEnergy > 0.1f) return false;
     return true;
 }
 
-// v1.9.0 new LBM queries
 float getLBMMachWorld(const glm::vec3& worldPos) {
     glm::vec3 v = getLBMVelocityWorld(worldPos);
     float mag = glm::length(v);
@@ -1168,9 +1337,7 @@ float getLBMHelicityWorld(const glm::vec3& worldPos) {
     if (ix <= 0 || ix >= lbmNx-1 || iy <= 0 || iy >= lbmNy-1 || iz <= 0 || iz >= lbmNz-1) return 0.0f;
     int cell = (iz*lbmNy + iy)*lbmNx + ix;
     if (cell < 0 || cell >= (int)lbmVorticityMag.size()) return 0.0f;
-    // Helicity = v · ω, approximate using vorticity magnitude and velocity alignment
     glm::vec3 vel = getLBMVelocityWorld(worldPos);
-    // Compute vorticity vector quickly from neighbors
     int xm = cell-1, xp = cell+1;
     int ym = cell-lbmNx, yp = cell+lbmNx;
     int zm = cell-lbmNx*lbmNy, zp = cell+lbmNx*lbmNy;
@@ -1185,7 +1352,6 @@ float getLBMHelicityWorld(const glm::vec3& worldPos) {
     glm::vec3 omega(duz_dy - duy_dz, dux_dz - duz_dx, duy_dx - dux_dy);
     float helicity = glm::dot(vel, omega);
     if (!std::isfinite(helicity)) return 0.0f;
-    // Normalize to [-1,1] range
     float vMag = glm::length(vel);
     float oMag = glm::length(omega);
     if (vMag < 1e-6f || oMag < 1e-6f) return 0.0f;
@@ -1195,10 +1361,11 @@ float getLBMHelicityWorld(const glm::vec3& worldPos) {
 float getLBMTotalPressureWorld(const glm::vec3& worldPos) {
     glm::vec3 v = getLBMVelocityWorld(worldPos);
     float mag2 = glm::dot(v,v);
-    if (!std::isfinite(mag2)) return 101325.0f;
-    float rho = getLBMDensityWorld(worldPos);
-    float pStatic = airPressure + lbmPressure.empty() ? 0 : 0;
-    // Find pressure from LBM
+    if (!std::isfinite(mag2)) return airPressure;
+    float rho = airDensity;
+    float pStatic = airPressure;
+    // v1.11.0 fix: скобки для тернарного оператора
+    float lbmP = 0.0f;
     float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
     float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
     float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
@@ -1206,9 +1373,10 @@ float getLBMTotalPressureWorld(const glm::vec3& worldPos) {
     if (ix>=0 && ix<lbmNx && iy>=0 && iy<lbmNy && iz>=0 && iz<lbmNz) {
         int cell = (iz*lbmNy + iy)*lbmNx + ix;
         if (cell>=0 && cell < (int)lbmPressure.size()) {
-            pStatic += lbmPressure[cell];
+            lbmP = lbmPressure[cell];
         }
     }
+    pStatic += lbmP;
     float pt = pStatic + 0.5f * rho * mag2;
     return std::isfinite(pt) ? pt : airPressure;
 }

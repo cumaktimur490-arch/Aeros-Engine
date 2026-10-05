@@ -19,55 +19,53 @@
 #endif
 
 // =====================================================
-// Линии тока — v1.8.0 Realistic Aero + фиксы
+// Линии тока — v1.11.0 Physics Fix
+// Исправлено:
+// - RK4 теперь использует реальную скорость, а не нормированное направление
+// - Проверка SDF на каждом подшаге чтобы не заходить в тело
+// - Адаптивный шаг по скорости и кривизне
 // =====================================================
 
-inline glm::vec3 rk4StepOpt(const glm::vec3& p, float h, const FlowParams& prm) {
-    if (!std::isfinite(p.x) || h < 1e-8f) return p;
-    glm::vec3 v1 = computeVelocityFieldCPU(p, prm);
-    float m1 = v1.x*v1.x + v1.y*v1.y + v1.z*v1.z;
-    if (m1 < 1e-16f || !std::isfinite(m1)) return p;
-    float inv1 = 1.0f / sqrtf(m1);
-    if (!std::isfinite(inv1)) return p;
-    glm::vec3 k1 = v1 * inv1;
+inline glm::vec3 rk4StepPhys(const glm::vec3& p, float dt, const FlowParams& prm) {
+    if (!std::isfinite(p.x) || dt < 1e-8f) return p;
 
-    glm::vec3 p2 = p + k1 * (h*0.5f);
-    if (!std::isfinite(p2.x)) return p + k1*h;
-    glm::vec3 v2 = computeVelocityFieldCPU(p2, prm);
-    float m2 = v2.x*v2.x + v2.y*v2.y + v2.z*v2.z;
-    if (m2 < 1e-16f || !std::isfinite(m2)) return p + k1*h;
-    float inv2 = 1.0f / sqrtf(m2);
-    if (!std::isfinite(inv2)) return p + k1*h;
-    glm::vec3 k2 = v2 * inv2;
+    auto safeVel = [&](const glm::vec3& pos)->glm::vec3 {
+        if (!std::isfinite(pos.x)) return glm::vec3(0);
+        // Если внутри тела — 0
+        if (!g_distanceField.empty()) {
+            float d = sampleSDFCPU(pos);
+            if (d <= 0.0f) return glm::vec3(0.0f);
+        }
+        glm::vec3 v = computeVelocityFieldCPU(pos, prm);
+        if (!std::isfinite(v.x)) return glm::vec3(0);
+        // Ограничиваем скорость чтобы не было взрыва
+        float mag2 = glm::dot(v,v);
+        float maxV = prm.maxSpeed * 2.0f;
+        if (mag2 > maxV*maxV) v *= maxV / sqrtf(mag2);
+        return v;
+    };
 
-    glm::vec3 p3 = p + k2 * (h*0.5f);
-    if (!std::isfinite(p3.x)) return p + k2*h;
-    glm::vec3 v3 = computeVelocityFieldCPU(p3, prm);
-    float m3 = v3.x*v3.x + v3.y*v3.y + v3.z*v3.z;
-    if (m3 < 1e-16f || !std::isfinite(m3)) return p + k2*h;
-    float inv3 = 1.0f / sqrtf(m3);
-    if (!std::isfinite(inv3)) return p + k2*h;
-    glm::vec3 k3 = v3 * inv3;
+    glm::vec3 v1 = safeVel(p);
+    if (glm::length(v1) < 1e-8f) return p;
+    glm::vec3 k1 = v1 * dt;
 
-    glm::vec3 p4 = p + k3 * h;
-    if (!std::isfinite(p4.x)) return p + k3*h;
-    glm::vec3 v4 = computeVelocityFieldCPU(p4, prm);
-    float m4 = v4.x*v4.x + v4.y*v4.y + v4.z*v4.z;
-    if (m4 < 1e-16f || !std::isfinite(m4)) return p + k3*h;
-    float inv4 = 1.0f / sqrtf(m4);
-    if (!std::isfinite(inv4)) return p + k3*h;
-    glm::vec3 k4 = v4 * inv4;
+    glm::vec3 p2 = p + k1 * 0.5f;
+    glm::vec3 v2 = safeVel(p2);
+    if (glm::length(v2) < 1e-8f) return p + k1;
+    glm::vec3 k2 = v2 * dt;
 
-    glm::vec3 dir = (k1 + 2.0f*k2 + 2.0f*k3 + k4) * (1.0f/6.0f);
-    float len2 = dir.x*dir.x + dir.y*dir.y + dir.z*dir.z;
-    if (len2 < 1e-16f || !std::isfinite(len2)) dir = k1;
-    else {
-        float inv = 1.0f / sqrtf(len2);
-        if (!std::isfinite(inv)) dir = k1;
-        else dir *= inv;
-    }
-    glm::vec3 res = p + dir * h;
-    if (!std::isfinite(res.x)) return p;
+    glm::vec3 p3 = p + k2 * 0.5f;
+    glm::vec3 v3 = safeVel(p3);
+    if (glm::length(v3) < 1e-8f) return p + k2;
+    glm::vec3 k3 = v3 * dt;
+
+    glm::vec3 p4 = p + k3;
+    glm::vec3 v4 = safeVel(p4);
+    if (glm::length(v4) < 1e-8f) return p + k3;
+    glm::vec3 k4 = v4 * dt;
+
+    glm::vec3 res = p + (k1 + 2.0f*k2 + 2.0f*k3 + k4) * (1.0f/6.0f);
+    if (!std::isfinite(res.x)) return p + k1;
     return res;
 }
 
@@ -93,7 +91,7 @@ void computeStreamlines() {
     if (ul < 1e-6f || !std::isfinite(ul)) up = glm::vec3(0,1,0);
     else up = glm::normalize(up);
 
-    float startDist = maxDim * 0.8f;
+    float startDist = maxDim * 0.9f;
     if (!std::isfinite(startDist)) startDist = 1.0f;
     glm::vec3 startPlaneCenter = center - flowDir * startDist;
     startPlaneCenter.x = glm::clamp(startPlaneCenter.x, flowParams.minX + 0.1f*maxDim, flowParams.maxX - 0.1f*maxDim);
@@ -101,7 +99,7 @@ void computeStreamlines() {
     startPlaneCenter.z = glm::clamp(startPlaneCenter.z, flowParams.minZ + 0.1f*maxDim, flowParams.maxZ - 0.1f*maxDim);
     if (!std::isfinite(startPlaneCenter.x)) startPlaneCenter = center - flowDir*maxDim;
 
-    float spread = maxDim * 0.8f;
+    float spread = maxDim * 0.7f;
     if (!std::isfinite(spread) || spread < 1e-6f) spread = 1.0f;
     int grid = (int)ceilf(sqrtf((float)numStreamlines));
     if (grid < 1) grid = 1;
@@ -115,6 +113,8 @@ void computeStreamlines() {
             float fy = (grid <= 1) ? 0.0f : ((float)gy/(grid-1) - 0.5f) * 2.0f;
             glm::vec3 sp = startPlaneCenter + right*(fx*spread) + up*(fy*spread);
             if (!std::isfinite(sp.x)) continue;
+            // Не стартуем внутри тела
+            if (!g_distanceField.empty() && sampleSDFCPU(sp) <= 0.0f) continue;
             startPoints.push_back(sp);
         }
     }
@@ -159,46 +159,69 @@ void computeStreamlines() {
         for (int s = 0; s < streamlineSteps; s++) {
             glm::vec3 v = computeVelocityFieldCPU(p, flowParams);
             if (!std::isfinite(v.x)) break;
-            float sp2 = v.x*v.x + v.y*v.y + v.z*v.z;
-            if (sp2 < 1e-12f || !std::isfinite(sp2)) break;
+            float speed = glm::length(v);
+            if (speed < 1e-6f) break; // застойная точка — конец линии
+            if (!std::isfinite(speed)) break;
+
             float distToCenter = glm::length(p - center);
             if (!std::isfinite(distToCenter)) break;
-            float stepLen = streamlineStepSize;
-            if (!std::isfinite(stepLen) || stepLen < 1e-6f) stepLen = 0.08f;
-            if (distToCenter < maxDim*1.5f) stepLen *= 0.5f;
-            if (distToCenter < maxDim*0.9f) stepLen *= 0.5f;
-            if (lbmParams.enabled) stepLen *= 0.7f;
 
-            glm::vec3 pNext = rk4StepOpt(p, stepLen, flowParams);
+            // Адаптивный шаг: dt = stepSize / speed, чтобы шаг по длине был ~const
+            float baseStep = streamlineStepSize;
+            if (!std::isfinite(baseStep) || baseStep < 1e-6f) baseStep = 0.08f;
+            // Уменьшаем шаг вблизи тела для точности
+            if (distToCenter < maxDim*1.2f) baseStep *= 0.4f;
+            if (distToCenter < maxDim*0.6f) baseStep *= 0.5f;
+            if (lbmParams.enabled) baseStep *= 0.8f;
+
+            float dt = baseStep / (speed + 0.1f*flowSpeed); // нормируем на скорость
+            // Ограничиваем dt чтобы не было слишком больших прыжков
+            if (dt > 0.1f) dt = 0.1f;
+            if (dt < 0.001f) dt = 0.001f;
+
+            glm::vec3 pNext = rk4StepPhys(p, dt, flowParams);
             if (!std::isfinite(pNext.x)) break;
 
-            // Ground collision for streamlines
-            if (aeroGroundEffect && pNext.y < groundY) {
-                pNext.y = groundY + flowParams.cellSizeY;
+            // Проверка на попадание в тело
+            if (!g_distanceField.empty()) {
+                float d = sampleSDFCPU(pNext);
+                if (d <= 0.0f) {
+                    // Скользим по поверхности
+                    glm::vec3 n = sdfNormalCPU(pNext);
+                    if (glm::length(n) > 1e-6f) {
+                        n = glm::normalize(n);
+                        // Выталкиваем наружу
+                        pNext += n * (fabsf(d) + flowParams.cellSizeX*0.6f);
+                        // Проверяем еще раз
+                        if (sampleSDFCPU(pNext) <= 0.0f) break; // застряли — конец
+                    } else {
+                        break;
+                    }
+                }
             }
 
-            float bigMargin = maxDim * 2.0f;
+            if (aeroGroundEffect && pNext.y < groundY) {
+                pNext.y = groundY + flowParams.cellSizeY*0.5f;
+            }
+
+            float bigMargin = maxDim * 2.5f;
             if (!std::isfinite(bigMargin)) bigMargin = 10.0f;
             if (pNext.x < flowParams.minX - bigMargin || pNext.x > flowParams.maxX + bigMargin ||
                 pNext.y < flowParams.minY - bigMargin || pNext.y > flowParams.maxY + bigMargin ||
                 pNext.z < flowParams.minZ - bigMargin || pNext.z > flowParams.maxZ + bigMargin)
                 break;
 
-            float speed = sqrtf(sp2);
-            if (!std::isfinite(speed)) speed = flowSpeed;
+            float speedNext = glm::length(computeVelocityFieldCPU(pNext, flowParams));
+            if (!std::isfinite(speedNext)) speedNext = speed;
+
             glm::vec3 c_p;
             if (aeroColorStreamlinesByVelocity) {
                 if (lbmParams.enabled && lbmInitialized) {
                     float velMag = getLBMVelocityMagWorld(pNext);
-                    if (!std::isfinite(velMag)) velMag = speed;
-                    if (aeroGroundEffect && pNext.y < center.y) {
-                        velMag *= 1.2f;
-                    }
+                    if (!std::isfinite(velMag)) velMag = speedNext;
                     c_p = getVelocityMagnitudeColor(velMag, maxSpeed);
                 } else {
-                    float velMag = speed;
-                    if (aeroGroundEffect && pNext.y < center.y) velMag *= 1.2f;
-                    c_p = getVelocityMagnitudeColor(velMag, maxSpeed);
+                    c_p = getVelocityMagnitudeColor(speedNext, maxSpeed);
                 }
             } else {
                 float d_p = sampleSDFCPU(pNext);
@@ -225,7 +248,7 @@ void computeStreamlines() {
     auto t1 = std::chrono::high_resolution_clock::now();
     perfStreamlinesMs = std::chrono::duration<float, std::milli>(t1-t0).count();
 
-    std::cout << "Streamlines v1.8.0 REALISTIC (RK4" << (lbmParams.enabled ? "+LBM" : "") << (aeroColorStreamlinesByVelocity ? "+VelColor" : "") << "): " << numLines << " lines, " << (verts.size()/6) << " vertices in " << perfStreamlinesMs << " ms" << std::endl;
+    std::cout << "Streamlines v1.11.0 Physics Fix (RK4 phys" << (lbmParams.enabled ? "+LBM" : "") << (aeroColorStreamlinesByVelocity ? "+VelColor" : "") << "): " << numLines << " lines, " << (verts.size()/6) << " vertices in " << perfStreamlinesMs << " ms" << std::endl;
     streamlineVertexCount = (int)(verts.size() / 6);
 
     if (streamlineVAO == 0) glGenVertexArrays(1, &streamlineVAO);
