@@ -4,6 +4,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <windows.h>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -14,8 +15,6 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
-
-#include <windows.h>
 
 #include <iostream>
 #include <thread>
@@ -102,7 +101,8 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // Docking disabled for old ImGui version (no DockingEnable flag)
+    // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330 core");
