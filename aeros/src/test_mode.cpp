@@ -15,6 +15,7 @@
 #include <iostream>
 #include <limits>
 #include <algorithm>
+#include <cstring>
 
 // Глобальные
 bool testModeEnabled = false;
