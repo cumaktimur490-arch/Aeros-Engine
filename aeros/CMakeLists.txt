@@ -64,6 +64,7 @@ set(SOURCES
     src/forces.cpp
     src/model.cpp
     src/ui.cpp
+    src/atmosphere.cpp
     src/glad.c
     src/imgui/imgui.cpp
     src/imgui/imgui_draw.cpp

@@ -7,11 +7,14 @@
 #include "globals.h"
 #include "voxel_grid.h"
 #include "flow_field.h"
+#include "atmosphere.h"
 
 // =====================================================
 // FlowParams
 // =====================================================
 void updateFlowParams() {
+    updateAtmosphereParams();
+
     flowParams.centerX = center.x;
     flowParams.centerY = center.y;
     flowParams.centerZ = center.z;
@@ -61,6 +64,12 @@ void updateFlowParams() {
     flowParams.cellSizeY = (g_voxMaxY - g_voxMinY) / fmaxf((float)g_voxNy, 1.0f);
     flowParams.cellSizeZ = (g_voxMaxZ - g_voxMinZ) / fmaxf((float)g_voxNz, 1.0f);
     flowParams.gridCellCount = g_voxNx * g_voxNy * g_voxNz;
+
+    flowParams.altitude = altitude;
+    flowParams.airDensity = airDensity;
+    flowParams.airPressure = airPressure;
+    flowParams.airTemperature = airTemperature;
+    flowParams.speedOfSound = speedOfSound;
 }
 
 // =====================================================

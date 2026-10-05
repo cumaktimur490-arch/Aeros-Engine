@@ -2,7 +2,7 @@
 ; Сборка: iscc AerosEngine-Updater-x86.iss /DAppVersion=1.0.0
 
 #ifndef AppVersion
-  #define AppVersion "1.1.1"
+  #define AppVersion "1.2.0"
 #endif
 #define Arch "x86"
 #include "common.iss"
