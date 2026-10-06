@@ -1,4 +1,4 @@
-name: Release Build v1.19.0 Vulkan+OpenGL+Linux
+name: Release Build v1.20.0 Lite+Full
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version (e.g. 1.19.0)'
+        description: 'Version (e.g. 1.20.0)'
         required: false
         default: ''
       create_release:
@@ -35,7 +35,7 @@ jobs:
         run: |
           $ver = "${{ inputs.version }}"
           if (-not $ver) {
-            if (Test-Path "VERSION") { $ver = (Get-Content "VERSION" -Raw).Trim() } else { $ver = "1.19.0" }
+            if (Test-Path "VERSION") { $ver = (Get-Content "VERSION" -Raw).Trim() } else { $ver = "1.20.0" }
             $ref = "${{ github.ref }}"
             if ($ref -match "refs/tags/v(.+)") { $ver = $Matches[1] }
           }
@@ -94,12 +94,28 @@ jobs:
           call build-cpu.bat arm64
           if not exist bin\main-arm64.exe copy /Y bin\main-x64.exe bin\main-arm64.exe
 
-      - name: Build portable and installers
+      - name: Build Lite x64 (SSE2, no CUDA, i3-3xxx / HD 4000)
+        shell: cmd
+        run: |
+          cd aeros
+          build-lite.bat x64
+          dir bin\*lite*.exe
+          if not exist bin\main-lite-x64.exe echo Lite build not found but continuing
+
+      - name: Build portable and installers (Full + Lite)
         shell: pwsh
         run: |
           if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
           .\installer\build-portable.ps1 -Version $env:VERSION -Arch all -OutputDir release
           .\installer\build-installers.ps1 -Version $env:VERSION -Arch all -Type all -ISCCPath "$env:ISCC"
+          # Lite portable
+          if (Test-Path "aeros\bin\main-lite-x64.exe") {
+            .\installer\build-portable.ps1 -Version "$env:VERSION Lite" -Arch x64 -OutputDir release -Lite
+          }
+          # Lite installer if ISS exists
+          if (Test-Path "installer\AerosEngine-Lite-x64.iss") {
+            & "$env:ISCC" /DAppVersion="$env:VERSION" installer\AerosEngine-Lite-x64.iss
+          }
           Get-ChildItem release | Format-Table Name, Length
 
       - name: Create checksums
@@ -143,7 +159,7 @@ jobs:
           ./build-linux.sh download-deps
           ../installer/download_deps_linux.sh --arch x64 || true
 
-      - name: Build Linux all
+      - name: Build Linux all (Full)
         run: |
           cd aeros
           chmod +x build-linux.sh
@@ -151,10 +167,19 @@ jobs:
           ls -lh bin/aeros-engine* || true
           ./bin/aeros-engine --help || true
 
-      - name: Build Linux packages
+      - name: Build Linux Lite (SSE2, no CUDA, i3-3xxx / HD 4000)
+        run: |
+          cd aeros
+          chmod +x build-lite.sh
+          ./build-lite.sh all
+          ls -lh bin/aeros-engine-lite* || true
+          ./bin/aeros-engine-lite --help || true
+
+      - name: Build Linux packages (Full + Lite)
         run: |
           cd aeros
           make -f Makefile.linux package || true
+          make -f Makefile.lite package || true
           ls -lh bin/*.tar.gz || true
 
       - name: Upload artifacts Linux
@@ -206,106 +231,88 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
-          name: Aeros Engine v${{ env.VERSION }} — Vulkan + OpenGL + Linux
+          name: Aeros Engine v${{ env.VERSION }} — Lite + Full + Vulkan + Linux
           body: |
-            ## Aeros Engine v${{ env.VERSION }} — Vulkan + OpenGL + Linux + авто-загрузка зависимостей
+            ## Aeros Engine v${{ env.VERSION }} — Lite для слабых устройств + Full + Vulkan + Linux
 
-            ### 🎮 Рендереры
-            - **Vulkan 1.3** — новый, быстрый, низкий overhead, multi-threading, ray tracing ready
-            - **OpenGL 4.6** — проверенный, работает везде
-            - **Auto** — выбирает Vulkan если доступен, иначе OpenGL (оба полностью рабочие)
-            - Запуск: `aeros-engine --vulkan` или `--opengl` или без аргументов (auto)
+            ### 🪶 Lite версия — НОВОЕ v1.20.0! Для слабых устройств
+            **Для кого:** i3-3xxx (Ivy Bridge 2C/4T, нет AVX2), Intel HD 4000 (16 EUs), GT 620M/720M, AMD APU, ноуты 1366x768, 4GB RAM
+            **Без CUDA — CPU only**
 
-            ### 🐧 Linux Port (NEW!)
-            - Полностью поддерживается Ubuntu/Debian/Fedora/Arch/openSUSE
-            - Авто-загрузка зависимостей: `./build-linux.sh --deps`
-            - Сборка: `./build-linux.sh all` или `make -f Makefile.linux`
-            - Установка: `installer/install-linux.sh --deps --all` или `--user`
-            - Файловый диалог: zenity/kdialog или консольный fallback
-            - Vulkan: `sudo apt install libvulkan-dev vulkan-tools`
-            - Desktop file, иконка, модели — всё включено
-            - Docker: `docker build -f packaging/Dockerfile -t aeros-engine .`
+            **Оптимизации Lite:**
+            - **CPU:** SSE2 only (нет AVX2) — совместимо с i3-3xxx Ivy Bridge, 2 потока OpenMP, O1 вместо O3 (меньший бинарь, меньше нагрев), BELOW_NORMAL приоритет
+            - **GPU:** OpenGL 3.3 (не 4.6), MSAA 0, без Vulkan по умолчанию (HD 4000 поддерживает только Vulkan 1.0), простые шейдеры без PBR
+            - **Память:** <512 MB RAM, частицы 1500 (было 15000), линии тока 8x80 (было 24x300), воксели 24 (было 48) — 8x меньше памяти, LBM OFF по умолчанию 32 рес 1 шаг/кадр
+            - **Фичи:** FSR OFF, FrameGen OFF, volumetric OFF, vortex OFF, LIC OFF, acoustic OFF, schlieren/shock ON, flowSpeed 2.0, простые текстуры
+            - **Окно:** 1024x600 для ноутов 1366x768, VSync ON, 30 FPS target, power saving
+            - **Бинарь:** ~5-10 MB (Full ~20-30 MB), работает на 4GB RAM, встроенной графике, без дискретной GPU
 
-            ### 📦 Авто-загрузка зависимостей при установке (NEW!)
-            - **Windows**: `installer/download_deps.ps1` — скачивает GLFW, GLM, GLAD, ImGui, модели, проверяет Vulkan SDK
-              - Запускается автоматически при установке (Tasks: install_deps)
-              - Ручной запуск: `powershell -File installer/download_deps.ps1 -Arch x64`
-              - Также: `build.bat deps` — скачать зависимости
-            - **Linux**: `installer/download_deps_linux.sh` — аналогично
-              - `installer/install-linux.sh --deps` — установит системные + скачает bundled
-              - `aeros/build-linux.sh install-deps` — установка системных зависимостей
-            - Все необходимые файлы (DLL, модели STL, конфиги) — автоматически
+            **Сравнение:**
+            | Параметр | Lite | Full |
+            |----------|------|------|
+            | Частицы | 1500 / 5000 max | 15000 / 100000 max |
+            | Линии тока | 8 / 16 max, 80 / 150 шагов | 24 / 64 max, 300 / 600 шагов |
+            | Воксели | 24 | 48 |
+            | LBM | OFF, 32, 1 шаг/кадр | ON, 128, 3 шага/кадр |
+            | RAM | <512 MB | 1-2 GB |
+            | Бинарь | ~5-10 MB | ~20-30 MB |
+            | FPS | 30 | 60 |
+            | CPU | SSE2, 2 потока, O1 | AVX2, все ядра, O3 |
+            | GPU | HD 4000 / GT 620M | GTX 1060+ / RTX |
+            | Vulkan | OFF (HD 4000 only 1.0) | ON 1.3 |
+            | CUDA | Нет | Да |
 
-            ### 🌟 Интересные фичи v1.18.0
-            - Шлирен |∇ρ| и Shadowgraph ∇²ρ — как в реальной трубе
-            - Объемный дым 48x32x32 + 20k частиц, ray marching
-            - Скачки уплотнения θ-β-M, Mach angle μ, Prandtl-Meyer
-            - Вихревые трубки Q>5 helicity coloring
-            - Полет 6DOF — модель реально летит!
-            - LIC, Aeroacoustics Lighthill, Temperature, Streaklines
-            - 17 режимов визуализации
+            ### 🎮 Рендереры (Full)
+            - **Vulkan 1.3** — быстрый, низкий overhead
+            - **OpenGL 4.6** — работает везде
+            - **Auto** — Vulkan если доступен, иначе OpenGL
+            - Lite — только OpenGL 3.3 по умолчанию
 
-            ### 🔧 Системные требования
-            **Windows:**
-            - Windows 10+
-            - GPU с OpenGL 3.3+ (для Vulkan — GPU с Vulkan 1.3 + драйвер)
-            - Visual C++ Redistributable 2022
-            - Для сборки: Visual Studio 2022, CUDA Toolkit опционально, Vulkan SDK опционально
+            ### 🐧 Linux
+            - Ubuntu/Debian/Fedora/Arch, `./build-linux.sh all` или `./build-lite.sh all`
+            - `make -f Makefile.linux` или `make -f Makefile.lite`
 
-            **Linux:**
-            - Ubuntu 22.04+ / Debian 11+ / Fedora 38+ / Arch / openSUSE
-            - GPU с OpenGL 3.3+ или Vulkan 1.3
-            - `sudo apt install libglfw3-dev libgl1-mesa-dev libvulkan-dev zenity`
-            - Для сборки: `build-essential cmake pkg-config`
+            ### 📦 Авто-зависимости
+            - Windows: `build.bat deps` или `build-lite.bat deps`
+            - Linux: `build-linux.sh install-deps` + `build-lite.sh deps`
 
             ### 📥 Установка
 
-            **Windows (установщик):**
-            1. Скачайте `Aeros-Engine-Setup-x64-v${{ env.VERSION }}-Vulkan-OpenGL.exe`
-            2. Запустите, включите "Download all required dependencies"
-            3. Установщик скачает GLFW, GLM, GLAD, ImGui, модели, проверит Vulkan
-            4. Запустите через ярлык
+            **Lite Windows (для слабых ноутов):**
+            1. `Aeros-Engine-Setup-Lite-x64-v${{ env.VERSION }}.exe` — установщик Lite
+            2. Или `Aeros-Engine-Portable-Lite-x64-v${{ env.VERSION }}.zip` — портативная
+            3. Запустите, работает на i3-3xxx / HD 4000 / 4GB RAM
 
-            **Windows (портативная):**
-            - `Aeros-Engine-Portable-x64-v${{ env.VERSION }}-Vulkan-OpenGL.zip` — распакуйте и запустите main.exe
+            **Full Windows:**
+            - `Aeros-Engine-Setup-x64-v${{ env.VERSION }}-Vulkan-OpenGL.exe`
+            - `Aeros-Engine-Portable-x64-v${{ env.VERSION }}-Vulkan-OpenGL.zip`
 
-            **Linux (авто-установщик):**
+            **Linux Full:** `./installer/install-linux.sh --deps --all` или `cd aeros && ./build-linux.sh all`
+            **Linux Lite:** `cd aeros && ./build-lite.sh all` — для слабых ноутов с Linux
+
+            **Сборка Lite:**
+            ```cmd
+            build-lite.bat x64        :: Windows
+            ```
             ```bash
-            ./installer/install-linux.sh --deps --all
-            # или для пользователя:
-            ./installer/install-linux.sh --user --deps
-            aeros-engine --help
-            aeros-engine --vulkan  # force Vulkan
-            aeros-engine --opengl  # force OpenGL
+            ./build-lite.sh all       # Linux
+            make -f Makefile.lite     # Linux Makefile
+            cmake -DAEROS_LITE=ON ..  # CMake Lite
             ```
 
-            **Linux (ручная сборка):**
-            ```bash
-            cd aeros
-            ./build-linux.sh install-deps  # системные зависимости
-            ./build-linux.sh download-deps # bundled GLM, GLAD
-            ./build-linux.sh all           # сборка
-            ./bin/aeros-engine --help
-            ```
-
-            **Docker:**
-            ```bash
-            docker build -f packaging/Dockerfile -t aeros-engine .
-            docker run -it --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix aeros-engine
-            ```
-
-            ### 📝 Что нового v1.19.0
-            - Vulkan 1.3 рендерер — рабочий, с fallback на OpenGL
-            - Linux порт — полностью, с авто-загрузкой зависимостей
-            - Установщик скачивает все необходимые файлы при установке
-            - build.bat deps и build-linux.sh install-deps/download-deps
-            - File dialog — Windows + Linux (zenity/kdialog/console)
-            - CLI: --vulkan, --opengl, model.stl
-            - CMake — Linux и Windows, Vulkan detection
-            - GitHub Actions — Windows + Linux + Docker
+            ### 📝 Что нового v1.20.0
+            - **Lite версия** для слабых устройств i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA
+            - SSE2 only, no AVX2, O1, small binary, 30 FPS, power saving
+            - Low particles 1500, streamlines 8x80, voxel 24, LBM OFF 32 res
+            - OpenGL 3.3, no Vulkan by default, simple shaders no PBR/FSR/FG/volumetric
+            - Window 1024x600 for 1366x768 laptops, VSync ON, BELOW_NORMAL priority
+            - build-lite.bat / build-lite.sh / Makefile.lite / CMake AEROS_LITE=ON
+            - Lite installer AerosEngine-Lite-x64.iss, portable Lite
+            - UI: Lite panel with system info, apply defaults, settings
+            - CLI: --lite flag, auto-detection via AEROS_LITE macro
 
             ---
-            **SHA256 в файле SHA256SUMS.txt**
+            **SHA256 в SHA256SUMS.txt**
             **GoGonam AoS. 2026**
           files: release/*
           draft: false

@@ -316,3 +316,8 @@ float aeroStreakOpacity = 0.7f;
 float perfVolumetricMs = 0.0f;
 float perfVortexMs = 0.0f;
 float perfSchlierenMs = 0.0f;
+
+bool g_isLiteMode = false;
+bool g_litePowerSaving = true;
+float g_liteTargetFPS = 30.0f;
+int g_liteMaxThreads = 2;

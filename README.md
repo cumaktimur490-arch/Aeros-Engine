@@ -1,35 +1,63 @@
-# <img src="icon.png" width="48" height="48" align="left" /> Aeros Engine — AoS ENG. v1.19.0 Vulkan + OpenGL + Linux
+# <img src="icon.png" width="48" height="48" align="left" /> Aeros Engine — AoS ENG. v1.20.0 Lite + Full + Vulkan + Linux
 
 Интерактивная визуализация обтекания 3D-модели (STL) потоком воздуха: линии тока, частицы,
-распределение давления, подъемная сила, шлирен, объемный дым, скачки уплотнения, вихревые трубки, полет 6DOF, LIC, акустика. C++17 / Vulkan 1.3 / OpenGL 4.6 / CUDA / Dear ImGui / GLM.
+распределение давления, подъемная сила, шлирен, объемный дым, скачки уплотнения, вихревые трубки, полет 6DOF, LIC, акустика. C++17 / Vulkan 1.3 / OpenGL 4.6 / CUDA / Dear ImGui / GLM. Lite для слабых устройств i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA.
 
-> v1.19.0 Vulkan + Linux + авто-загрузка зависимостей: рабочий Vulkan рендерер с fallback на OpenGL, полный Linux порт (Makefile.linux, build-linux.sh, install-linux.sh, Docker), установщик скачивает все необходимые файлы при установке (GLFW, GLM, GLAD, ImGui, Vulkan check, модели); v1.18.0 Interesting: шлирен |∇ρ|, объемный дым ray marching, скачки θ-β-M, вихревые трубки Q, полет 6DOF, LIC, акустика Lighthill; v1.17.0 Physics Fix: ISA pBase continuity, Sutherland, ellipsoid potential, ground image vy inversion Venturi 1.6x, BL Re_x, Stratford, wake sqrt(D/x), Cd_est, St(Re) Karman, divergence-free curl, Prandtl-Glauert; v1.16.0 FG, v1.15.0 FSR.
+> v1.20.0 Lite: SSE2 only, O1, 1500 частиц, 8x80 линий, voxel 24, LBM OFF 32, 30 FPS, OpenGL 3.3, small binary для i3-3xxx/HD4000/GT620M/4GB RAM; v1.19.0 Vulkan+Linux: Vulkan рендерер с fallback на OpenGL, полный Linux порт, авто-загрузка зависимостей; v1.18.0 Interesting: шлирен |∇ρ|, объемный дым, скачки θ-β-M, вихревые трубки Q, полет 6DOF, LIC, акустика; v1.17.0 Physics Fix: ISA, Sutherland, Venturi 1.6x, BL, wake, St(Re); v1.16.0 FG, v1.15.0 FSR.
 
 ## 📥 Скачать (релиз)
 
 Последний релиз: **[GitHub Releases](https://github.com/cumaktimur490-arch/Aeros-Engine/releases)**
 
-### Windows
+### Windows Lite — для слабых устройств i3-3xxx / HD 4000 / GT 620M / 4GB RAM (NEW v1.20.0!)
 | Файл | Описание | Система |
 |------|----------|---------|
-| `Aeros-Engine-Setup-x64-v*-Vulkan-OpenGL.exe` | Установщик с авто-загрузкой зависимостей (рекомендуется) | Windows 10+ 64-bit |
-| `Aeros-Engine-Setup-x86-v*.exe` | Установщик | Windows 10+ 32-bit |
-| `Aeros-Engine-Setup-arm64-v*.exe` | Установщик | Windows 10+ ARM64 |
-| `Aeros-Engine-Portable-x64-v*-Vulkan-OpenGL.zip` | Портативная | 64-bit |
-| `Aeros-Engine-Portable-x86-v*.zip` | Портативная | 32-bit |
-| `Aeros-Engine-Portable-arm64-v*.zip` | Портативная | ARM64 |
+| `Aeros-Engine-Setup-Lite-x64-v*.exe` | **Lite установщик** SSE2 O1 1500 частиц 30 FPS small binary | Win7+ 64-bit, i3-3xxx, HD 4000, 4GB RAM |
+| `Aeros-Engine-Portable-Lite-x64-v*.zip` | **Lite портативная** для слабых ноутов | 64-bit Lite |
 
-**Быстрый старт Windows:**
+**Быстрый старт Windows Lite (слабый ноут):**
+1. Скачайте `Setup-Lite-x64` — для i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA
+2. Запустите, включите "Download Lite dependencies (minimal)" — только GLFW, GLM, GLAD, модели, без Vulkan SDK
+3. Ярлык: Aeros Engine Lite — окно 1024x600, 30 FPS, low настройки, работает на встроенной графике
+4. Оптимизировано: SSE2 only (no AVX2), O1 small binary ~5-10 MB, <512 MB RAM, OpenGL 3.3, MSAA 0, VSync ON, power saving
+
+### Windows Full
+| Файл | Описание | Система |
+|------|----------|---------|
+| `Aeros-Engine-Setup-x64-v*-Vulkan-OpenGL.exe` | Full установщик с авто-загрузкой зависимостей | Windows 10+ 64-bit |
+| `Aeros-Engine-Setup-x86-v*.exe` | Full установщик | Windows 10+ 32-bit |
+| `Aeros-Engine-Setup-arm64-v*.exe` | Full установщик | Windows 10+ ARM64 |
+| `Aeros-Engine-Portable-x64-v*-Vulkan-OpenGL.zip` | Full портативная | 64-bit |
+| `Aeros-Engine-Portable-x86-v*.zip` | Full портативная | 32-bit |
+| `Aeros-Engine-Portable-arm64-v*.zip` | Full портативная | ARM64 |
+
+**Быстрый старт Windows Full (современный ПК):**
 1. Скачайте `Setup-x64-Vulkan-OpenGL` для современного ПК
 2. Запустите, включите "Download all required dependencies" — установщик скачает GLFW, GLM, GLAD, ImGui, модели, проверит Vulkan
 3. Ярлыки: Aeros Engine (Auto), Vulkan, OpenGL, Download Dependencies
 4. Выберите STL модель при запуске
 
-### Linux (NEW v1.19.0!)
+### Linux Lite — для слабых ноутов с Linux (NEW v1.20.0!)
 | Файл | Описание |
 |------|----------|
-| `aeros-engine-linux-x64-v*.tar.gz` | Linux x64 Vulkan+OpenGL |
-| `aeros-engine-linux` binary | Прямой бинарь |
+| `aeros-engine-lite-linux-x64-v*.tar.gz` | Linux Lite x64 SSE2 O1 30 FPS |
+| `aeros-engine-lite` binary | Lite бинарь ~5-10 MB |
+
+**Быстрый старт Linux Lite:**
+```bash
+cd aeros
+./build-lite.sh install-deps  # минимальные: glfw, mesa, X11, openmp — без Vulkan
+./build-lite.sh deps          # GLM, GLAD
+./build-lite.sh all           # сборка Lite SSE2 O1
+./bin/aeros-engine-lite --lite --help
+./bin/aeros-engine-lite model.stl
+```
+
+### Linux Full
+| Файл | Описание |
+|------|----------|
+| `aeros-engine-linux-x64-v*.tar.gz` | Linux Full x64 Vulkan+OpenGL |
+| `aeros-engine-linux` binary | Full бинарь |
 
 **Быстрый старт Linux:**
 ```bash

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <thread>
 
 #include "globals.h"
 #include "stl_loader.h"
@@ -23,6 +24,7 @@
 #include "fsr.h"
 #include "framegen.h"
 #include "interesting.h"
+#include "lite_config.h"
 
 // =====================================================
 // Панель управления — v1.19.0 GoGonam AoS.
@@ -612,6 +614,50 @@ if (ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — Schlieren, Smoke, Shock
         if (ImGui::Button(_TR("Clear Streaks", "Очистить"))) clearStreaklines();
     }
     ImGui::Checkbox(_TR("Show Temperature", "Показывать температуру"), &aeroShowTemperature);
+}
+
+if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 (NEW v1.20.0)", "Lite — Слабые устройства i3-3xxx / HD 4000 (НОВОЕ v1.20.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("%s", getLiteInfoString());
+    ImGui::Text("%s: %s", _TR("Lite Mode", "Lite режим"), isLiteMode() ? "ON — Optimized for weak devices" : "OFF — Full version");
+    ImGui::Text("%s: %d", _TR("HW Threads", "Потоков CPU"), std::thread::hardware_concurrency());
+    ImGui::Text("%s: %d", _TR("Max Threads", "Макс потоков"), getLiteMaxThreads() >0 ? getLiteMaxThreads() : (int)std::thread::hardware_concurrency());
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Lite Optimizations for i3-3xxx / HD 4000 / GT 620M", "Оптимизации для i3-3xxx / HD 4000 / GT 620M"));
+    ImGui::BulletText("SSE2 only (no AVX2) — Ivy Bridge compatible");
+    ImGui::BulletText("O1 (not O3) — smaller binary, less heat");
+    ImGui::BulletText("No CUDA — CPU only");
+    ImGui::BulletText("No Vulkan by default — HD 4000 only supports Vulkan 1.0");
+    ImGui::BulletText("Particles 1500 (was 15000), Streamlines 8x80 (was 24x300)");
+    ImGui::BulletText("Voxel 24 (was 48) — 8x less memory, LBM OFF, 32 res");
+    ImGui::BulletText("Target 30 FPS, VSync ON, power saving, small window 1024x600");
+    ImGui::BulletText("Works on 1366x768 laptops, 4GB RAM, integrated graphics");
+    ImGui::Separator();
+    if (isLiteMode()) {
+        ImGui::Text("%s:", _TR("Lite Settings", "Настройки Lite"));
+        ImGui::SliderInt(_TR("Particles", "Частицы"), &numParticles, 500, 5000);
+        ImGui::SliderInt(_TR("Streamlines", "Линии тока"), &numStreamlines, 4, 16);
+        ImGui::SliderInt(_TR("Steps", "Шаги"), &streamlineSteps, 40, 150);
+        ImGui::SliderInt(_TR("Voxel Res", "Воксели"), &voxelResolution, 16, 32);
+        ImGui::Checkbox(_TR("Power Saving", "Энергосбережение"), &g_litePowerSaving);
+        ImGui::SliderFloat(_TR("Target FPS", "Целевой FPS"), &g_liteTargetFPS, 15.0f, 60.0f, "%.0f");
+        if (ImGui::Button(_TR("Apply Lite Defaults", "Применить Lite настройки"))) {
+            applyLiteDefaults();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(_TR("Print System Info", "Инфо о системе"))) {
+            printLiteSystemInfo();
+        }
+    } else {
+        ImGui::Text("%s", _TR("Full version — for modern PCs with Vulkan/CUDA", "Полная версия — для современных ПК с Vulkan/CUDA"));
+        ImGui::Text("%s", _TR("For weak devices, download Lite version:", "Для слабых устройств скачайте Lite версию:"));
+        ImGui::BulletText("Aeros-Engine-Setup-Lite-x64-v*.exe");
+        ImGui::BulletText("aeros-engine-lite-linux-*");
+        ImGui::BulletText("build-lite.bat / build-lite.sh");
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Lite vs Full", "Lite vs Full"));
+    ImGui::Text("  Lite: 1500 particles, 8x80 streamlines, voxel 24, LBM OFF, 30 FPS, SSE2, ~5-10 MB binary, <512 MB RAM");
+    ImGui::Text("  Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2, ~20-30 MB binary, 1-2 GB RAM");
 }
 
 if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {

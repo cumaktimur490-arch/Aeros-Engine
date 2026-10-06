@@ -20,6 +20,7 @@ option(AEROS_CPU_ONLY "Build without CUDA (CPU fallback only)" OFF)
 option(AEROS_ENABLE_VULKAN "Enable Vulkan renderer" ON)
 option(AEROS_ENABLE_OPENGL "Enable OpenGL renderer" ON)
 option(AEROS_DOWNLOAD_DEPS "Auto-download missing dependencies (GLM, GLAD, ImGui)" ON)
+option(AEROS_LITE "Build Lite version for weak devices i3-3xxx / HD 4000 / No CUDA" OFF)
 
 if(AEROS_CPU_ONLY)
     project(AerosEngine VERSION ${APP_VERSION} LANGUAGES C CXX)
@@ -45,16 +46,31 @@ else()
 endif()
 
 # Compiler flags
-if(MSVC)
-    if(MSVC_VERSION GREATER_EQUAL 1929)
-        add_compile_options(/O2 /Ot /arch:AVX2 /fp:fast /openmp:llvm)
+# Lite vs Full flags
+if(AEROS_LITE)
+    message(STATUS "LITE MODE — for weak devices i3-3xxx / HD 4000 / 4GB RAM / No CUDA")
+    if(MSVC)
+        # Lite: O1, SSE2 only (no AVX2), precise math, no LTCG for small binary
+        add_compile_options(/O1 /arch:SSE2 /fp:precise /openmp)
+        # No LTCG
     else()
-        add_compile_options(/O2 /Ot /arch:AVX2 /fp:fast /openmp)
+        # Lite: O1, SSE2, no AVX2, no fast-math
+        add_compile_options(-O1 -msse2 -mfpmath=sse -ffast-math -fopenmp -fPIC)
+        add_link_options(-fopenmp)
     endif()
-    add_link_options(/LTCG)
+    add_compile_definitions(AEROS_LITE LITE_MODE CPU_ONLY)
 else()
-    add_compile_options(-O3 -march=native -ffast-math -fopenmp -fPIC)
-    add_link_options(-fopenmp)
+    if(MSVC)
+        if(MSVC_VERSION GREATER_EQUAL 1929)
+            add_compile_options(/O2 /Ot /arch:AVX2 /fp:fast /openmp:llvm)
+        else()
+            add_compile_options(/O2 /Ot /arch:AVX2 /fp:fast /openmp)
+        endif()
+        add_link_options(/LTCG)
+    else()
+        add_compile_options(-O3 -march=native -ffast-math -fopenmp -fPIC)
+        add_link_options(-fopenmp)
+    endif()
 endif()
 
 # Vulkan
@@ -138,6 +154,7 @@ set(SOURCES
     src/framegen.cpp
     src/interesting.cpp
     src/vulkan_renderer.cpp
+    src/lite_config.cpp
     src/glad.c
     src/imgui/imgui.cpp
     src/imgui/imgui_draw.cpp

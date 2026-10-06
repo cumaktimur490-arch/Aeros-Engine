@@ -47,6 +47,14 @@ jobs:
           build.bat x86
           dir bin\*.exe
 
+      - name: Build Lite x64 (SSE2, no CUDA, for i3-3xxx / HD 4000)
+        shell: cmd
+        run: |
+          cd aeros
+          build-lite.bat x64
+          dir bin\*lite*.exe
+          dir bin\*.exe
+
       - name: Upload artifacts Windows
         uses: actions/upload-artifact@v4
         with:
@@ -107,10 +115,19 @@ jobs:
           ./bin/aeros-engine --help || true
           ldd bin/aeros-engine-linux-* || true
 
+      - name: Build Lite (SSE2, no CUDA, i3-3xxx / HD 4000)
+        run: |
+          cd aeros
+          chmod +x build-lite.sh
+          ./build-lite.sh all
+          ls -lh bin/aeros-engine-lite* || true
+          ./bin/aeros-engine-lite --help || true
+
       - name: Package tar.gz
         run: |
           cd aeros
           make -f Makefile.linux package || true
+          make -f Makefile.lite package || true
           ls -lh bin/*.tar.gz || true
 
       - name: Upload artifacts Linux

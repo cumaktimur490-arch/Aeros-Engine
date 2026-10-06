@@ -1,7 +1,8 @@
 param(
     [string]$Version = "",
     [ValidateSet("x64","x86","arm64","both","all")][string]$Arch = "both",
-    [string]$OutputDir = "..\release"
+    [string]$OutputDir = "..\release",
+    [switch]$Lite
 )
 
 # Aeros Engine — Сборка портативных версий
@@ -29,28 +30,53 @@ if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir
 $OutputDir = Resolve-Path $OutputDir
 
 function Build-Portable($archSuffix) {
-    $exeName = "main-$archSuffix.exe"
-    $exePath = Join-Path $BinDir $exeName
-    $fallbackExe = Join-Path $BinDir "main.exe"
-
-    if (-not (Test-Path $exePath)) {
-        if (Test-Path $fallbackExe) {
-            Write-Host "[WARN] $exeName not found, using main.exe as fallback for $archSuffix" -ForegroundColor Yellow
-            $exePath = $fallbackExe
-        } else {
-            Write-Host "[ERROR] No executable found for $archSuffix : $exePath" -ForegroundColor Red
-            return
+    if ($Lite) {
+        $exeName = "main-lite-$archSuffix.exe"
+        $exePath = Join-Path $BinDir $exeName
+        $fallbackExe = Join-Path $BinDir "main-lite.exe"
+        $fallback2 = Join-Path $BinDir "aeros-engine-lite-$archSuffix.exe"
+        if (-not (Test-Path $exePath)) {
+            if (Test-Path $fallbackExe) { $exePath = $fallbackExe }
+            elseif (Test-Path $fallback2) { $exePath = $fallback2 }
+            else {
+                Write-Host "[WARN] Lite $exeName not found, trying main-$archSuffix.exe" -ForegroundColor Yellow
+                $exeName = "main-$archSuffix.exe"
+                $exePath = Join-Path $BinDir $exeName
+                $fallbackExe = Join-Path $BinDir "main.exe"
+                if (-not (Test-Path $exePath) -and (Test-Path $fallbackExe)) { $exePath = $fallbackExe }
+                elseif (-not (Test-Path $exePath)) { Write-Host "[ERROR] No exe for Lite $archSuffix" -ForegroundColor Red; return }
+            }
         }
+        $portablePrefix = "Aeros-Engine-Portable-Lite-$archSuffix"
+        $exeDestName = "AerosEngine-Lite.exe"
+    } else {
+        $exeName = "main-$archSuffix.exe"
+        $exePath = Join-Path $BinDir $exeName
+        $fallbackExe = Join-Path $BinDir "main.exe"
+        if (-not (Test-Path $exePath)) {
+            if (Test-Path $fallbackExe) {
+                Write-Host "[WARN] $exeName not found, using main.exe as fallback for $archSuffix" -ForegroundColor Yellow
+                $exePath = $fallbackExe
+            } else {
+                Write-Host "[ERROR] No executable found for $archSuffix : $exePath" -ForegroundColor Red
+                return
+            }
+        }
+        $portablePrefix = "Aeros-Engine-Portable-$archSuffix"
+        $exeDestName = "AerosEngine.exe"
     }
 
-    $portableDir = Join-Path $env:TEMP "Aeros-Engine-Portable-$archSuffix"
+    $portableDir = Join-Path $env:TEMP "$portablePrefix"
     if (Test-Path $portableDir) { Remove-Item -Recurse -Force $portableDir }
     New-Item -ItemType Directory -Path $portableDir | Out-Null
 
     # Копируем бинарь
-    Copy-Item $exePath -Destination (Join-Path $portableDir "AerosEngine.exe") -Force
+    Copy-Item $exePath -Destination (Join-Path $portableDir $exeDestName) -Force
     # Также копируем как main.exe для совместимости
     Copy-Item $exePath -Destination (Join-Path $portableDir "main.exe") -Force
+    if ($Lite) {
+        Copy-Item $exePath -Destination (Join-Path $portableDir "aeros-engine-lite.exe") -Force -ErrorAction SilentlyContinue
+    }
 
     # DLLs
     Get-ChildItem $BinDir -Filter "*.dll" | ForEach-Object {
@@ -87,7 +113,30 @@ pause
     Copy-Item (Join-Path $BinDir "icon.ico") -Destination (Join-Path $portableDir "icon.ico") -Force -ErrorAction SilentlyContinue
 
     # Portable info
-    @"
+    if ($Lite) {
+        @"
+Aeros Engine Portable Lite $archSuffix v$Version — для слабых устройств i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA
+========================================
+
+Запуск: AerosEngine-Lite.exe или aeros-engine-lite.exe или main.exe или run.bat
+
+Lite версия — оптимизирована для слабых устройств:
+- i3-3xxx Ivy Bridge 2C/4T SSE4.2, нет AVX2
+- Intel HD 4000 16 EUs, GT 620M/720M, AMD APU, 4GB RAM ноутбуки
+- SSE2 only, O1 small binary ~5-10 MB, <512 MB RAM, OpenGL 3.3, MSAA 0, 30 FPS, VSync ON, power saving
+- Частицы 1500 (было 15000), линии тока 8x80 (было 24x300), воксели 24 (было 48) — 8x меньше памяти
+- LBM OFF по умолчанию 32 рес 1 шаг/кадр, без турбулентности
+- FSR OFF, FrameGen OFF, volumetric OFF, vortex OFF, LIC OFF, acoustic OFF, schlieren/shock ON
+- Окно 1024x600 для 1366x768 ноутов
+
+Архитектура: $archSuffix Lite
+Версия: $Version
+Дата сборки: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+
+Сайт: https://github.com/cumaktimur490-arch/Aeros-Engine
+"@ | Set-Content -Path (Join-Path $portableDir "README-Portable.txt") -Encoding UTF8
+    } else {
+        @"
 Aeros Engine Portable $archSuffix v$Version
 ========================================
 
@@ -103,9 +152,11 @@ Aeros Engine Portable $archSuffix v$Version
 
 Сайт: https://github.com/cumaktimur490-arch/Aeros-Engine
 "@ | Set-Content -Path (Join-Path $portableDir "README-Portable.txt") -Encoding UTF8
+    }
 
     # Архивируем
-    $zipName = "Aeros-Engine-Portable-$archSuffix-v$Version.zip"
+    if ($Lite) { $zipName = "Aeros-Engine-Portable-Lite-$archSuffix-v$Version.zip" }
+    else { $zipName = "Aeros-Engine-Portable-$archSuffix-v$Version.zip" }
     $zipPath = Join-Path $OutputDir $zipName
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     

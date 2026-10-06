@@ -406,4 +406,10 @@ extern float perfVolumetricMs;
 extern float perfVortexMs;
 extern float perfSchlierenMs;
 
+// --- v1.20.0 Lite ---
+extern bool g_isLiteMode;
+extern bool g_litePowerSaving;
+extern float g_liteTargetFPS;
+extern int g_liteMaxThreads;
+
 #endif // GLOBALS_H

@@ -46,6 +46,7 @@
 #include "framegen.h"
 #include "interesting.h"
 #include "vulkan_renderer.h"
+#include "lite_config.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -222,14 +223,31 @@ bool loadSettings(const std::string& path) {
 int main(int argc, char** argv) {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.19.0 Vulkan+OpenGL Multilingual)" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.20.0 Lite Multilingual)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
 #endif
 
+    // v1.20.0 Lite — проверка режима и применение оптимизаций для слабых устройств
+    printLiteSystemInfo();
+    if (isLiteMode()) {
+        g_isLiteMode = true;
+        std::cout << "[Lite] Lite mode detected — applying optimizations for i3-3xxx / HD 4000" << std::endl;
+        applyLiteDefaults();
+        applyLiteOptimizations();
+        // Переопределяем размер окна для Lite — 1024x600 для 1366x768 ноутов
+        // SCR_WIDTH/HEIGHT константы, но display_w/h можно изменить
+        display_w = 1024;
+        display_h = 600;
+    }
+
     // Parse command line for renderer selection — v1.19.0 Vulkan support
     RendererAPI requestedAPI = RendererAPI::Auto;
+#ifdef AEROS_LITE
+    requestedAPI = RendererAPI::OpenGL; // Lite — только OpenGL по умолчанию
+    std::cout << "[Lite] Forcing OpenGL renderer for weak GPUs (HD 4000)" << std::endl;
+#endif
     for (int i=1; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--vulkan" || arg == "-vulkan" || arg == "--vk") {
@@ -239,19 +257,29 @@ int main(int argc, char** argv) {
             requestedAPI = RendererAPI::OpenGL;
             std::cout << "[Main] Requested OpenGL renderer via CLI" << std::endl;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Aeros Engine v1.19.0 — Airflow Visualization\n";
+            std::cout << "Aeros Engine v1.20.0 Lite — Airflow Visualization\n";
+            std::cout << "Full: Vulkan+OpenGL, CUDA, FSR, FG, all features\n";
+            std::cout << "Lite: i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA / SSE2 / 30 FPS\n";
             std::cout << "Usage: " << argv[0] << " [options] [model.stl]\n";
             std::cout << "Options:\n";
-            std::cout << "  --vulkan, --vk    — force Vulkan renderer\n";
+            std::cout << "  --vulkan, --vk    — force Vulkan renderer (full only)\n";
             std::cout << "  --opengl, --gl    — force OpenGL renderer\n";
+            std::cout << "  --lite            — force Lite mode (low particles, low res)\n";
             std::cout << "  --help, -h        — this help\n";
             std::cout << "  model.stl         — STL file to load\n";
+            std::cout << "Lite: Optimized for weak devices — 1500 particles, 8x80 streamlines, voxel 24, LBM OFF, 30 FPS, SSE2, small binary\n";
+            std::cout << "Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2\n";
             std::cout << "Renderer: Auto-selects Vulkan if available, else OpenGL (both fully working)\n";
             std::cout << "Linux: ./build-linux.sh --deps to install dependencies\n";
-            std::cout << "       ./build-linux.sh all — build\n";
+            std::cout << "       ./build-linux.sh all — build full\n";
+            std::cout << "       ./build-lite.sh all — build Lite for weak devices\n";
             std::cout << "Windows: build.bat deps — download dependencies\n";
-            std::cout << "         build.bat — build\n";
+            std::cout << "         build.bat — build full\n";
+            std::cout << "         build-lite.bat — build Lite\n";
             return 0;
+        } else if (arg == "--lite") {
+            g_isLiteMode = true;
+            std::cout << "[Main] Lite mode forced via CLI" << std::endl;
         }
     }
 
