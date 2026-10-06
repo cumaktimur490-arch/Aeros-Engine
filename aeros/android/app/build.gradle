@@ -8,16 +8,12 @@ android {
 
     defaultConfig {
         applicationId "com.aos.aerosengine"
-        minSdk 21 // Android 5.0 Lollipop — для старых телефонов, OpenGL ES 3.0 (2014)
+        minSdk 21 // Android 5.0 Lollipop — для старых телефонов 2014+
         targetSdk 34
-        versionCode 1
-        versionName "1.20.1-android-lite"
+        versionCode 22
+        versionName "1.22.0-android-all"
 
         ndk {
-            // Поддержка всех архитектур для максимальной совместимости
-            // armeabi-v7a — старые 32-bit телефоны (до 2015)
-            // arm64-v8a — современные 64-bit (основной)
-            // x86, x86_64 — эмуляторы
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
         }
 
@@ -26,49 +22,122 @@ android {
                 arguments "-DANDROID_STL=c++_shared",
                           "-DAEROS_ANDROID=ON",
                           "-DAEROS_LITE=ON",
-                          "-DAEROS_ULTRA_LITE=ON",
                           "-DANDROID_LITE=ON",
                           "-DCPU_ONLY=ON",
                           "-DANDROID_ARM_NEON=ON"
-                // Оптимизации для слабых телефонов
-                cppFlags "-std=c++17 -O1 -ffast-math -fopenmp -DANDROID -DAEROS_LITE -DULTRA_LITE -DANDROID_LITE -DPOTATO_MODE -DCPU_ONLY -DGLFW_INCLUDE_NONE -DVERSION=\"\\\"1.20.1 Android Lite\\\"\""
-                // Для самых слабых — -O1 (не O3) меньше нагрев, меньше бинарь
+                cppFlags "-std=c++17 -O1 -ffast-math -fopenmp -DANDROID -DAEROS_LITE -DANDROID_LITE -DCPU_ONLY -DGLFW_INCLUDE_NONE -DVERSION=\"\\\"1.22.0 Android All\\\"\""
+            }
+        }
+    }
+
+    // Product Flavors — для всех типов телефонов
+    flavorDimensions "quality"
+    productFlavors {
+        potato {
+            dimension "quality"
+            applicationIdSuffix ".potato"
+            versionNameSuffix "-potato"
+            // Для самых слабых: 1GB RAM, Adreno 306, Mali-400, Android 5.0+, 300 particles, 15 FPS, <10 MB APK
+            minSdk 21
+            ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' } // только 32 и 64 ARM — меньше APK
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared",
+                              "-DAEROS_ANDROID=ON",
+                              "-DANDROID_POTATO=ON",
+                              "-DPOTATO_MODE=ON",
+                              "-DULTRA_LITE=ON",
+                              "-DCPU_ONLY=ON"
+                    cppFlags "-std=c++17 -O1 -Os -ffast-math -DANDROID -DANDROID_POTATO -DPOTATO_MODE -DULTRA_LITE -DCPU_ONLY -DVERSION=\"\\\"1.22.0 Potato\\\"\" -DPOTATO"
+                }
+            }
+        }
+        lite {
+            dimension "quality"
+            applicationIdSuffix ".lite"
+            versionNameSuffix "-lite"
+            // Для слабых: 2-4GB RAM, Adreno 405, Mali-T720, 800 particles, 25 FPS, <20 MB
+            minSdk 21
+            ndk { abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64' }
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared",
+                              "-DAEROS_ANDROID=ON",
+                              "-DAEROS_LITE=ON",
+                              "-DANDROID_LITE=ON",
+                              "-DCPU_ONLY=ON"
+                    cppFlags "-std=c++17 -O1 -ffast-math -DANDROID -DAEROS_LITE -DANDROID_LITE -DCPU_ONLY -DVERSION=\"\\\"1.22.0 Lite\\\"\" -DLITE"
+                }
+            }
+        }
+        balanced {
+            dimension "quality"
+            applicationIdSuffix ".balanced"
+            versionNameSuffix "-balanced-sd662"
+            // Для твоего телефона: SD662 Adreno 610, 720x1604 90Hz, 4-6GB, 2500 particles, 60 FPS, <25 MB
+            // Snapdragon 662 (SM6115) 4x Kryo 260 Gold @ 2.11GHz + 4x Silver @ 1.8GHz, Adreno 610 ES 3.2
+            minSdk 21
+            ndk { abiFilters 'arm64-v8a' } // SD662 только arm64 — минимальный APK
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared",
+                              "-DAEROS_ANDROID=ON",
+                              "-DANDROID_SD662=ON",
+                              "-DADRENO_610=ON",
+                              "-DBALANCED=ON",
+                              "-DCPU_ONLY=ON",
+                              "-DANDROID_ARM_NEON=ON"
+                    cppFlags "-std=c++17 -O2 -ffast-math -fopenmp -DANDROID -DANDROID_SD662 -DADRENO_610 -DBALANCED -DCPU_ONLY -DVERSION=\"\\\"1.22.0 Balanced SD662\\\"\" -DBALANCED -march=armv8-a -mtune=cortex-a73"
+                }
+            }
+        }
+        high {
+            dimension "quality"
+            applicationIdSuffix ".high"
+            versionNameSuffix "-high"
+            // Для средних: SD730/845 Adreno 618/630, 6GB+, 5000 particles, 60 FPS, <30 MB
+            minSdk 23 // Android 6.0+
+            ndk { abiFilters 'arm64-v8a', 'x86_64' }
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared",
+                              "-DAEROS_ANDROID=ON",
+                              "-DHIGH=ON",
+                              "-DCPU_ONLY=ON"
+                    cppFlags "-std=c++17 -O2 -ffast-math -fopenmp -DANDROID -DHIGH -DCPU_ONLY -DVERSION=\"\\\"1.22.0 High\\\"\" -DHIGH"
+                }
+            }
+        }
+        full {
+            dimension "quality"
+            applicationIdSuffix ".full"
+            versionNameSuffix "-full"
+            // Для мощных: SD865+ Adreno 650+, 8GB+, 8000-15000 particles, 60 FPS, <40 MB
+            minSdk 26 // Android 8.0+
+            ndk { abiFilters 'arm64-v8a' }
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared",
+                              "-DAEROS_ANDROID=ON",
+                              "-DFULL=ON",
+                              "-DCPU_ONLY=ON"
+                    cppFlags "-std=c++17 -O3 -ffast-math -fopenmp -DANDROID -DFULL -DCPU_ONLY -DVERSION=\"\\\"1.22.0 Full\\\"\" -DFULL"
+                }
             }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled true // R8 — уменьшает APK для слабых телефонов
+            minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // Оптимизации для размера
-            ndk {
-                debugSymbolLevel 'SYMBOL_TABLE' // Только таблица символов, не полный debug
-            }
+            ndk { debugSymbolLevel 'SYMBOL_TABLE' }
         }
         debug {
             minifyEnabled false
             debuggable true
             jniDebuggable true
-        }
-        // Отдельный билд для самых слабых — Potato
-        create("potato") {
-            initWith release
-            minifyEnabled true
-            shrinkResources true
-            versionNameSuffix "-potato"
-            externalNativeBuild {
-                cmake {
-                    arguments "-DANDROID_STL=c++_shared",
-                              "-DAEROS_ANDROID=ON",
-                              "-DAEROS_LITE=ON",
-                              "-DANDROID_POTATO=ON",
-                              "-DPOTATO_MODE=ON",
-                              "-DCPU_ONLY=ON"
-                    cppFlags "-std=c++17 -O1 -Os -ffast-math -DANDROID -DAEROS_LITE -DANDROID_POTATO -DPOTATO_MODE -DULTRA_LITE -DCPU_ONLY -DVERSION=\"\\\"1.20.1 Android Potato\\\"\""
-                }
-            }
         }
     }
 
@@ -84,26 +153,18 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
-    // Для старых телефонов — меньше APK
     packagingOptions {
-        jniLibs {
-            useLegacyPackaging = true
-        }
+        jniLibs { useLegacyPackaging = true }
         resources {
             excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE', 'META-INF/LICENSE.txt', 'META-INF/NOTICE', 'META-INF/NOTICE.txt']
         }
     }
 
-    // Сжатие — для слабых телефонов с мало памяти
     aaptOptions {
-        noCompress 'stl' // STL модели не сжимать — быстрее загрузка
+        noCompress 'stl'
     }
-
-    // Поддержка 16KB page size для Android 15+
-    // (требуется для новых телефонов)
 }
 
 dependencies {
-    // Минимум зависимостей — для маленького APK
     implementation fileTree(dir: 'libs', include: ['*.jar'])
 }
