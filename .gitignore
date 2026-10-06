@@ -1,6 +1,5 @@
 # Артефакты сборки
 bin/
-*.exe
 *.obj
 *.o
 *.pdb
@@ -9,9 +8,49 @@ bin/
 *.ipch
 *.tlog
 *.log
+# Но разрешаем примеры и DLL в bin (нужны для запуска)
+!aeros/bin/*.dll
+!aeros/bin/*.stl
+!aeros/bin/*.bat
+!aeros/bin/icon.ico
+
+# Игнорируем скомпилированные exe в bin, кроме примеров
+aeros/bin/main*.exe
+aeros/bin/*.exe
+# Разрешаем установщики в release — но игнорируем временные файлы
+# release/*.exe — это артефакты релиза, их нужно коммитить только через релиз workflow
+# Локально они создаются, но не коммитятся по умолчанию (раскомментируй если нужно хранить)
+# release/
 
 # ImGui-макет окна (персональные настройки)
 imgui.ini
 
 # IDE
 .vs/
+.vscode/ipch/
+*.VC.db
+*.VC.VC.opendb
+
+# CMake
+build/
+build32/
+build64/
+out/
+cmake-build-*/
+
+# Временные файлы портативной сборки и релиза
+*.zip
+!installer/*.zip
+release/*
+!release/README.md
+# Но если нужно хранить релиз в git — закомментируй выше и раскомментируй ниже
+# release/*.zip
+# release/*.exe
+# release/*.7z
+# release/*.tar.gz
+# !release/README.md
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

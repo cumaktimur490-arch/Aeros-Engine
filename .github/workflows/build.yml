@@ -1,0 +1,137 @@
+name: Build Aeros Engine
+
+on:
+  push:
+    branches: [ main, arena/* ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download dependencies
+        shell: powershell
+        run: |
+          cd aeros
+          powershell -ExecutionPolicy Bypass -File ..\installer\download_deps.ps1 -Arch x64 -Quiet
+          dir ..\libs\glm\glm -ErrorAction SilentlyContinue | Select-Object -First 5
+          dir ..\libs\glad\include\glad -ErrorAction SilentlyContinue
+          dir src\imgui -ErrorAction SilentlyContinue | Select-Object -First 5
+
+      - name: Check Vulkan SDK
+        shell: powershell
+        run: |
+          if (Test-Path env:VULKAN_SDK) { Write-Host "Vulkan SDK: $env:VULKAN_SDK" }
+          else { Write-Host "Vulkan SDK not found — will build OpenGL fallback (fully working)" }
+
+      - name: Build x64 (Vulkan+OpenGL auto)
+        shell: cmd
+        run: |
+          cd aeros
+          build.bat x64
+          dir bin\*.exe
+
+      - name: Build x86
+        shell: cmd
+        run: |
+          cd aeros
+          build.bat x86
+          dir bin\*.exe
+
+      - name: Upload artifacts Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-windows-${{ github.sha }}
+          path: |
+            aeros/bin/*.exe
+            aeros/bin/*.dll
+            aeros/bin/models/
+            VERSION
+            README.md
+            LICENSE
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config git curl wget \
+            libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libvulkan-dev vulkan-tools glslc shaderc \
+            zenity kdialog libopenmp-dev
+
+      - name: Download bundled deps
+        run: |
+          cd aeros
+          chmod +x build-linux.sh
+          ./build-linux.sh download-deps
+          ls -lh ../libs/glm/glm/ | head -n 5
+          ls -lh ../libs/glad/include/glad/ | head -n 5
+
+      - name: Check Vulkan
+        run: |
+          vulkaninfo --summary || true
+          pkg-config --modversion vulkan || true
+          glslc --version || true
+
+      - name: Build Linux (Vulkan+OpenGL auto)
+        run: |
+          cd aeros
+          chmod +x build-linux.sh
+          ./build-linux.sh all
+          ls -lh bin/aeros-engine* || true
+          ./bin/aeros-engine --help || true
+
+      - name: Build OpenGL only
+        run: |
+          cd aeros
+          ./build-linux.sh opengl
+          ls -lh bin/ | grep aeros
+
+      - name: Test binary (help)
+        run: |
+          cd aeros
+          ./bin/aeros-engine --help || true
+          ldd bin/aeros-engine-linux-* || true
+
+      - name: Package tar.gz
+        run: |
+          cd aeros
+          make -f Makefile.linux package || true
+          ls -lh bin/*.tar.gz || true
+
+      - name: Upload artifacts Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-linux-${{ github.sha }}
+          path: |
+            aeros/bin/aeros-engine*
+            aeros/bin/*.tar.gz
+            aeros/bin/models/
+            VERSION
+            README.md
+            LICENSE
+            packaging/
+
+  build-docker:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -f packaging/Dockerfile -t aeros-engine:${{ github.sha }} .
+          docker images | grep aeros

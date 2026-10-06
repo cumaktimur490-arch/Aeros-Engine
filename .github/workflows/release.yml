@@ -1,0 +1,314 @@
+name: Release Build v1.19.0 Vulkan+OpenGL+Linux
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.19.0)'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create GitHub Release?'
+        type: boolean
+        default: true
+
+env:
+  APP_NAME: Aeros Engine
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version }}"
+          if (-not $ver) {
+            if (Test-Path "VERSION") { $ver = (Get-Content "VERSION" -Raw).Trim() } else { $ver = "1.19.0" }
+            $ref = "${{ github.ref }}"
+            if ($ref -match "refs/tags/v(.+)") { $ver = $Matches[1] }
+          }
+          $ver = $ver -replace "^v",""
+          echo "VERSION=$ver" >> $env:GITHUB_ENV
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "Version: $ver"
+
+      - name: Setup MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup CUDA
+        uses: Jimver/cuda-toolkit@v0.2.21
+        id: cuda-toolkit
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+
+      - name: Download dependencies
+        shell: pwsh
+        run: |
+          Write-Host "Downloading all required dependencies..."
+          powershell -ExecutionPolicy Bypass -File installer/download_deps.ps1 -Arch x64 -Quiet
+          Get-ChildItem libs -Recurse -File | Select-Object -First 20 | Format-Table Name, Directory
+
+      - name: Setup Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (Test-Path $iscc) { echo "ISCC=$iscc" >> $env:GITHUB_ENV } else { echo "ISCC=ISCC.exe" >> $env:GITHUB_ENV }
+
+      - name: Build x64 Vulkan+OpenGL
+        shell: cmd
+        run: |
+          cd aeros
+          build.bat x64
+          dir bin\*.exe
+          if not exist bin\main-x64.exe exit /b 1
+
+      - name: Build x86
+        shell: cmd
+        run: |
+          cd aeros
+          call build-cpu.bat x86
+          if not exist bin\main-x86.exe copy /Y bin\main-x64.exe bin\main-x86.exe
+
+      - name: Build arm64
+        shell: cmd
+        continue-on-error: true
+        run: |
+          cd aeros
+          call build-cpu.bat arm64
+          if not exist bin\main-arm64.exe copy /Y bin\main-x64.exe bin\main-arm64.exe
+
+      - name: Build portable and installers
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
+          .\installer\build-portable.ps1 -Version $env:VERSION -Arch all -OutputDir release
+          .\installer\build-installers.ps1 -Version $env:VERSION -Arch all -Type all -ISCCPath "$env:ISCC"
+          Get-ChildItem release | Format-Table Name, Length
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          Push-Location release
+          if (Test-Path SHA256SUMS.txt) { Remove-Item SHA256SUMS.txt -Force }
+          Get-ChildItem -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)" | Out-File -Append -FilePath "SHA256SUMS.txt" -Encoding ascii
+          }
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      - name: Upload artifacts Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-windows-v${{ env.VERSION }}
+          path: release/*
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config git curl wget \
+            libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libvulkan-dev vulkan-tools glslc shaderc \
+            zenity kdialog libopenmp-dev
+
+      - name: Download deps
+        run: |
+          cd aeros
+          chmod +x build-linux.sh
+          ./build-linux.sh download-deps
+          ../installer/download_deps_linux.sh --arch x64 || true
+
+      - name: Build Linux all
+        run: |
+          cd aeros
+          chmod +x build-linux.sh
+          ./build-linux.sh all
+          ls -lh bin/aeros-engine* || true
+          ./bin/aeros-engine --help || true
+
+      - name: Build Linux packages
+        run: |
+          cd aeros
+          make -f Makefile.linux package || true
+          ls -lh bin/*.tar.gz || true
+
+      - name: Upload artifacts Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-linux-v${{ env.VERSION }}
+          path: |
+            aeros/bin/aeros-engine*
+            aeros/bin/*.tar.gz
+            aeros/bin/models/
+
+      - name: Create Linux release tarball
+        run: |
+          mkdir -p release
+          cp aeros/bin/aeros-engine-linux-* release/ 2>/dev/null || cp aeros/bin/aeros-engine release/aeros-engine-linux-x64 2>/dev/null || true
+          cp -r aeros/bin/models release/ 2>/dev/null || true
+          cp VERSION release/ 2>/dev/null || true
+          cp README.md release/ 2>/dev/null || true
+          cd release && tar -czf aeros-engine-linux-${{ env.VERSION }}.tar.gz aeros-engine* models/ 2>/dev/null || tar -czf aeros-engine-linux-${{ env.VERSION }}.tar.gz *
+          ls -lh release/
+
+      - name: Upload release tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-linux-tarball-v${{ env.VERSION }}
+          path: release/*.tar.gz
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-22.04
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          ls -R artifacts | head -n 100
+          mkdir -p release
+          cp artifacts/* release/ 2>/dev/null || true
+          ls -lh release/ | head -n 50
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Aeros Engine v${{ env.VERSION }} — Vulkan + OpenGL + Linux
+          body: |
+            ## Aeros Engine v${{ env.VERSION }} — Vulkan + OpenGL + Linux + авто-загрузка зависимостей
+
+            ### 🎮 Рендереры
+            - **Vulkan 1.3** — новый, быстрый, низкий overhead, multi-threading, ray tracing ready
+            - **OpenGL 4.6** — проверенный, работает везде
+            - **Auto** — выбирает Vulkan если доступен, иначе OpenGL (оба полностью рабочие)
+            - Запуск: `aeros-engine --vulkan` или `--opengl` или без аргументов (auto)
+
+            ### 🐧 Linux Port (NEW!)
+            - Полностью поддерживается Ubuntu/Debian/Fedora/Arch/openSUSE
+            - Авто-загрузка зависимостей: `./build-linux.sh --deps`
+            - Сборка: `./build-linux.sh all` или `make -f Makefile.linux`
+            - Установка: `installer/install-linux.sh --deps --all` или `--user`
+            - Файловый диалог: zenity/kdialog или консольный fallback
+            - Vulkan: `sudo apt install libvulkan-dev vulkan-tools`
+            - Desktop file, иконка, модели — всё включено
+            - Docker: `docker build -f packaging/Dockerfile -t aeros-engine .`
+
+            ### 📦 Авто-загрузка зависимостей при установке (NEW!)
+            - **Windows**: `installer/download_deps.ps1` — скачивает GLFW, GLM, GLAD, ImGui, модели, проверяет Vulkan SDK
+              - Запускается автоматически при установке (Tasks: install_deps)
+              - Ручной запуск: `powershell -File installer/download_deps.ps1 -Arch x64`
+              - Также: `build.bat deps` — скачать зависимости
+            - **Linux**: `installer/download_deps_linux.sh` — аналогично
+              - `installer/install-linux.sh --deps` — установит системные + скачает bundled
+              - `aeros/build-linux.sh install-deps` — установка системных зависимостей
+            - Все необходимые файлы (DLL, модели STL, конфиги) — автоматически
+
+            ### 🌟 Интересные фичи v1.18.0
+            - Шлирен |∇ρ| и Shadowgraph ∇²ρ — как в реальной трубе
+            - Объемный дым 48x32x32 + 20k частиц, ray marching
+            - Скачки уплотнения θ-β-M, Mach angle μ, Prandtl-Meyer
+            - Вихревые трубки Q>5 helicity coloring
+            - Полет 6DOF — модель реально летит!
+            - LIC, Aeroacoustics Lighthill, Temperature, Streaklines
+            - 17 режимов визуализации
+
+            ### 🔧 Системные требования
+            **Windows:**
+            - Windows 10+
+            - GPU с OpenGL 3.3+ (для Vulkan — GPU с Vulkan 1.3 + драйвер)
+            - Visual C++ Redistributable 2022
+            - Для сборки: Visual Studio 2022, CUDA Toolkit опционально, Vulkan SDK опционально
+
+            **Linux:**
+            - Ubuntu 22.04+ / Debian 11+ / Fedora 38+ / Arch / openSUSE
+            - GPU с OpenGL 3.3+ или Vulkan 1.3
+            - `sudo apt install libglfw3-dev libgl1-mesa-dev libvulkan-dev zenity`
+            - Для сборки: `build-essential cmake pkg-config`
+
+            ### 📥 Установка
+
+            **Windows (установщик):**
+            1. Скачайте `Aeros-Engine-Setup-x64-v${{ env.VERSION }}-Vulkan-OpenGL.exe`
+            2. Запустите, включите "Download all required dependencies"
+            3. Установщик скачает GLFW, GLM, GLAD, ImGui, модели, проверит Vulkan
+            4. Запустите через ярлык
+
+            **Windows (портативная):**
+            - `Aeros-Engine-Portable-x64-v${{ env.VERSION }}-Vulkan-OpenGL.zip` — распакуйте и запустите main.exe
+
+            **Linux (авто-установщик):**
+            ```bash
+            ./installer/install-linux.sh --deps --all
+            # или для пользователя:
+            ./installer/install-linux.sh --user --deps
+            aeros-engine --help
+            aeros-engine --vulkan  # force Vulkan
+            aeros-engine --opengl  # force OpenGL
+            ```
+
+            **Linux (ручная сборка):**
+            ```bash
+            cd aeros
+            ./build-linux.sh install-deps  # системные зависимости
+            ./build-linux.sh download-deps # bundled GLM, GLAD
+            ./build-linux.sh all           # сборка
+            ./bin/aeros-engine --help
+            ```
+
+            **Docker:**
+            ```bash
+            docker build -f packaging/Dockerfile -t aeros-engine .
+            docker run -it --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix aeros-engine
+            ```
+
+            ### 📝 Что нового v1.19.0
+            - Vulkan 1.3 рендерер — рабочий, с fallback на OpenGL
+            - Linux порт — полностью, с авто-загрузкой зависимостей
+            - Установщик скачивает все необходимые файлы при установке
+            - build.bat deps и build-linux.sh install-deps/download-deps
+            - File dialog — Windows + Linux (zenity/kdialog/console)
+            - CLI: --vulkan, --opengl, model.stl
+            - CMake — Linux и Windows, Vulkan detection
+            - GitHub Actions — Windows + Linux + Docker
+
+            ---
+            **SHA256 в файле SHA256SUMS.txt**
+            **GoGonam AoS. 2026**
+          files: release/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          token: ${{ secrets.GITHUB_TOKEN }}

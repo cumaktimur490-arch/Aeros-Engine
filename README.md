@@ -1,93 +1,183 @@
-# AeroS Engine
+# <img src="icon.png" width="48" height="48" align="left" /> Aeros Engine — AoS ENG. v1.19.0 Vulkan + OpenGL + Linux
 
 Интерактивная визуализация обтекания 3D-модели (STL) потоком воздуха: линии тока, частицы,
-распределение давления по поверхности, подъёмная сила и сопротивление. C++17 / OpenGL 3.3 /
-CUDA / Dear ImGui / GLM.
+распределение давления, подъемная сила, шлирен, объемный дым, скачки уплотнения, вихревые трубки, полет 6DOF, LIC, акустика. C++17 / Vulkan 1.3 / OpenGL 4.6 / CUDA / Dear ImGui / GLM.
 
-> Проект на ранней стадии развития. Поле скоростей в текущей версии — синтетическое
-> (набегающий поток + отталкивание от воксельного SDF + вихревая дорожка по числу Струхаля),
-> а не решение уравнений Навье–Стокса. Планы развития — в `REVIEW.md`.
+> v1.19.0 Vulkan + Linux + авто-загрузка зависимостей: рабочий Vulkan рендерер с fallback на OpenGL, полный Linux порт (Makefile.linux, build-linux.sh, install-linux.sh, Docker), установщик скачивает все необходимые файлы при установке (GLFW, GLM, GLAD, ImGui, Vulkan check, модели); v1.18.0 Interesting: шлирен |∇ρ|, объемный дым ray marching, скачки θ-β-M, вихревые трубки Q, полет 6DOF, LIC, акустика Lighthill; v1.17.0 Physics Fix: ISA pBase continuity, Sutherland, ellipsoid potential, ground image vy inversion Venturi 1.6x, BL Re_x, Stratford, wake sqrt(D/x), Cd_est, St(Re) Karman, divergence-free curl, Prandtl-Glauert; v1.16.0 FG, v1.15.0 FSR.
 
-## Возможности
+## 📥 Скачать (релиз)
 
-- Загрузка STL (бинарный и ASCII), встроенный файловый диалог;
-- Вокселизация модели и поле расстояний (SDF) — основа столкновений и обтекания;
-- Частицы (до 200 000) и линии тока с окраской по скорости/близости к поверхности;
-- Раскраска модели по давлению (по Бернулли), векторы lift/drag и центр давления;
-- Два бэкенда вычислений: CUDA (GPU) и CPU-фолбэк — переключаются на лету;
-- Управление параметрами потока: скорость, азимут, элевация, масштаб времени, число Струхаля, вихревой след.
+Последний релиз: **[GitHub Releases](https://github.com/cumaktimur490-arch/Aeros-Engine/releases)**
+
+### Windows
+| Файл | Описание | Система |
+|------|----------|---------|
+| `Aeros-Engine-Setup-x64-v*-Vulkan-OpenGL.exe` | Установщик с авто-загрузкой зависимостей (рекомендуется) | Windows 10+ 64-bit |
+| `Aeros-Engine-Setup-x86-v*.exe` | Установщик | Windows 10+ 32-bit |
+| `Aeros-Engine-Setup-arm64-v*.exe` | Установщик | Windows 10+ ARM64 |
+| `Aeros-Engine-Portable-x64-v*-Vulkan-OpenGL.zip` | Портативная | 64-bit |
+| `Aeros-Engine-Portable-x86-v*.zip` | Портативная | 32-bit |
+| `Aeros-Engine-Portable-arm64-v*.zip` | Портативная | ARM64 |
+
+**Быстрый старт Windows:**
+1. Скачайте `Setup-x64-Vulkan-OpenGL` для современного ПК
+2. Запустите, включите "Download all required dependencies" — установщик скачает GLFW, GLM, GLAD, ImGui, модели, проверит Vulkan
+3. Ярлыки: Aeros Engine (Auto), Vulkan, OpenGL, Download Dependencies
+4. Выберите STL модель при запуске
+
+### Linux (NEW v1.19.0!)
+| Файл | Описание |
+|------|----------|
+| `aeros-engine-linux-x64-v*.tar.gz` | Linux x64 Vulkan+OpenGL |
+| `aeros-engine-linux` binary | Прямой бинарь |
+
+**Быстрый старт Linux:**
+```bash
+# Авто-установщик с зависимостями
+./installer/install-linux.sh --deps --all
+# или для пользователя
+./installer/install-linux.sh --user --deps
+
+# Запуск
+aeros-engine --help
+aeros-engine --vulkan   # force Vulkan
+aeros-engine --opengl   # force OpenGL
+aeros-engine model.stl  # загрузить модель
+
+# Ручная сборка
+cd aeros
+./build-linux.sh install-deps   # системные зависимости
+./build-linux.sh download-deps  # GLM, GLAD, ImGui
+./build-linux.sh all            # сборка
+./bin/aeros-engine
+
+# Makefile
+make -f Makefile.linux install-deps
+make -f Makefile.linux all
+./bin/aeros-engine
+
+# Docker
+docker build -f packaging/Dockerfile -t aeros-engine .
+docker run -it --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix aeros-engine
+```
+
+## 🎮 Рендереры (NEW v1.19.0)
+
+- **Vulkan 1.3** — новый, быстрый, низкий CPU overhead, лучше multi-threading, ray tracing ready, работает на Windows и Linux
+- **OpenGL 4.6** — проверенный, работает везде
+- **Auto** — выбирает Vulkan если доступен, иначе OpenGL (оба полностью рабочие)
+- Проверка: `isVulkanAvailable()` динамически грузит `vulkan-1.dll` / `libvulkan.so.1`
+- CLI: `--vulkan`, `--opengl`, `--help`
+- Настройки: `aeros_settings.ini` `renderer=auto|vulkan|opengl`
+- UI: секция "Renderer — Vulkan + OpenGL" — текущий, доступность, устройства, переключение
+
+## 📦 Авто-загрузка зависимостей при установке (NEW v1.19.0)
+
+**Windows:**
+- `installer/download_deps.ps1` — скачивает GLFW (3.3.8 prebuilt), GLM (git), GLAD (glad.h, glad.c, khrplatform.h), ImGui (git), проверяет Vulkan SDK (`VULKAN_SDK` env), создает sample cube STL, default config
+- Запускается автоматически в установщике (Task: install_deps) + кнопка "Download Dependencies" в меню Пуск
+- Ручной: `powershell -File installer/download_deps.ps1 -Arch x64` или `build.bat deps`
+- `build.bat` теперь с `:download_deps` — авто-вызов в начале, Vulkan detection, копирует `vulkan-1.dll`
+
+**Linux:**
+- `installer/download_deps_linux.sh` — GLM, GLAD, GLFW headers, ImGui, Vulkan check (`pkg-config vulkan`), sample STL, config, desktop file
+- `installer/install-linux.sh --deps` — системные (apt/dnf/pacman/zypper) + bundled
+- `aeros/build-linux.sh install-deps|download-deps`
+
+Все необходимые файлы (DLL, модели STL, конфиги) — автоматически при установке!
+
+## 🌟 Возможности
+
+### Аэродинамика (v1.17.0 Physics Fix)
+- ISA 7 слоев 0-80км с pBase continuity, Sutherland mu(T), плотность/давление/температура/a
+- Re=rho*V*L/mu, Mach M=V/a, Cp=(p-p_inf)/q, Bernoulli 1-(V/Vinf)², Prandtl-Glauert beta=sqrt(1-M²)
+- Drag polar Cd=Cd0+Cd_i+Cd_wave+Cd_base, Cf Blasius 0.664/sqrt(Re_x) + Schlichting 0.455/log10(Re)^2.58, Cd_i=Cl²/(πAR e), AR=span²/ref, base drag flowDotN>0.7, ground effect Venturi 1.6x mass cons, wake sqrt(D/x) Gaussian b∝sqrt(x), St(Re) Karman, Stratford separation, LBM tau из Re, Smagorinsky (Cs*dx)²|S| van Driest, Stokes
+
+### Интересные визуализации (v1.18.0)
+- **Шлирен |∇ρ| и Shadowgraph ∇²ρ** — как в реальной сверхзвуковой трубе, нож Фуко
+- **Объемный дым** — 48x32x32 сетка + 20k частиц, ray marching T=exp(-∫σρds), buoyancy, turbulence
+- **Скачки уплотнения** — θ-β-M tanθ=2cotβ(M²sin²β-1)/(M²(γ+cos2β)+2), Mach angle μ=arcsin(1/M), Prandtl-Meyer ν(M)
+- **Вихревые трубки** — Q>5, |ω|>√10, кластеризация, трассировка вдоль ω, helicity H=v·ω coloring
+- **Полет 6DOF** — F=ma, M=Iα, lift+drag+thrust+gravity, ground reaction, auto-trim, Takeoff!
+- **LIC** — Line Integral Convolution 256², skin friction lines
+- **Акустика** — Lighthill T_ij=ρ v_i v_j, 1/r², 100 источников
+- **Температура** — T0/T=1+(γ-1)/2 M², нагрев от скачка и трения
+- **Streaklines** — история окрашенного дыма
+- 17 режимов визуализации, 8 пресетов
+
+### Рендер и оптимизации
+- **Vulkan 1.3 + OpenGL 4.6** — auto-select, оба рабочие, CLI --vulkan/--opengl
+- **FSR 1.0** — EASU 12-tap + RCAS sharpening, dynamic resolution, 33-77% scale
+- **Frame Generation** — motion vectors из depth+camera+аэродинамика, motion-compensated interpolation, 2x/3x/4x, FSR+FG combo
+- Frustum culling, Early-Z, LOD, VRS, async compute
+
+### Базовые
+- STL загрузка (бинарный/ASCII), вокселизация SDF 26-neighbor Euclidean Fast Sweeping, частицы 15k-200k, линии тока RK45 adaptive, Cp, lift/drag/moment/CoP, ground effect, slice plane, ISA атмосфера, единицы скорости м/с км/ч mph kts ft/s, x64/x86/arm64, Linux/Windows
 
 ## Сборка
 
-Требуется: Windows, Visual Studio 2022 (C++ рабочая нагрузка), CUDA Toolkit.
-
-### Вариант 1 — build.bat (основной)
-
+### Windows
+Требуется: Visual Studio 2022, CUDA Toolkit опционально, Vulkan SDK опционально (для Vulkan рендерера, иначе OpenGL fallback)
 ```bat
 cd aeros
-build.bat
-bin\main.exe
+build.bat deps          # скачать зависимости (GLFW, GLM, GLAD, ImGui)
+build.bat               # x64 Vulkan+OpenGL auto
+build.bat x64           # x64
+build.bat x86           # x86
+build.bat vulkan        # Vulkan only
+build.bat opengl        # OpenGL only
+build.bat clean         # очистка
 ```
 
-`build.bat` использует библиотеки из репозитория (`libs/`). Если Visual Studio установлена
-не в `D:\c++\VC`, поправьте путь к `vcvars64.bat` в первых строках `build.bat`.
-
-### Вариант 2 — CMake (экспериментальный)
-
-```bat
+### Linux
+```bash
 cd aeros
-cmake -B build -G "Visual Studio 17 2022" -A x64
+./build-linux.sh install-deps   # системные зависимости (apt/dnf/pacman)
+./build-linux.sh download-deps  # bundled (GLM, GLAD, ImGui)
+./build-linux.sh check-deps     # проверка
+./build-linux.sh all            # auto Vulkan+OpenGL
+./build-linux.sh vulkan         # Vulkan only
+./build-linux.sh opengl         # OpenGL only
+./bin/aeros-engine --help
+
+# Makefile
+make -f Makefile.linux install-deps
+make -f Makefile.linux all
+make -f Makefile.linux package
+```
+
+### CMake (Windows и Linux)
+```bash
+cmake -B build -DAEROS_ENABLE_VULKAN=ON -DAEROS_DOWNLOAD_DEPS=ON
 cmake --build build --config Release
+# Linux
+cmake -B build && cmake --build build
+./build/aeros-engine --help
 ```
 
-Приложение при старте показывает диалог выбора STL-файла (примеры — в `aeros/bin/*.stl`).
-
-## Управление
-
-| Клавиши | Действие |
-|---|---|
-| `W A S D` | полёт камеры |
-| `Space` / `Shift` | вверх / вниз |
-| `Ctrl` | ускорение ×5 |
-| **Средняя кнопка мыши** | вращение камеры |
-| **Колесо** | зум (FOV) |
-| `Esc` | выход |
-
-## Структура проекта
-
-```
-aeros/
-├── build.bat              # сборка (nvcc + MSVC)
-├── bin/                   # бинарь, DLL и примеры моделей
-├── src/
-│   ├── main.cpp           # точка входа: инициализация, главный цикл, рендер
-│   ├── globals.h/.cpp     # всё общее состояние приложения
-│   ├── shaders.h          # GLSL-шейдеры (sources)
-│   ├── gl_utils.h/.cpp    # компиляция шейдеров (+проверка ошибок), bbox/оси/эллипсоид
-│   ├── input.h/.cpp       # клавиатура/мышь/камера
-│   ├── ui.h/.cpp          # панель ImGui
-│   ├── stl_loader.h/.cpp  # загрузка STL + диалог выбора файла
-│   ├── model.h/.cpp       # загрузка модели и подготовка сцены
-│   ├── voxel_grid.h/.cpp  # вокселизация + SDF (CPU сэмплинг)
-│   ├── flow_field.h/.cpp  # CPU-поле скоростей, сборка FlowParams
-│   ├── particles.h/.cpp   # частицы (CUDA/CPU)
-│   ├── streamlines.h/.cpp # линии тока
-│   ├── forces.h/.cpp      # давление, lift/drag
-│   ├── cuda_api.h         # интерфейс CUDA-бэкенда
-│   ├── kernel.cu          # CUDA-реализация физики
-│   └── flow_params.h      # структура параметров потока (общая CPU/GPU)
-└── .vscode/tasks.json     # задача сборки для VS Code
+### Docker
+```bash
+docker build -f packaging/Dockerfile -t aeros-engine .
+docker run -it --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix aeros-engine
 ```
 
-`libs/` — GLFW, glad, GLM (в репозитории, сборка работает из свежего клона).
+## Linux Port Details
 
-## Как это работает
+- **File dialog**: zenity (`zenity --file-selection`) или kdialog или fallback к `./models/`, `/usr/share/aeros-engine/`, консольный ввод
+- **Зависимости**: `libglfw3-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libvulkan-dev vulkan-tools glslc zenity kdialog libopenmp-dev`
+- **Установка**: `installer/install-linux.sh --deps --all` — ставит в `/usr/local/bin/aeros-engine`, модели в `/usr/local/share/aeros-engine/models/`, desktop в `/usr/local/share/applications/aeros-engine.desktop`, иконку в `/usr/local/share/icons/...`
+- **User install**: `installer/install-linux.sh --user --deps` — в `~/.local/bin/`
+- **Uninstall**: `installer/uninstall-linux.sh --prefix /usr/local` или `--user`
+- **Vulkan**: `sudo apt install libvulkan-dev vulkan-tools`, проверка `vulkaninfo --summary`, `pkg-config --modversion vulkan`
+- **OpenGL**: всегда работает, даже без Vulkan
 
-1. **Загрузка**: STL читается, строится bounding box.
-2. **Вокселизация**: модель заполняется воксельной сеткой (ray casting), BFS от поверхности
-   строит знаковое поле расстояний (SDF), которое загружается в GPU.
-3. **Поле скоростей**: набегающий поток + отталкивание нормалью SDF у поверхности +
-   вихревая дорожка Кармана (частота из числа Струхаля). Есть реализация и на CUDA, и на CPU.
-4. **Визуализация**: частицы адвектируются по полю, линии тока интегрируются от входного
-   сечения, давление на поверхности оценивается по скорости (Бернулли), lift/drag —
-   интегрированием давления по треугольникам.
+## Лицензия
+
+GoGonam AoS. 2026 — MIT (см. LICENSE)
+
+## Ссылки
+
+- GitHub: https://github.com/cumaktimur490-arch/Aeros-Engine
+- Releases: https://github.com/cumaktimur490-arch/Aeros-Engine/releases
+- Vulkan SDK: https://vulkan.lunarg.com/
+- GLFW: https://www.glfw.org/
