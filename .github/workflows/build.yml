@@ -1,0 +1,112 @@
+name: Build Check
+
+on:
+  push:
+    branches: [ main, master, arena/* ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup CUDA
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+
+      - name: Check tools
+        shell: cmd
+        run: |
+          where cl.exe
+          where nvcc.exe
+          nvcc --version
+          dir libs\glfw\lib-vc2022
+          dir aeros\src
+
+      - name: Build x64 CPU (fallback, always works)
+        shell: cmd
+        run: |
+          cd aeros
+          echo Building x64 CPU...
+          call build-cpu.bat x64 > ..\build-x64-cpu.log 2>&1
+          type ..\build-x64-cpu.log
+          if errorlevel 1 exit /b 1
+          dir bin
+          if not exist bin\main-x64.exe (
+            if not exist bin\main.exe (
+              echo No binary found!
+              exit /b 1
+            ) else (
+              copy /Y bin\main.exe bin\main-x64.exe
+            )
+          )
+
+      - name: Try CUDA build (optional)
+        shell: cmd
+        continue-on-error: true
+        run: |
+          cd aeros
+          echo Building x64 CUDA (optional)...
+          call build.bat x64 > ..\build-x64.log 2>&1
+          type ..\build-x64.log
+          if errorlevel 1 (
+            echo CUDA build failed, but CPU build already succeeded — OK
+          ) else (
+            echo CUDA build succeeded
+            copy /Y bin\main-x64.exe bin\main.exe
+          )
+
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build-*.log
+
+      - name: Push logs to branch on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $runId = "${{ github.run_id }}"
+          $branch = "ci-logs/$runId"
+          Write-Host "Creating branch $branch with logs"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout -b $branch
+          if (Test-Path "build-x64-cpu.log") { 
+            Copy-Item "build-x64-cpu.log" -Destination "build-x64-cpu-$runId.log" -Force
+            Get-Content "build-x64-cpu.log" | Select-Object -Last 100
+          }
+          if (Test-Path "build-x64.log") { 
+            Copy-Item "build-x64.log" -Destination "build-x64-$runId.log" -Force
+            Get-Content "build-x64.log" | Select-Object -Last 100
+          }
+          # Force add because *.log is in .gitignore
+          git add -f *.log
+          git status
+          git commit -m "ci: logs for run $runId" || echo "No logs to commit"
+          git push origin $branch --force
+
+      - name: Check binary
+        if: success()
+        shell: pwsh
+        run: |
+          if (Test-Path "aeros\bin\main-x64.exe") { 
+            Write-Host "Build OK: main-x64.exe exists"
+            (Get-Item "aeros\bin\main-x64.exe").Length
+          } else { 
+            Write-Host "Build output missing!"; Get-ChildItem aeros\bin; exit 1 
+          }
