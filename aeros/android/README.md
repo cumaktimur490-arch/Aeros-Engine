@@ -1,6 +1,24 @@
-# Aeros Engine Android v1.20.1 — самая оптимизированная APK для слабых телефонов
+# Aeros Engine Android v1.22.0 — ALL APK для всех телефонов от 1GB Adreno 306 до SD865+
+
+## Все APK сборки — 5 вариантов для всех телефонов
+
+| APK | Для кого | SoC | GPU | RAM | Particles | Streamlines | Voxel | FPS | Threads | RAM | APK size |
+|-----|----------|-----|-----|-----|-----------|-------------|-------|-----|---------|-----|----------|
+| **Potato** | Самые слабые 2014 | SD410 4xA53 1.2GHz | Adreno306 Mali400 ES2.0 | 1GB | 300/500 | 3x30 /6 | 12 | 15 | 1 | <150 MB | <10 MB |
+| **Lite** | Слабые 2015+ | SD615 8xA53 1.5GHz | Adreno405 ES3.0 | 2-4GB | 800/1500 | 6x60 /12 | 20 | 25 | 2 | <300 MB | <20 MB |
+| **Balanced (SD662)** | **ТВОЙ ТЕЛЕФОН!** | **SD662 8xKryo260 2.11GHz** | **Adreno610 ES3.2 90Hz** | **4-6GB** | **2500/5000** | **12x120 /20** | **32** | **60 (45 battery)** | **4** | **<800 MB** | **<25 MB** |
+| **High** | Средние 2018+ | SD730/845 Kryo470 | Adreno618/630 ES3.2 | 6GB | 5000/8000 | 16x150 /20 | 40 | 60 | 6 | <1.2GB | <30 MB |
+| **Full** | Мощные 2020+ | SD865+ Kryo585 2.84GHz | Adreno650+ Vulkan | 8GB+ | 15000/100k | 24x300 /64 | 48 | 60 | all | <1.5GB | <40 MB |
 
 ## Для кого
+
+### Balanced (SD662) — ТВОЙ ТЕЛЕФОН! (4-6GB RAM, Adreno 610, 720x1604 90Hz, 2020)
+
+- **Твои данные из AIDA64:** SoC Snapdragon 662 SM6115 4x Kryo 260 LP @2016 MHz + 4x HP @2112 MHz 11nm 8 cores ARMv8-A walt arm64-v8a, GPU Adreno 610 ES 3.2 V@0615.102.A 720x1604 IPS LCD 6.67" 264dpi 90Hz ASTC
+- **Это средний телефон 2020** — в 4x быстрее Potato, в 1.6x быстрее Lite, в 2x медленнее High
+- **Рекомендуется: Balanced APK — `aeros-engine-android-balanced-v1.22.0.apk`**
+- **Настройки:** 2500 частиц, 12x120 линий, voxel 32, LBM OFF 24 res, 60 FPS (45 battery), 4 потока, FSR ON, ASTC, <800 MB, <25 MB APK
+- **Подробно:** `SD662_GUIDE.md`
 
 ### Potato — самые слабые телефоны (1GB RAM, Adreno 306, Android 5.0+ 2014)
 - **CPU:** Snapdragon 410 (4x Cortex-A53 1.2GHz), MT6582 (4x A7 1.3GHz), Spreadtrum SC7731, 1-2GB RAM
