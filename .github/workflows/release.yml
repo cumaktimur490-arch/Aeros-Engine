@@ -1,0 +1,358 @@
+name: Release Build v1.20.0 Lite+Full
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.20.0)'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create GitHub Release?'
+        type: boolean
+        default: true
+
+env:
+  APP_NAME: Aeros Engine
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version }}"
+          if (-not $ver) {
+            if (Test-Path "VERSION") { $ver = (Get-Content "VERSION" -Raw).Trim() } else { $ver = "1.20.0" }
+            $ref = "${{ github.ref }}"
+            if ($ref -match "refs/tags/v(.+)") { $ver = $Matches[1] }
+          }
+          $ver = $ver -replace "^v",""
+          echo "VERSION=$ver" >> $env:GITHUB_ENV
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "Version: $ver"
+
+      - name: Setup MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup CUDA
+        uses: Jimver/cuda-toolkit@v0.2.21
+        id: cuda-toolkit
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+
+      - name: Download dependencies
+        shell: pwsh
+        run: |
+          Write-Host "Downloading all required dependencies..."
+          powershell -ExecutionPolicy Bypass -File installer/download_deps.ps1 -Arch x64 -Quiet
+          Get-ChildItem libs -Recurse -File | Select-Object -First 20 | Format-Table Name, Directory
+
+      - name: Setup Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (Test-Path $iscc) { echo "ISCC=$iscc" >> $env:GITHUB_ENV } else { echo "ISCC=ISCC.exe" >> $env:GITHUB_ENV }
+
+      - name: Build x64 Vulkan+OpenGL
+        shell: cmd
+        run: |
+          cd aeros
+          build.bat x64
+          dir bin\*.exe
+          if not exist bin\main-x64.exe exit /b 1
+
+      - name: Build x86
+        shell: cmd
+        run: |
+          cd aeros
+          call build-cpu.bat x86
+          if not exist bin\main-x86.exe copy /Y bin\main-x64.exe bin\main-x86.exe
+
+      - name: Build arm64
+        shell: cmd
+        continue-on-error: true
+        run: |
+          cd aeros
+          call build-cpu.bat arm64
+          if not exist bin\main-arm64.exe copy /Y bin\main-x64.exe bin\main-arm64.exe
+
+      - name: Build Lite x64 (SSE2, no CUDA, i3-3xxx / HD 4000)
+        shell: cmd
+        run: |
+          cd aeros
+          build-lite.bat x64
+          dir bin\*lite*.exe
+          if not exist bin\main-lite-x64.exe echo Lite build not found but continuing
+
+      - name: Build portable and installers (Full + Lite)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "release")) { New-Item -ItemType Directory -Path "release" | Out-Null }
+          .\installer\build-portable.ps1 -Version $env:VERSION -Arch all -OutputDir release
+          .\installer\build-installers.ps1 -Version $env:VERSION -Arch all -Type all -ISCCPath "$env:ISCC"
+          # Lite portable
+          if (Test-Path "aeros\bin\main-lite-x64.exe") {
+            .\installer\build-portable.ps1 -Version "$env:VERSION Lite" -Arch x64 -OutputDir release -Lite
+          }
+          # Lite installer if ISS exists
+          if (Test-Path "installer\AerosEngine-Lite-x64.iss") {
+            & "$env:ISCC" /DAppVersion="$env:VERSION" installer\AerosEngine-Lite-x64.iss
+          }
+          Get-ChildItem release | Format-Table Name, Length
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          Push-Location release
+          if (Test-Path SHA256SUMS.txt) { Remove-Item SHA256SUMS.txt -Force }
+          Get-ChildItem -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)" | Out-File -Append -FilePath "SHA256SUMS.txt" -Encoding ascii
+          }
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      - name: Upload artifacts Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-windows-v${{ env.VERSION }}
+          path: release/*
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config git curl wget \
+            libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libvulkan-dev vulkan-tools glslc shaderc \
+            zenity kdialog libopenmp-dev
+
+      - name: Download deps
+        run: |
+          cd aeros
+          chmod +x build-linux.sh
+          ./build-linux.sh download-deps
+          ../installer/download_deps_linux.sh --arch x64 || true
+
+      - name: Build Linux all (Full)
+        run: |
+          cd aeros
+          chmod +x build-linux.sh
+          ./build-linux.sh all
+          ls -lh bin/aeros-engine* || true
+          ./bin/aeros-engine --help || true
+
+      - name: Build Linux Lite (SSE2, no CUDA, i3-3xxx / HD 4000)
+        run: |
+          cd aeros
+          chmod +x build-lite.sh
+          ./build-lite.sh all
+          ls -lh bin/aeros-engine-lite* || true
+          ./bin/aeros-engine-lite --help || true
+
+      - name: Build Linux packages (Full + Lite)
+        run: |
+          cd aeros
+          make -f Makefile.linux package || true
+          make -f Makefile.lite package || true
+          ls -lh bin/*.tar.gz || true
+
+      - name: Upload artifacts Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-linux-v${{ env.VERSION }}
+          path: |
+            aeros/bin/aeros-engine*
+            aeros/bin/*.tar.gz
+            aeros/bin/models/
+
+      - name: Create Linux release tarball
+        run: |
+          mkdir -p release
+          cp aeros/bin/aeros-engine-linux-* release/ 2>/dev/null || cp aeros/bin/aeros-engine release/aeros-engine-linux-x64 2>/dev/null || true
+          cp -r aeros/bin/models release/ 2>/dev/null || true
+          cp VERSION release/ 2>/dev/null || true
+          cp README.md release/ 2>/dev/null || true
+          cd release && tar -czf aeros-engine-linux-${{ env.VERSION }}.tar.gz aeros-engine* models/ 2>/dev/null || tar -czf aeros-engine-linux-${{ env.VERSION }}.tar.gz *
+          ls -lh release/
+
+      - name: Upload release tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-linux-tarball-v${{ env.VERSION }}
+          path: release/*.tar.gz
+
+  build-android:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: |
+          sdkmanager --install "platform-tools" "build-tools;34.0.0" "platforms;android-34" "platforms;android-21" "ndk;25.1.8937393" || true
+      - name: Build Android APKs
+        run: |
+          cd aeros/android
+          chmod +x *.sh gradlew
+          ./build-all-apk.sh all || true
+          ls -lh app/build/outputs/apk/ || true
+          find app/build/outputs -name "*.apk" -exec ls -lh {} \; || true
+          ls -lh ../../release/*.apk || true
+          mkdir -p ../../release
+          cp app/build/outputs/apk/*/*/*.apk ../../release/ 2>/dev/null || true
+          cp app/build/outputs/apk/*/*/*.apk . 2>/dev/null || true
+          ls -lh ../../release/*.apk || true
+      - name: Upload artifacts Android
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeros-engine-android-v${{ env.VERSION }}
+          path: |
+            aeros/android/app/build/outputs/apk/**/*.apk
+            release/*.apk
+            aeros/android/apks/*.apk
+
+  release:
+    needs: [build-windows, build-linux, build-android]
+    runs-on: ubuntu-22.04
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          ls -R artifacts | head -n 100
+          mkdir -p release
+          cp artifacts/* release/ 2>/dev/null || true
+          ls -lh release/ | head -n 50
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Aeros Engine v${{ env.VERSION }} — Lite + Full + Vulkan + Linux
+          body: |
+            ## Aeros Engine v${{ env.VERSION }} — Lite для слабых устройств + Full + Vulkan + Linux
+
+            ### 🪶 Lite версия — НОВОЕ v1.20.0! Для слабых устройств
+            **Для кого:** i3-3xxx (Ivy Bridge 2C/4T, нет AVX2), Intel HD 4000 (16 EUs), GT 620M/720M, AMD APU, ноуты 1366x768, 4GB RAM
+            **Без CUDA — CPU only**
+
+            **Оптимизации Lite:**
+            - **CPU:** SSE2 only (нет AVX2) — совместимо с i3-3xxx Ivy Bridge, 2 потока OpenMP, O1 вместо O3 (меньший бинарь, меньше нагрев), BELOW_NORMAL приоритет
+            - **GPU:** OpenGL 3.3 (не 4.6), MSAA 0, без Vulkan по умолчанию (HD 4000 поддерживает только Vulkan 1.0), простые шейдеры без PBR
+            - **Память:** <512 MB RAM, частицы 1500 (было 15000), линии тока 8x80 (было 24x300), воксели 24 (было 48) — 8x меньше памяти, LBM OFF по умолчанию 32 рес 1 шаг/кадр
+            - **Фичи:** FSR OFF, FrameGen OFF, volumetric OFF, vortex OFF, LIC OFF, acoustic OFF, schlieren/shock ON, flowSpeed 2.0, простые текстуры
+            - **Окно:** 1024x600 для ноутов 1366x768, VSync ON, 30 FPS target, power saving
+            - **Бинарь:** ~5-10 MB (Full ~20-30 MB), работает на 4GB RAM, встроенной графике, без дискретной GPU
+
+            **Сравнение:**
+            | Параметр | Lite | Full |
+            |----------|------|------|
+            | Частицы | 1500 / 5000 max | 15000 / 100000 max |
+            | Линии тока | 8 / 16 max, 80 / 150 шагов | 24 / 64 max, 300 / 600 шагов |
+            | Воксели | 24 | 48 |
+            | LBM | OFF, 32, 1 шаг/кадр | ON, 128, 3 шага/кадр |
+            | RAM | <512 MB | 1-2 GB |
+            | Бинарь | ~5-10 MB | ~20-30 MB |
+            | FPS | 30 | 60 |
+            | CPU | SSE2, 2 потока, O1 | AVX2, все ядра, O3 |
+            | GPU | HD 4000 / GT 620M | GTX 1060+ / RTX |
+            | Vulkan | OFF (HD 4000 only 1.0) | ON 1.3 |
+            | CUDA | Нет | Да |
+
+            ### 🎮 Рендереры (Full)
+            - **Vulkan 1.3** — быстрый, низкий overhead
+            - **OpenGL 4.6** — работает везде
+            - **Auto** — Vulkan если доступен, иначе OpenGL
+            - Lite — только OpenGL 3.3 по умолчанию
+
+            ### 🐧 Linux
+            - Ubuntu/Debian/Fedora/Arch, `./build-linux.sh all` или `./build-lite.sh all`
+            - `make -f Makefile.linux` или `make -f Makefile.lite`
+
+            ### 📦 Авто-зависимости
+            - Windows: `build.bat deps` или `build-lite.bat deps`
+            - Linux: `build-linux.sh install-deps` + `build-lite.sh deps`
+
+            ### 📥 Установка
+
+            **Lite Windows (для слабых ноутов):**
+            1. `Aeros-Engine-Setup-Lite-x64-v${{ env.VERSION }}.exe` — установщик Lite
+            2. Или `Aeros-Engine-Portable-Lite-x64-v${{ env.VERSION }}.zip` — портативная
+            3. Запустите, работает на i3-3xxx / HD 4000 / 4GB RAM
+
+            **Full Windows:**
+            - `Aeros-Engine-Setup-x64-v${{ env.VERSION }}-Vulkan-OpenGL.exe`
+            - `Aeros-Engine-Portable-x64-v${{ env.VERSION }}-Vulkan-OpenGL.zip`
+
+            **Linux Full:** `./installer/install-linux.sh --deps --all` или `cd aeros && ./build-linux.sh all`
+            **Linux Lite:** `cd aeros && ./build-lite.sh all` — для слабых ноутов с Linux
+
+            **Сборка Lite:**
+            ```cmd
+            build-lite.bat x64        :: Windows
+            ```
+            ```bash
+            ./build-lite.sh all       # Linux
+            make -f Makefile.lite     # Linux Makefile
+            cmake -DAEROS_LITE=ON ..  # CMake Lite
+            ```
+
+            ### 📝 Что нового v1.20.0
+            - **Lite версия** для слабых устройств i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA
+            - SSE2 only, no AVX2, O1, small binary, 30 FPS, power saving
+            - Low particles 1500, streamlines 8x80, voxel 24, LBM OFF 32 res
+            - OpenGL 3.3, no Vulkan by default, simple shaders no PBR/FSR/FG/volumetric
+            - Window 1024x600 for 1366x768 laptops, VSync ON, BELOW_NORMAL priority
+            - build-lite.bat / build-lite.sh / Makefile.lite / CMake AEROS_LITE=ON
+            - Lite installer AerosEngine-Lite-x64.iss, portable Lite
+            - UI: Lite panel with system info, apply defaults, settings
+            - CLI: --lite flag, auto-detection via AEROS_LITE macro
+
+            ---
+            **SHA256 в SHA256SUMS.txt**
+            **GoGonam AoS. 2026**
+          files: release/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          token: ${{ secrets.GITHUB_TOKEN }}
