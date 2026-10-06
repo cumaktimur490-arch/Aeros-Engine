@@ -1,13 +1,26 @@
-# <img src="icon.png" width="48" height="48" align="left" /> Aeros Engine — AoS ENG. v1.20.0 Lite + Full + Vulkan + Linux
+# <img src="icon.png" width="48" height="48" align="left" /> Aeros Engine — AoS ENG. v1.21.0 Android + Lite + Full + Vulkan + Linux
 
 Интерактивная визуализация обтекания 3D-модели (STL) потоком воздуха: линии тока, частицы,
-распределение давления, подъемная сила, шлирен, объемный дым, скачки уплотнения, вихревые трубки, полет 6DOF, LIC, акустика. C++17 / Vulkan 1.3 / OpenGL 4.6 / CUDA / Dear ImGui / GLM. Lite для слабых устройств i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA.
+распределение давления, подъемная сила, шлирен, объемный дым, скачки уплотнения, вихревые трубки, полет 6DOF, LIC, акустика. C++17 / Vulkan 1.3 / OpenGL 4.6 / GLES 3.0 / CUDA / Dear ImGui / GLM. Android APK для слабых телефонов 1GB RAM Adreno 306, Lite для i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA.
 
-> v1.20.0 Lite: SSE2 only, O1, 1500 частиц, 8x80 линий, voxel 24, LBM OFF 32, 30 FPS, OpenGL 3.3, small binary для i3-3xxx/HD4000/GT620M/4GB RAM; v1.19.0 Vulkan+Linux: Vulkan рендерер с fallback на OpenGL, полный Linux порт, авто-загрузка зависимостей; v1.18.0 Interesting: шлирен |∇ρ|, объемный дым, скачки θ-β-M, вихревые трубки Q, полет 6DOF, LIC, акустика; v1.17.0 Physics Fix: ISA, Sutherland, Venturi 1.6x, BL, wake, St(Re); v1.16.0 FG, v1.15.0 FSR.
+> v1.21.0 Android: APK <10 MB Potato 300 частиц 3x30 voxel12 15 FPS 800x480 1 поток <150 MB для Adreno 306 Mali-400 1GB RAM Android 5.0+ и Lite <20 MB 800 частиц 6x60 voxel20 25 FPS для 2-4GB RAM, minSdk 21 ES 3.0/2.0 R8 minify 3 ABI NEON touch pinch battery saver; v1.20.1 Lite+: Ultra-Lite Potato 500 частиц 4x40 voxel16 20 FPS 800x450 1 thread, auto-detect weak hardware, battery saver, dynamic quality scaling, launcher, benchmark; v1.20.0 Lite: SSE2 O1 1500 частиц 8x80 voxel24 LBM OFF 32 30 FPS OpenGL 3.3 small binary для i3-3xxx/HD4000/GT620M/4GB RAM; v1.19.0 Vulkan+Linux: Vulkan рендерер с fallback на OpenGL, Linux порт.
 
 ## 📥 Скачать (релиз)
 
 Последний релиз: **[GitHub Releases](https://github.com/cumaktimur490-arch/Aeros-Engine/releases)**
+
+### Android — для самых слабых телефонов 1GB RAM Adreno 306 / Mali-400 (NEW v1.21.0!)
+| Файл | Описание | Система |
+|------|----------|---------|
+| `aeros-engine-android-potato-v*.apk` | **Potato APK** <10 MB 300 частиц 3x30 voxel12 15 FPS 800x480 1 поток <150 MB | Android 5.0+ API21+ 1GB RAM Adreno 306 Mali-400 |
+| `aeros-engine-android-lite-v*.apk` | **Lite APK** <20 MB 800 частиц 6x60 voxel20 25 FPS 1280x720 2 потока <300 MB | Android 5.0+ 2-4GB RAM Adreno 405+ |
+
+**Быстрый старт Android (слабый телефон):**
+1. Скачайте `android-potato` для самых слабых 1GB RAM Adreno 306 Mali-400 или `android-lite` для 2-4GB RAM
+2. Скопируйте APK на телефон, откройте файл менеджером — разрешите установку из неизвестных источников
+3. Или `adb install aeros-engine-android-lite-v1.21.0.apk`
+4. Запустите — touch: один палец drag вращение, два пальца pinch zoom 0.5-2.0
+5. Оптимизировано: ES 3.0/2.0 16-bit depth no MSAA no stencil simple shaders, O1 Os NEON R8 minify 3 ABI, 1-2 threads, 15/25 FPS VSync ON battery saver, auto quality scaling
 
 ### Windows Lite — для слабых устройств i3-3xxx / HD 4000 / GT 620M / 4GB RAM (NEW v1.20.0!)
 | Файл | Описание | Система |

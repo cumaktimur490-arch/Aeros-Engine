@@ -1,0 +1,109 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.aos.aerosengine'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.aos.aerosengine"
+        minSdk 21 // Android 5.0 Lollipop — для старых телефонов, OpenGL ES 3.0 (2014)
+        targetSdk 34
+        versionCode 1
+        versionName "1.20.1-android-lite"
+
+        ndk {
+            // Поддержка всех архитектур для максимальной совместимости
+            // armeabi-v7a — старые 32-bit телефоны (до 2015)
+            // arm64-v8a — современные 64-bit (основной)
+            // x86, x86_64 — эмуляторы
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DAEROS_ANDROID=ON",
+                          "-DAEROS_LITE=ON",
+                          "-DAEROS_ULTRA_LITE=ON",
+                          "-DANDROID_LITE=ON",
+                          "-DCPU_ONLY=ON",
+                          "-DANDROID_ARM_NEON=ON"
+                // Оптимизации для слабых телефонов
+                cppFlags "-std=c++17 -O1 -ffast-math -fopenmp -DANDROID -DAEROS_LITE -DULTRA_LITE -DANDROID_LITE -DPOTATO_MODE -DCPU_ONLY -DGLFW_INCLUDE_NONE -DVERSION=\"\\\"1.20.1 Android Lite\\\"\""
+                // Для самых слабых — -O1 (не O3) меньше нагрев, меньше бинарь
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true // R8 — уменьшает APK для слабых телефонов
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Оптимизации для размера
+            ndk {
+                debugSymbolLevel 'SYMBOL_TABLE' // Только таблица символов, не полный debug
+            }
+        }
+        debug {
+            minifyEnabled false
+            debuggable true
+            jniDebuggable true
+        }
+        // Отдельный билд для самых слабых — Potato
+        create("potato") {
+            initWith release
+            minifyEnabled true
+            shrinkResources true
+            versionNameSuffix "-potato"
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared",
+                              "-DAEROS_ANDROID=ON",
+                              "-DAEROS_LITE=ON",
+                              "-DANDROID_POTATO=ON",
+                              "-DPOTATO_MODE=ON",
+                              "-DCPU_ONLY=ON"
+                    cppFlags "-std=c++17 -O1 -Os -ffast-math -DANDROID -DAEROS_LITE -DANDROID_POTATO -DPOTATO_MODE -DULTRA_LITE -DCPU_ONLY -DVERSION=\"\\\"1.20.1 Android Potato\\\"\""
+                }
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // Для старых телефонов — меньше APK
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE', 'META-INF/LICENSE.txt', 'META-INF/NOTICE', 'META-INF/NOTICE.txt']
+        }
+    }
+
+    // Сжатие — для слабых телефонов с мало памяти
+    aaptOptions {
+        noCompress 'stl' // STL модели не сжимать — быстрее загрузка
+    }
+
+    // Поддержка 16KB page size для Android 15+
+    // (требуется для новых телефонов)
+}
+
+dependencies {
+    // Минимум зависимостей — для маленького APK
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+}
