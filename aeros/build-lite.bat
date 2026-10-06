@@ -1,13 +1,15 @@
 @echo off
 setlocal enabledelayedexpansion
 rem =====================================================
-rem Aeros Engine — Lite сборка для слабых устройств v1.20.0
+rem Aeros Engine — Lite сборка для слабых устройств v1.20.1
 rem i3-3xxx (Ivy Bridge 2C/4T SSE4.2, нет AVX2), Intel HD 4000 (OpenGL 4.0, 16 EUs),
 rem GT 620M, AMD APU, ноутбуки с 4GB RAM, без CUDA
+rem + Ultra-Lite Potato для Atom/Celeron 2GB RAM HD3000
 rem Использование:
 rem   build-lite.bat         -> x64 Lite
 rem   build-lite.bat x64     -> x64 Lite
 rem   build-lite.bat x86     -> x86 Lite (для старых ноутов)
+rem   build-lite.bat ultra   -> x64 Ultra-Lite Potato
 rem   build-lite.bat clean   -> очистка
 rem   build-lite.bat deps    -> скачать зависимости
 rem =====================================================

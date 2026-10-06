@@ -48,6 +48,7 @@ SOURCES = \
     $(SRCDIR)/interesting.cpp \
     $(SRCDIR)/vulkan_renderer.cpp \
     $(SRCDIR)/lite_config.cpp \
+    $(SRCDIR)/benchmark.cpp \
     $(SRCDIR)/cuda_stub.cpp \
     $(SRCDIR)/glad.c \
     $(SRCDIR)/imgui/imgui.cpp \

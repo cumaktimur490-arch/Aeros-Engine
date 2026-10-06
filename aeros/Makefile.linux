@@ -80,6 +80,8 @@ SOURCES = \
     $(SRCDIR)/framegen.cpp \
     $(SRCDIR)/interesting.cpp \
     $(SRCDIR)/vulkan_renderer.cpp \
+    $(SRCDIR)/lite_config.cpp \
+    $(SRCDIR)/benchmark.cpp \
     $(SRCDIR)/glad.c \
     $(SRCDIR)/imgui/imgui.cpp \
     $(SRCDIR)/imgui/imgui_draw.cpp \

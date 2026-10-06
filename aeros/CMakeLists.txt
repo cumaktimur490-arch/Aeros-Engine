@@ -155,6 +155,7 @@ set(SOURCES
     src/interesting.cpp
     src/vulkan_renderer.cpp
     src/lite_config.cpp
+    src/benchmark.cpp
     src/glad.c
     src/imgui/imgui.cpp
     src/imgui/imgui_draw.cpp

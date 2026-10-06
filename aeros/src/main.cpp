@@ -236,10 +236,18 @@ int main(int argc, char** argv) {
         std::cout << "[Lite] Lite mode detected — applying optimizations for i3-3xxx / HD 4000" << std::endl;
         applyLiteDefaults();
         applyLiteOptimizations();
-        // Переопределяем размер окна для Lite — 1024x600 для 1366x768 ноутов
-        // SCR_WIDTH/HEIGHT константы, но display_w/h можно изменить
         display_w = 1024;
         display_h = 600;
+    }
+
+    // v1.20.1 — авто-детект слабого железа и загрузка конфига
+    loadLiteConfig("aeros-lite.ini");
+    // Если не Lite и слабое железо — авто-переключение
+    if (!g_isLiteMode) {
+        if (detectAndApplyLiteIfNeeded()) {
+            display_w = (g_currentPreset == LiteQualityPreset::Potato) ? ULTRA_LITE_WINDOW_W : LITE_WINDOW_WIDTH;
+            display_h = (g_currentPreset == LiteQualityPreset::Potato) ? ULTRA_LITE_WINDOW_H : LITE_WINDOW_HEIGHT;
+        }
     }
 
     // Parse command line for renderer selection — v1.19.0 Vulkan support
@@ -257,17 +265,28 @@ int main(int argc, char** argv) {
             requestedAPI = RendererAPI::OpenGL;
             std::cout << "[Main] Requested OpenGL renderer via CLI" << std::endl;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Aeros Engine v1.20.0 Lite — Airflow Visualization\n";
+            std::cout << "Aeros Engine v1.20.1 Lite+Ultra-Lite — Airflow Visualization\n";
             std::cout << "Full: Vulkan+OpenGL, CUDA, FSR, FG, all features\n";
             std::cout << "Lite: i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA / SSE2 / 30 FPS\n";
+            std::cout << "Ultra-Lite: Atom/Celeron 2GB RAM / HD 3000 / 500 particles / 20 FPS / 800x450\n";
             std::cout << "Usage: " << argv[0] << " [options] [model.stl]\n";
             std::cout << "Options:\n";
             std::cout << "  --vulkan, --vk    — force Vulkan renderer (full only)\n";
             std::cout << "  --opengl, --gl    — force OpenGL renderer\n";
-            std::cout << "  --lite            — force Lite mode (low particles, low res)\n";
+            std::cout << "  --lite            — force Lite mode (1500 particles, 8x80 streamlines, voxel 24, 30 FPS)\n";
+            std::cout << "  --ultra-lite, --potato — force Ultra-Lite mode (500 particles, 4x40, voxel 16, 20 FPS, 800x450)\n";
+            std::cout << "  --preset potato|low|medium|full — set quality preset\n";
+            std::cout << "  --auto-lite       — auto-detect weak hardware and switch to Lite if needed (default ON)\n";
+            std::cout << "  --no-auto-quality — disable dynamic FPS scaling\n";
+            std::cout << "  --battery-saver   — force battery saver (30 FPS, low power)\n";
             std::cout << "  --help, -h        — this help\n";
             std::cout << "  model.stl         — STL file to load\n";
-            std::cout << "Lite: Optimized for weak devices — 1500 particles, 8x80 streamlines, voxel 24, LBM OFF, 30 FPS, SSE2, small binary\n";
+            std::cout << "Presets:\n";
+            std::cout << "  Potato (Ultra-Lite): Atom/Celeron 2GB HD3000 — 500 particles 4x40 voxel16 20 FPS 800x450 1 thread\n";
+            std::cout << "  Low (Lite): i3-3xxx HD4000 GT620M 4GB — 1500 particles 8x80 voxel24 30 FPS 1024x600 SSE2 No CUDA\n";
+            std::cout << "  Medium: i5-4xxx HD4600 GT740M 8GB — 5000 particles 16x150 voxel32 45 FPS 1280x720\n";
+            std::cout << "  Full: i5+ GTX1060+ 8GB+ — 15000 particles 24x300 voxel48 60 FPS Vulkan+CUDA\n";
+            std::cout << "Lite: Optimized for weak devices — auto-detect, battery saver, dynamic quality scaling\n";
             std::cout << "Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2\n";
             std::cout << "Renderer: Auto-selects Vulkan if available, else OpenGL (both fully working)\n";
             std::cout << "Linux: ./build-linux.sh --deps to install dependencies\n";
@@ -276,10 +295,48 @@ int main(int argc, char** argv) {
             std::cout << "Windows: build.bat deps — download dependencies\n";
             std::cout << "         build.bat — build full\n";
             std::cout << "         build-lite.bat — build Lite\n";
+            std::cout << "         build-lite.bat ultra — build Ultra-Lite\n";
             return 0;
         } else if (arg == "--lite") {
             g_isLiteMode = true;
+            applyLiteDefaults();
+            display_w = 1024; display_h = 600;
             std::cout << "[Main] Lite mode forced via CLI" << std::endl;
+        } else if (arg == "--ultra-lite" || arg == "--ultralite" || arg == "--potato") {
+            g_isLiteMode = true;
+            g_isUltraLiteMode = true;
+            applyUltraLiteDefaults();
+            display_w = ULTRA_LITE_WINDOW_W; display_h = ULTRA_LITE_WINDOW_H;
+            std::cout << "[Main] Ultra-Lite (Potato) mode forced via CLI" << std::endl;
+        } else if (arg == "--preset" && i+1 < argc) {
+            std::string presetStr = argv[++i];
+            if (presetStr == "potato" || presetStr == "ultra-lite" || presetStr == "ultra") {
+                g_isLiteMode = true; g_isUltraLiteMode = true;
+                applyPreset(LiteQualityPreset::Potato);
+                display_w = ULTRA_LITE_WINDOW_W; display_h = ULTRA_LITE_WINDOW_H;
+            } else if (presetStr == "low" || presetStr == "lite") {
+                g_isLiteMode = true;
+                applyPreset(LiteQualityPreset::Low);
+                display_w = 1024; display_h = 600;
+            } else if (presetStr == "medium") {
+                applyPreset(LiteQualityPreset::Medium);
+            } else if (presetStr == "full" || presetStr == "high") {
+                applyPreset(LiteQualityPreset::Full);
+                g_isLiteMode = false;
+            }
+            std::cout << "[Main] Preset " << presetStr << " applied via CLI" << std::endl;
+        } else if (arg == "--auto-lite") {
+            detectAndApplyLiteIfNeeded();
+            std::cout << "[Main] Auto Lite detection forced" << std::endl;
+        } else if (arg == "--no-auto-quality") {
+            g_autoQualityScaling = false;
+            std::cout << "[Main] Auto quality scaling disabled" << std::endl;
+        } else if (arg == "--battery-saver") {
+            g_batterySaver = true;
+            g_litePowerSaving = true;
+            limitFPS = true;
+            maxFPS = 30.0f;
+            std::cout << "[Main] Battery saver forced" << std::endl;
         }
     }
 

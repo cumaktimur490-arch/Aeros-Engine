@@ -616,11 +616,29 @@ if (ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — Schlieren, Smoke, Shock
     ImGui::Checkbox(_TR("Show Temperature", "Показывать температуру"), &aeroShowTemperature);
 }
 
-if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 (NEW v1.20.0)", "Lite — Слабые устройства i3-3xxx / HD 4000 (НОВОЕ v1.20.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra-Lite (NEW v1.20.1)", "Lite — Слабые устройства i3-3xxx / HD 4000 / Ultra-Lite (НОВОЕ v1.20.1)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s", getLiteInfoString());
-    ImGui::Text("%s: %s", _TR("Lite Mode", "Lite режим"), isLiteMode() ? "ON — Optimized for weak devices" : "OFF — Full version");
+    ImGui::Text("%s: %s", _TR("Lite Mode", "Lite режим"), isLiteMode() ? (isUltraLiteMode() ? "ULTRA-LITE Potato" : "ON — Optimized for weak devices") : "OFF — Full version");
     ImGui::Text("%s: %d", _TR("HW Threads", "Потоков CPU"), std::thread::hardware_concurrency());
     ImGui::Text("%s: %d", _TR("Max Threads", "Макс потоков"), getLiteMaxThreads() >0 ? getLiteMaxThreads() : (int)std::thread::hardware_concurrency());
+    ImGui::Text("%s: %s", _TR("Battery", "Батарея"), isBatteryPower() ? "On battery — saver ON" : "On AC");
+    ImGui::Text("%s: %s", _TR("Low RAM", "Мало RAM"), isLowMemorySystem() ? "Yes <4GB — Lite recommended" : "No");
+    ImGui::Text("%s: %s", _TR("Detected", "Определено"), getPresetName(detectHardwarePreset()));
+    ImGui::Text("%s: %s", _TR("Current Preset", "Текущий пресет"), getPresetName(g_currentPreset));
+    ImGui::Text("VRAM est: %.1f MB, RAM est: %.1f MB, FPS avg: %.1f", getEstimatedVRAMUsageMB(), getEstimatedRAMUsageMB(), g_currentFPSAverage);
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Presets", "Пресеты"));
+    if (ImGui::Button("Potato (Ultra-Lite)")) { applyPreset(LiteQualityPreset::Potato); }
+    ImGui::SameLine();
+    if (ImGui::Button("Low (Lite)")) { applyPreset(LiteQualityPreset::Low); }
+    ImGui::SameLine();
+    if (ImGui::Button("Medium")) { applyPreset(LiteQualityPreset::Medium); }
+    ImGui::SameLine();
+    if (ImGui::Button("Full")) { applyPreset(LiteQualityPreset::Full); g_isLiteMode=false; }
+    ImGui::Text("%s: %s", _TR("Potato desc", "Potato"), getPresetDescription(LiteQualityPreset::Potato));
+    ImGui::Text("%s: %s", _TR("Low desc", "Low"), getPresetDescription(LiteQualityPreset::Low));
+    ImGui::Text("%s: %s", _TR("Medium desc", "Medium"), getPresetDescription(LiteQualityPreset::Medium));
+    ImGui::Text("%s: %s", _TR("Full desc", "Full"), getPresetDescription(LiteQualityPreset::Full));
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Lite Optimizations for i3-3xxx / HD 4000 / GT 620M", "Оптимизации для i3-3xxx / HD 4000 / GT 620M"));
     ImGui::BulletText("SSE2 only (no AVX2) — Ivy Bridge compatible");
@@ -630,34 +648,55 @@ if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 (NEW v1
     ImGui::BulletText("Particles 1500 (was 15000), Streamlines 8x80 (was 24x300)");
     ImGui::BulletText("Voxel 24 (was 48) — 8x less memory, LBM OFF, 32 res");
     ImGui::BulletText("Target 30 FPS, VSync ON, power saving, small window 1024x600");
-    ImGui::BulletText("Works on 1366x768 laptops, 4GB RAM, integrated graphics");
+    ImGui::BulletText("Auto-detect weak hardware, battery saver, dynamic quality scaling");
+    ImGui::BulletText("Ultra-Lite: Atom/Celeron 2GB — 500 particles 4x40 voxel16 20 FPS 800x450 1 thread");
     ImGui::Separator();
-    if (isLiteMode()) {
-        ImGui::Text("%s:", _TR("Lite Settings", "Настройки Lite"));
-        ImGui::SliderInt(_TR("Particles", "Частицы"), &numParticles, 500, 5000);
-        ImGui::SliderInt(_TR("Streamlines", "Линии тока"), &numStreamlines, 4, 16);
-        ImGui::SliderInt(_TR("Steps", "Шаги"), &streamlineSteps, 40, 150);
-        ImGui::SliderInt(_TR("Voxel Res", "Воксели"), &voxelResolution, 16, 32);
-        ImGui::Checkbox(_TR("Power Saving", "Энергосбережение"), &g_litePowerSaving);
-        ImGui::SliderFloat(_TR("Target FPS", "Целевой FPS"), &g_liteTargetFPS, 15.0f, 60.0f, "%.0f");
-        if (ImGui::Button(_TR("Apply Lite Defaults", "Применить Lite настройки"))) {
-            applyLiteDefaults();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button(_TR("Print System Info", "Инфо о системе"))) {
-            printLiteSystemInfo();
-        }
-    } else {
+    ImGui::Text("%s:", _TR("Lite Settings", "Настройки Lite"));
+    ImGui::SliderInt(_TR("Particles", "Частицы"), &numParticles, 100, 10000);
+    ImGui::SliderInt(_TR("Streamlines", "Линии тока"), &numStreamlines, 2, 32);
+    ImGui::SliderInt(_TR("Steps", "Шаги"), &streamlineSteps, 20, 300);
+    ImGui::SliderInt(_TR("Voxel Res", "Воксели"), &voxelResolution, 8, 64);
+    ImGui::Checkbox(_TR("Power Saving", "Энергосбережение"), &g_litePowerSaving);
+    ImGui::Checkbox(_TR("Battery Saver", "Экономия батареи"), &g_batterySaver);
+    ImGui::Checkbox(_TR("Auto Quality Scaling", "Авто качество по FPS"), &g_autoQualityScaling);
+    ImGui::SliderFloat(_TR("Target FPS", "Целевой FPS"), &g_liteTargetFPS, 10.0f, 60.0f, "%.0f");
+    ImGui::SliderFloat(_TR("Max FPS", "Макс FPS"), &maxFPS, 10.0f, 60.0f, "%.0f");
+    if (ImGui::Button(_TR("Apply Lite Defaults", "Применить Lite настройки"))) {
+        applyLiteDefaults();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Apply Ultra-Lite", "Применить Ultra-Lite"))) {
+        applyUltraLiteDefaults();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Print System Info", "Инфо о системе"))) {
+        printLiteSystemInfo();
+    }
+    if (ImGui::Button(_TR("Save Lite Config", "Сохранить Lite конфиг"))) {
+        saveLiteConfig("aeros-lite.ini");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Load Lite Config", "Загрузить Lite конфиг"))) {
+        loadLiteConfig("aeros-lite.ini");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Auto-Detect Hardware", "Авто-детект железа"))) {
+        detectAndApplyLiteIfNeeded();
+    }
+    ImGui::Separator();
+    if (!isLiteMode()) {
         ImGui::Text("%s", _TR("Full version — for modern PCs with Vulkan/CUDA", "Полная версия — для современных ПК с Vulkan/CUDA"));
         ImGui::Text("%s", _TR("For weak devices, download Lite version:", "Для слабых устройств скачайте Lite версию:"));
         ImGui::BulletText("Aeros-Engine-Setup-Lite-x64-v*.exe");
         ImGui::BulletText("aeros-engine-lite-linux-*");
         ImGui::BulletText("build-lite.bat / build-lite.sh");
+        ImGui::BulletText("Potato for Atom/Celeron 2GB: --preset potato");
     }
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Lite vs Full", "Lite vs Full"));
-    ImGui::Text("  Lite: 1500 particles, 8x80 streamlines, voxel 24, LBM OFF, 30 FPS, SSE2, ~5-10 MB binary, <512 MB RAM");
-    ImGui::Text("  Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2, ~20-30 MB binary, 1-2 GB RAM");
+    ImGui::Text("  Potato: 500 particles, 4x40 streamlines, voxel 16, LBM OFF, 20 FPS, SSE2, ~3-5 MB, <256 MB RAM, 1 thread");
+    ImGui::Text("  Lite: 1500 particles, 8x80 streamlines, voxel 24, LBM OFF, 30 FPS, SSE2, ~5-10 MB, <512 MB RAM");
+    ImGui::Text("  Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2, ~20-30 MB, 1-2 GB RAM");
 }
 
 if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {

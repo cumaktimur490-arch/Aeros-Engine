@@ -1,6 +1,6 @@
 #pragma once
-// v1.20.0 Lite — конфигурация для слабых устройств i3-3xxx, встроенная графика, ноутбучные GPU
-// Без CUDA, оптимизировано для Intel HD 4000 / GT 620M / AMD APU
+// v1.20.1 Lite+Ultra-Lite — для слабых устройств i3-3xxx, Atom, Celeron, встроенная графика, ноутбучные GPU
+// Без CUDA, оптимизировано для Intel HD 4000 / GT 620M / AMD APU + Atom/Celeron 2GB RAM
 
 // Определяем Lite режим компиляции
 #ifdef AEROS_LITE
@@ -86,11 +86,55 @@
 
 #endif
 
+// --- ULTRA-LITE для Atom/Celeron/2GB RAM (NEW v1.20.1) ---
+#define ULTRA_LITE_PARTICLES 500
+#define ULTRA_LITE_MAX_PARTICLES 1000
+#define ULTRA_LITE_STREAMLINES 4
+#define ULTRA_LITE_STREAMLINE_STEPS 40
+#define ULTRA_LITE_VOXEL_RES 16
+#define ULTRA_LITE_LBM_RES 16
+#define ULTRA_LITE_TARGET_FPS 20
+#define ULTRA_LITE_WINDOW_W 800
+#define ULTRA_LITE_WINDOW_H 450
+#define ULTRA_LITE_MAX_THREADS 1
+#define ULTRA_LITE_MAX_MEMORY_MB 256
+
+// --- Пресеты качества (NEW v1.20.1) ---
+enum class LiteQualityPreset {
+    Potato = 0,   // Atom/Celeron 2GB RAM, HD 3000 — минимум
+    Low = 1,      // i3-3xxx, HD 4000, GT 620M, 4GB — Lite default
+    Medium = 2,   // i5-4xxx, HD 4600, GT 740M, 8GB — между Lite и Full
+    Full = 3      // Современный ПК
+};
+
 // Функции для Lite режима
 bool isLiteMode();
+bool isUltraLiteMode();
 void applyLiteDefaults();
+void applyUltraLiteDefaults();
 void applyLiteOptimizations();
 const char* getLiteInfoString();
 int getLiteMaxThreads();
 bool isLiteGPU();
 void printLiteSystemInfo();
+
+// Новые функции v1.20.1
+LiteQualityPreset detectHardwarePreset(); // Авто-детект слабого железа
+void applyPreset(LiteQualityPreset preset);
+bool detectAndApplyLiteIfNeeded(); // Авто-переключение на Lite если слабое железо
+bool isBatteryPower(); // Проверка батареи (ноут на батарее)
+bool isLowMemorySystem(); // <4GB RAM
+bool isWeakGPU(const char* glVendor, const char* glRenderer); // HD 3000/4000, GT 6xx
+const char* getPresetName(LiteQualityPreset p);
+const char* getPresetDescription(LiteQualityPreset p);
+void saveLiteConfig(const char* path = "aeros-lite.ini");
+bool loadLiteConfig(const char* path = "aeros-lite.ini");
+void applyDynamicQualityScaling(float currentFPS); // Авто-снижение качества если FPS низкий
+float getEstimatedVRAMUsageMB(); // Оценка VRAM
+float getEstimatedRAMUsageMB(); // Оценка RAM
+
+// Глобальные для динамического качества
+extern bool g_autoQualityScaling;
+extern bool g_batterySaver;
+extern float g_currentFPSAverage;
+extern LiteQualityPreset g_currentPreset;

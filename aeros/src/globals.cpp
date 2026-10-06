@@ -321,3 +321,9 @@ bool g_isLiteMode = false;
 bool g_litePowerSaving = true;
 float g_liteTargetFPS = 30.0f;
 int g_liteMaxThreads = 2;
+
+// v1.20.1 Lite+ extra
+bool g_isUltraLiteMode = false;
+bool g_autoQualityScaling = true;
+bool g_batterySaver = true;
+float g_currentFPSAverage = 30.0f;

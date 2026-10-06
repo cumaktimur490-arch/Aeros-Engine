@@ -412,4 +412,10 @@ extern bool g_litePowerSaving;
 extern float g_liteTargetFPS;
 extern int g_liteMaxThreads;
 
+// --- v1.20.1 Lite+ extra ---
+extern bool g_isUltraLiteMode;
+extern bool g_autoQualityScaling;
+extern bool g_batterySaver;
+extern float g_currentFPSAverage;
+
 #endif // GLOBALS_H
