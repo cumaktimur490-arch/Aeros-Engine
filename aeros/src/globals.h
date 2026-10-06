@@ -418,4 +418,9 @@ extern bool g_autoQualityScaling;
 extern bool g_batterySaver;
 extern float g_currentFPSAverage;
 
+// --- v1.21.0 SD662/Adreno 610 ---
+extern bool g_isSD662Device;
+extern bool g_isAdreno610;
+extern bool g_is90Hz;
+
 #endif // GLOBALS_H

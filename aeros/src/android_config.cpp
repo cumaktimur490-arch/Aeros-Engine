@@ -4,6 +4,8 @@
 #include "lbm.h"
 
 #include <iostream>
+#include <algorithm>
+#include <cctype>
 
 #ifdef ANDROID
 #include <sys/system_properties.h>

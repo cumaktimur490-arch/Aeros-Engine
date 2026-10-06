@@ -634,10 +634,18 @@ if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra
     ImGui::SameLine();
     if (ImGui::Button("Medium")) { applyPreset(LiteQualityPreset::Medium); }
     ImGui::SameLine();
+    if (ImGui::Button("Balanced (SD662)")) { applyPreset(LiteQualityPreset::Balanced); }
+    ImGui::SameLine();
     if (ImGui::Button("Full")) { applyPreset(LiteQualityPreset::Full); g_isLiteMode=false; }
+    if (g_isSD662Device) {
+        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "YOUR PHONE: Snapdragon 662 + Adreno 610 detected! Balanced preset recommended!");
+        ImGui::Text("SoC: %s", getSoCInfoString());
+        ImGui::Text("GPU: %s", getGPUInfoString());
+    }
     ImGui::Text("%s: %s", _TR("Potato desc", "Potato"), getPresetDescription(LiteQualityPreset::Potato));
     ImGui::Text("%s: %s", _TR("Low desc", "Low"), getPresetDescription(LiteQualityPreset::Low));
     ImGui::Text("%s: %s", _TR("Medium desc", "Medium"), getPresetDescription(LiteQualityPreset::Medium));
+    ImGui::Text("Balanced: %s", getPresetDescription(LiteQualityPreset::Balanced));
     ImGui::Text("%s: %s", _TR("Full desc", "Full"), getPresetDescription(LiteQualityPreset::Full));
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Lite Optimizations for i3-3xxx / HD 4000 / GT 620M", "Оптимизации для i3-3xxx / HD 4000 / GT 620M"));

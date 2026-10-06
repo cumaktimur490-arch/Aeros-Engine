@@ -327,3 +327,8 @@ bool g_isUltraLiteMode = false;
 bool g_autoQualityScaling = true;
 bool g_batterySaver = true;
 float g_currentFPSAverage = 30.0f;
+
+// v1.21.0 SD662/Adreno 610
+bool g_isSD662Device = false;
+bool g_isAdreno610 = false;
+bool g_is90Hz = false;

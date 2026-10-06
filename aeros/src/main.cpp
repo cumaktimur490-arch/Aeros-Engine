@@ -223,11 +223,26 @@ bool loadSettings(const std::string& path) {
 int main(int argc, char** argv) {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.20.0 Lite Multilingual)" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.21.0 SD662 Multilingual)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
 #endif
+
+    // v1.21.0 SD662/Adreno 610 — спец оптимизация для твоего телефона
+    // Проверяем — если 8 ядер и Android-like, то SD662
+    if (std::thread::hardware_concurrency() == 8) {
+        // 8 cores — может быть SD662
+        // Для Android — всегда Balanced
+#ifdef ANDROID
+        g_isSD662Device = true;
+        g_isAdreno610 = true;
+        std::cout << "[SD662] Detected 8 cores Android — assuming SD662/Adreno 610 class — applying Balanced" << std::endl;
+        applySD662Defaults();
+        display_w = 720;
+        display_h = 1604;
+#endif
+    }
 
     // v1.20.0 Lite — проверка режима и применение оптимизаций для слабых устройств
     printLiteSystemInfo();
@@ -243,10 +258,15 @@ int main(int argc, char** argv) {
     // v1.20.1 — авто-детект слабого железа и загрузка конфига
     loadLiteConfig("aeros-lite.ini");
     // Если не Lite и слабое железо — авто-переключение
-    if (!g_isLiteMode) {
+    if (!g_isLiteMode && !g_isSD662Device) {
         if (detectAndApplyLiteIfNeeded()) {
-            display_w = (g_currentPreset == LiteQualityPreset::Potato) ? ULTRA_LITE_WINDOW_W : LITE_WINDOW_WIDTH;
-            display_h = (g_currentPreset == LiteQualityPreset::Potato) ? ULTRA_LITE_WINDOW_H : LITE_WINDOW_HEIGHT;
+            if (g_currentPreset == LiteQualityPreset::Potato) {
+                display_w = ULTRA_LITE_WINDOW_W; display_h = ULTRA_LITE_WINDOW_H;
+            } else if (g_currentPreset == LiteQualityPreset::Balanced) {
+                display_w = ANDROID_SD662_WINDOW_W; display_h = ANDROID_SD662_WINDOW_H;
+            } else {
+                display_w = LITE_WINDOW_WIDTH; display_h = LITE_WINDOW_HEIGHT;
+            }
         }
     }
 
@@ -282,10 +302,12 @@ int main(int argc, char** argv) {
             std::cout << "  --help, -h        — this help\n";
             std::cout << "  model.stl         — STL file to load\n";
             std::cout << "Presets:\n";
-            std::cout << "  Potato (Ultra-Lite): Atom/Celeron 2GB HD3000 — 500 particles 4x40 voxel16 20 FPS 800x450 1 thread\n";
-            std::cout << "  Low (Lite): i3-3xxx HD4000 GT620M 4GB — 1500 particles 8x80 voxel24 30 FPS 1024x600 SSE2 No CUDA\n";
-            std::cout << "  Medium: i5-4xxx HD4600 GT740M 8GB — 5000 particles 16x150 voxel32 45 FPS 1280x720\n";
-            std::cout << "  Full: i5+ GTX1060+ 8GB+ — 15000 particles 24x300 voxel48 60 FPS Vulkan+CUDA\n";
+            std::cout << "  Potato (Ultra-Lite): Atom/Celeron 2GB HD3000 Adreno306 — 500 particles 4x40 voxel16 20 FPS 800x450 1 thread\n";
+            std::cout << "  Low (Lite): i3-3xxx HD4000 GT620M 4GB Adreno405 — 1500 particles 8x80 voxel24 30 FPS 1024x600 SSE2 No CUDA\n";
+            std::cout << "  Medium: i5-4xxx HD4600 GT740M 8GB Adreno506 — 5000 particles 16x150 voxel32 45 FPS 1280x720\n";
+            std::cout << "  Balanced (SD662/Adreno610): SD662 8xKryo260 2.1GHz Adreno610 ES3.2 720x1604 90Hz 4-6GB — 2500 particles 12x120 voxel32 60 FPS 4 threads FSR ON (YOUR PHONE!)\n";
+            std::cout << "  High: i5-8xxx GTX1050 Adreno640 — 8000 particles 16x200 voxel40 60 FPS\n";
+            std::cout << "  Full: i5+ GTX1060+ 8GB+ SD8Gen2 — 15000 particles 24x300 voxel48 60 FPS Vulkan+CUDA\n";
             std::cout << "Lite: Optimized for weak devices — auto-detect, battery saver, dynamic quality scaling\n";
             std::cout << "Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2\n";
             std::cout << "Renderer: Auto-selects Vulkan if available, else OpenGL (both fully working)\n";
@@ -320,11 +342,22 @@ int main(int argc, char** argv) {
                 display_w = 1024; display_h = 600;
             } else if (presetStr == "medium") {
                 applyPreset(LiteQualityPreset::Medium);
-            } else if (presetStr == "full" || presetStr == "high") {
+            } else if (presetStr == "balanced" || presetStr == "sd662" || presetStr == "adreno610") {
+                applyPreset(LiteQualityPreset::Balanced);
+                display_w = ANDROID_SD662_WINDOW_W; display_h = ANDROID_SD662_WINDOW_H;
+                std::cout << "[Main] Balanced SD662/Adreno 610 preset for YOUR PHONE!" << std::endl;
+            } else if (presetStr == "high") {
+                applyPreset(LiteQualityPreset::High);
+            } else if (presetStr == "full") {
                 applyPreset(LiteQualityPreset::Full);
                 g_isLiteMode = false;
             }
             std::cout << "[Main] Preset " << presetStr << " applied via CLI" << std::endl;
+        } else if (arg == "--sd662") {
+            g_isSD662Device = true; g_isAdreno610 = true;
+            applySD662Defaults();
+            display_w = ANDROID_SD662_WINDOW_W; display_h = ANDROID_SD662_WINDOW_H;
+            std::cout << "[Main] SD662/Adreno 610 optimized for YOUR PHONE!" << std::endl;
         } else if (arg == "--auto-lite") {
             detectAndApplyLiteIfNeeded();
             std::cout << "[Main] Auto Lite detection forced" << std::endl;

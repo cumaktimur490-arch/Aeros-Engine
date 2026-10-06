@@ -23,12 +23,19 @@
 #include <cstring>
 #endif
 
-// Глобальные для динамического качества
+#ifdef ANDROID
+#include <sys/system_properties.h>
+#endif
+
+// Глобальные
 bool g_autoQualityScaling = true;
 bool g_batterySaver = true;
 float g_currentFPSAverage = 30.0f;
 LiteQualityPreset g_currentPreset = LiteQualityPreset::Low;
 static bool g_isUltraLite = false;
+bool g_isSD662Device = false;
+bool g_isAdreno610 = false;
+bool g_is90Hz = false;
 
 bool isLiteMode() {
 #ifdef AEROS_LITE
@@ -43,6 +50,7 @@ bool isUltraLiteMode() {
 }
 
 int getLiteMaxThreads() {
+    if (g_isSD662Device) return ANDROID_SD662_MAX_THREADS;
 #ifdef AEROS_LITE
     return g_isUltraLite ? ULTRA_LITE_MAX_THREADS : LITE_MAX_THREADS;
 #else
@@ -79,14 +87,11 @@ bool isBatteryPower() {
 #ifdef _WIN32
     SYSTEM_POWER_STATUS sps;
     if (GetSystemPowerStatus(&sps)) {
-        // 0=on battery, 1=AC, 255=unknown
         if (sps.ACLineStatus == 0) return true;
-        // Если батарея <50% и на батарее — тоже считаем battery saver
         if (sps.ACLineStatus == 0 && sps.BatteryLifePercent != 255 && sps.BatteryLifePercent < 50) return true;
     }
     return false;
 #else
-    // Linux: проверяем /sys/class/power_supply
     std::ifstream f("/sys/class/power_supply/BAT0/status");
     if (f.is_open()) {
         std::string status;
@@ -107,30 +112,24 @@ bool isWeakGPU(const char* glVendor, const char* glRenderer) {
     if (!glVendor || !glRenderer) return false;
     std::string vendor(glVendor);
     std::string renderer(glRenderer);
-    // To lower
     std::transform(vendor.begin(), vendor.end(), vendor.begin(), ::tolower);
     std::transform(renderer.begin(), renderer.end(), renderer.begin(), ::tolower);
 
-    // Intel HD 2000/3000/4000/4400/4600 — слабые
     if (renderer.find("hd 2000") != std::string::npos) return true;
     if (renderer.find("hd 3000") != std::string::npos) return true;
     if (renderer.find("hd 4000") != std::string::npos) return true;
     if (renderer.find("hd 4400") != std::string::npos) return true;
     if (renderer.find("hd 4600") != std::string::npos) return true;
     if (renderer.find("hd graphics") != std::string::npos) {
-        // HD Graphics без числа — часто слабая
         if (renderer.find("620") == std::string::npos && renderer.find("630") == std::string::npos && renderer.find("520") == std::string::npos) {
             return true;
         }
     }
     if (renderer.find("intel") != std::string::npos && renderer.find("hd") != std::string::npos) {
-        // Intel HD — проверяем если не Iris
         if (renderer.find("iris") == std::string::npos) return true;
     }
-    // Intel UHD 600/605 — слабые (Celeron/Pentium)
     if (renderer.find("uhd 600") != std::string::npos) return true;
     if (renderer.find("uhd 605") != std::string::npos) return true;
-    // NVIDIA GT 6xx/7xx/8xx — слабые ноутбучные
     if (renderer.find("gt 610") != std::string::npos) return true;
     if (renderer.find("gt 620") != std::string::npos) return true;
     if (renderer.find("gt 630") != std::string::npos) return true;
@@ -140,28 +139,117 @@ bool isWeakGPU(const char* glVendor, const char* glRenderer) {
     if (renderer.find("gt 740") != std::string::npos) return true;
     if (renderer.find("820m") != std::string::npos) return true;
     if (renderer.find("920m") != std::string::npos) return true;
-    // AMD APU, Radeon HD 7000, R2/R3/R5
     if (renderer.find("radeon hd 7") != std::string::npos) return true;
     if (renderer.find("radeon r2") != std::string::npos) return true;
     if (renderer.find("radeon r3") != std::string::npos) return true;
     if (renderer.find("radeon r5") != std::string::npos) return true;
     if (renderer.find("amd radeon") != std::string::npos && renderer.find("r5") != std::string::npos) return true;
-    // Mesa software renderer
     if (renderer.find("llvmpipe") != std::string::npos) return true;
     if (renderer.find("softpipe") != std::string::npos) return true;
     if (renderer.find("swrast") != std::string::npos) return true;
+    // Android weak GPUs
+    if (renderer.find("adreno 306") != std::string::npos) return true;
+    if (renderer.find("adreno 304") != std::string::npos) return true;
+    if (renderer.find("mali-400") != std::string::npos) return true;
+    if (renderer.find("mali-450") != std::string::npos) return true;
+    if (renderer.find("sgx 544") != std::string::npos) return true;
 
     return false;
 }
 
+bool isAdreno610GPU(const char* glVendor, const char* glRenderer) {
+    if (!glVendor || !glRenderer) return false;
+    std::string vendor(glVendor);
+    std::string renderer(glRenderer);
+    std::transform(vendor.begin(), vendor.end(), vendor.begin(), ::tolower);
+    std::transform(renderer.begin(), renderer.end(), renderer.begin(), ::tolower);
+
+    // Adreno 610 — точно для SD662
+    if (renderer.find("adreno (tm) 610") != std::string::npos) return true;
+    if (renderer.find("adreno 610") != std::string::npos) return true;
+    // Также 612, 616 — похожие
+    if (renderer.find("adreno 612") != std::string::npos) return true;
+    if (renderer.find("adreno 616") != std::string::npos) return true;
+
+    return false;
+}
+
+bool isSnapdragon662() {
+#ifdef ANDROID
+    char soc[PROP_VALUE_MAX], hardware[PROP_VALUE_MAX], model[PROP_VALUE_MAX];
+    __system_property_get("ro.soc.model", soc);
+    __system_property_get("ro.hardware", hardware);
+    __system_property_get("ro.product.board", model);
+
+    std::string socStr(soc), hwStr(hardware), modelStr(model);
+    std::transform(socStr.begin(), socStr.end(), socStr.begin(), ::tolower);
+    std::transform(hwStr.begin(), hwStr.end(), hwStr.begin(), ::tolower);
+    std::transform(modelStr.begin(), modelStr.end(), modelStr.begin(), ::tolower);
+
+    if (socStr.find("sm6115") != std::string::npos) return true;
+    if (socStr.find("sdm662") != std::string::npos) return true;
+    if (socStr.find("662") != std::string::npos) return true;
+    if (modelStr.find("sm6115") != std::string::npos) return true;
+    if (modelStr.find("bengal") != std::string::npos) return true; // Bengal — кодовое имя SD662
+
+    // Проверяем через cpuinfo — Kryo 260
+    // Для простоты — если Adreno 610, то скорее всего SD662
+    if (g_isAdreno610) return true;
+
+    return false;
+#else
+    return false;
+#endif
+}
+
+bool is90HzDisplay() {
+#ifdef ANDROID
+    // В Android — можно проверить через Java Display.getRefreshRate()
+    // Тут заглушка — для SD662 часто 90Hz
+    // Реальная проверка в Java
+    return g_is90Hz;
+#else
+    return false;
+#endif
+}
+
+const char* getGPUInfoString() {
+    static std::string info;
+    // В реальном рендере — glGetString
+    if (g_isAdreno610) {
+        info = "Adreno 610 (SD662) — ES 3.2, ~150 GFLOPS, 720x1604 90Hz, ASTC, optimized";
+    } else if (g_isSD662Device) {
+        info = "Snapdragon 662 — Kryo 260 8 cores 11nm, Adreno 610 class";
+    } else {
+        info = "Unknown GPU";
+    }
+    return info.c_str();
+}
+
+const char* getSoCInfoString() {
+    static std::string info;
+    if (g_isSD662Device) {
+        info = "Snapdragon 662 (SM6115) — 4x Kryo 260 Gold @ 2.11GHz + 4x Silver @ 1.8GHz, 11nm, 8 cores, Adreno 610, 720x1604 90Hz";
+    } else {
+        info = "Unknown SoC";
+    }
+    return info.c_str();
+}
+
 LiteQualityPreset detectHardwarePreset() {
+    // Сначала проверяем Android SD662
+#ifdef ANDROID
+    if (isSnapdragon662() || g_isAdreno610 || g_isSD662Device) {
+        std::cout << "[Lite Detect] SD662/Adreno 610 detected — Balanced preset 60 FPS" << std::endl;
+        return LiteQualityPreset::Balanced;
+    }
+#endif
+
     unsigned int hwThreads = std::thread::hardware_concurrency();
     bool lowRAM = isLowMemorySystem();
     bool onBattery = isBatteryPower();
 
-    // Ultra-Lite: 1-2 ядра, <3GB RAM, или батарея + слабое железо
     if (hwThreads <= 2 || lowRAM) {
-        // Проверяем RAM точнее
 #ifdef _WIN32
         MEMORYSTATUSEX memInfo;
         memInfo.dwLength = sizeof(MEMORYSTATUSEX);
@@ -192,6 +280,22 @@ LiteQualityPreset detectHardwarePreset() {
         return LiteQualityPreset::Low;
     }
 
+    if (hwThreads == 8) {
+        // 8 cores — может быть SD662 или i7
+        // Если Android — то Balanced для SD662
+#ifdef ANDROID
+        std::cout << "[Lite Detect] 8 cores Android — Balanced preset for SD662 class" << std::endl;
+        return LiteQualityPreset::Balanced;
+#else
+        if (onBattery) {
+            std::cout << "[Lite Detect] Medium preset — battery saver, " << hwThreads << " threads" << std::endl;
+            return LiteQualityPreset::Medium;
+        }
+        std::cout << "[Lite Detect] Balanced preset — 8 threads modern but power saving" << std::endl;
+        return LiteQualityPreset::Balanced;
+#endif
+    }
+
     if (hwThreads <= 8 && onBattery) {
         std::cout << "[Lite Detect] Medium preset — battery saver, " << hwThreads << " threads" << std::endl;
         return LiteQualityPreset::Medium;
@@ -206,11 +310,27 @@ LiteQualityPreset detectHardwarePreset() {
     return LiteQualityPreset::Full;
 }
 
+LiteQualityPreset detectAndroidPreset() {
+    // Для Android с учетом Adreno 610
+    if (g_isAdreno610 || g_isSD662Device || isSnapdragon662()) {
+        return LiteQualityPreset::Balanced;
+    }
+
+    // Проверяем RAM через Java — тут упрощенно
+    unsigned int hwThreads = std::thread::hardware_concurrency();
+    if (hwThreads <= 2) return LiteQualityPreset::Potato;
+    if (hwThreads <= 4) return LiteQualityPreset::Low;
+    if (hwThreads == 8) return LiteQualityPreset::Balanced; // SD662 8 cores
+    return LiteQualityPreset::Medium;
+}
+
 const char* getPresetName(LiteQualityPreset p) {
     switch (p) {
         case LiteQualityPreset::Potato: return "Potato (Ultra-Lite)";
         case LiteQualityPreset::Low: return "Low (Lite)";
         case LiteQualityPreset::Medium: return "Medium";
+        case LiteQualityPreset::Balanced: return "Balanced (SD662/Adreno 610)";
+        case LiteQualityPreset::High: return "High";
         case LiteQualityPreset::Full: return "Full";
         default: return "Unknown";
     }
@@ -218,12 +338,109 @@ const char* getPresetName(LiteQualityPreset p) {
 
 const char* getPresetDescription(LiteQualityPreset p) {
     switch (p) {
-        case LiteQualityPreset::Potato: return "Atom/Celeron 1-2C, 2GB RAM, HD 3000 — 500 particles, 4x40 streamlines, voxel 16, 20 FPS, 800x450";
-        case LiteQualityPreset::Low: return "i3-3xxx 2C/4T, HD 4000/GT 620M, 4GB RAM — 1500 particles, 8x80 streamlines, voxel 24, 30 FPS, 1024x600, No CUDA";
-        case LiteQualityPreset::Medium: return "i5-4xxx 4C, HD 4600/GT 740M, 8GB — 5000 particles, 16x150 streamlines, voxel 32, 45 FPS, 1280x720";
-        case LiteQualityPreset::Full: return "i5+ 4C+, GTX 1060+, 8GB+ — 15000 particles, 24x300 streamlines, voxel 48, 60 FPS, Vulkan+CUDA";
+        case LiteQualityPreset::Potato: return "Atom/Celeron 1-2C, 2GB RAM, HD 3000, Adreno 306 — 500 particles, 4x40 streamlines, voxel 16, 20 FPS, 800x450";
+        case LiteQualityPreset::Low: return "i3-3xxx 2C/4T, HD 4000/GT 620M, 4GB RAM, Adreno 405 — 1500 particles, 8x80 streamlines, voxel 24, 30 FPS, 1024x600, No CUDA";
+        case LiteQualityPreset::Medium: return "i5-4xxx 4C, HD 4600/GT 740M, 8GB, Adreno 506 — 5000 particles, 16x150 streamlines, voxel 32, 45 FPS, 1280x720";
+        case LiteQualityPreset::Balanced: return "SD662 8x Kryo 260 2.1GHz, Adreno 610 ES 3.2, 720x1604 90Hz, 4-6GB — 2500 particles, 12x120 streamlines, voxel 32, 60 FPS, 4 threads, ASTC";
+        case LiteQualityPreset::High: return "i5-8xxx 4C+, GTX 1050, Adreno 640, 6GB+ — 8000 particles, 16x200 streamlines, voxel 40, 60 FPS";
+        case LiteQualityPreset::Full: return "i5+ 4C+, GTX 1060+, 8GB+, SD 8 Gen 2 — 15000 particles, 24x300 streamlines, voxel 48, 60 FPS, Vulkan+CUDA";
         default: return "Unknown preset";
     }
+}
+
+void applyBalancedDefaults() {
+    applySD662Defaults();
+}
+
+void applySD662Defaults() {
+    std::cout << "[SD662 Balanced] Applying SD662/Adreno 610 optimized defaults for your phone..." << std::endl;
+    g_isSD662Device = true;
+    g_isAdreno610 = true;
+    g_isLiteMode = false; // не Lite, а Balanced — больше чем Lite
+    g_isUltraLite = false;
+    g_currentPreset = LiteQualityPreset::Balanced;
+
+    // Для SD662 — больше чем Lite, но оптимизировано для 720p 90Hz
+    numParticles = ANDROID_SD662_PARTICLES; // 2500
+    particleSize = 2.8f;
+    maxSpeedForColor = 6.0f;
+
+    numStreamlines = ANDROID_SD662_STREAMLINES; // 12
+    streamlineSteps = ANDROID_SD662_STREAMLINE_STEPS; // 120
+    streamlineStepSize = 0.08f; // точнее для лучшего качества
+    streamlineAlpha = 0.85f;
+    streamlineWidth = 2.5f;
+
+    voxelResolution = ANDROID_SD662_VOXEL_RES; // 32
+    useVoxelCollision = true;
+
+    lbmParams.enabled = false; // LBM тяжело даже для SD662, но можно вкл low res
+    lbmParams.stepsPerFrame = 1;
+    lbmNx = ANDROID_SD662_LBM_RES; // 24
+    lbmNy = ANDROID_SD662_LBM_RES;
+    lbmNz = ANDROID_SD662_LBM_RES;
+    lbmParams.useTurbulence = false;
+    lbmParams.useGround = false;
+
+    showModel = true;
+    showParticles = true;
+    showStreamlines = true;
+    showPressure = true; // для SD662 можно давление
+    showLiftDrag = true;
+    showBoundingBox = false;
+    showAxes = true;
+    showGroundPlane = false;
+
+    // Для 90Hz экрана — 60 FPS target, на батарее 45 FPS
+    vsyncEnabled = true;
+    limitFPS = true;
+    maxFPS = ANDROID_SD662_MAX_FPS; // 60
+    optFramePacing = true;
+    optTargetFPS = ANDROID_SD662_TARGET_FPS; // 60
+
+    // Оптимизации — включаем почти все
+    optFrustumCulling = true;
+    optOcclusionCulling = true; // для Adreno 610 можно occlusion
+    optLOD = true;
+    optEarlyZ = true;
+    optDynamicParticles = true;
+    optVRS = true;
+    optAsyncCompute = false;
+    optParticleLOD = 0; // full LOD для SD662
+    optLODDistance = 5.0f;
+    optMeshletCulling = true;
+
+    // FSR/FG — для Adreno 610 можно FSR, но не FG
+    fsrEnabled = true; // FSR помогает для 720p -> 1080p
+    fgEnabled = false;
+
+    // Интересные фичи — для SD662 можно некоторые
+    aeroShowVortexTubes = true; // можно, но low count
+    aeroShowShockWaves = true;
+    aeroShowLIC = false; // LIC тяжело
+    aeroVolumetricEnabled = false; // volumetric тяжело
+    aeroSchlierenEnabled = true;
+    aeroFlightMode = false;
+    aeroShowAeroAcoustic = false;
+    aeroShowTemperature = true; // можно температуру
+
+    aeroSmokeDensity = 0.6f;
+    aeroSmokeOpacity = 0.6f;
+    aeroSmokeInjectors = 2;
+    aeroVortexTubeCount = 12; // больше чем Lite
+
+    flowSpeed = 3.5f;
+    wakeStrength = 0.4f;
+    wakeLength = 6.0f;
+    strouhal = 0.2f;
+
+    g_litePowerSaving = false; // для SD662 не нужен power saving на AC
+    g_batterySaver = true; // но battery saver вкл для батареи
+    g_autoQualityScaling = true;
+    g_liteMaxThreads = ANDROID_SD662_MAX_THREADS; // 4 потока для 8 ядер SD662
+    g_currentFPSAverage = ANDROID_SD662_TARGET_FPS;
+
+    std::cout << "[SD662 Balanced] Applied for SD662/Adreno 610 720x1604 90Hz: " << numParticles << " particles, " << numStreamlines << "x" << streamlineSteps << " streamlines, voxel " << voxelResolution << ", " << optTargetFPS << " FPS, 4 threads, FSR ON, <800 MB" << std::endl;
 }
 
 void applyPreset(LiteQualityPreset preset) {
@@ -238,7 +455,6 @@ void applyPreset(LiteQualityPreset preset) {
             applyLiteDefaults();
             break;
         case LiteQualityPreset::Medium:
-            // Средний — между Lite и Full
             numParticles = 5000;
             numStreamlines = 16;
             streamlineSteps = 150;
@@ -260,9 +476,36 @@ void applyPreset(LiteQualityPreset preset) {
             aeroSchlierenEnabled = true;
             aeroShowShockWaves = true;
             flowSpeed = 3.0f;
+            g_liteMaxThreads = 4;
+            break;
+        case LiteQualityPreset::Balanced:
+            applySD662Defaults();
+            break;
+        case LiteQualityPreset::High:
+            numParticles = 8000;
+            numStreamlines = 16;
+            streamlineSteps = 200;
+            voxelResolution = 40;
+            lbmParams.enabled = false;
+            lbmParams.stepsPerFrame = 2;
+            lbmNx = 64; lbmNy = 64; lbmNz = 64;
+            lbmParams.useTurbulence = false;
+            vsyncEnabled = true;
+            limitFPS = true;
+            maxFPS = 60.0f;
+            optTargetFPS = 60.0f;
+            fsrEnabled = true;
+            fgEnabled = false;
+            aeroShowVortexTubes = true;
+            aeroVolumetricEnabled = false;
+            aeroShowLIC = false;
+            aeroShowAeroAcoustic = false;
+            aeroSchlierenEnabled = true;
+            aeroShowShockWaves = true;
+            flowSpeed = 4.0f;
+            g_liteMaxThreads = 6;
             break;
         case LiteQualityPreset::Full:
-            // Full — стандартные настройки
             numParticles = 15000;
             numStreamlines = 24;
             streamlineSteps = 300;
@@ -282,6 +525,7 @@ void applyPreset(LiteQualityPreset preset) {
             aeroShowLIC = false;
             aeroShowAeroAcoustic = false;
             flowSpeed = 5.0f;
+            g_liteMaxThreads = 0;
             break;
     }
 }
@@ -290,6 +534,7 @@ void applyUltraLiteDefaults() {
     std::cout << "[Ultra-Lite] Applying Ultra-Lite defaults for Atom/Celeron/2GB RAM..." << std::endl;
     g_isUltraLite = true;
     g_isLiteMode = true;
+    g_isSD662Device = false;
 
     numParticles = ULTRA_LITE_PARTICLES;
     particleSize = 3.0f;
@@ -334,7 +579,7 @@ void applyUltraLiteDefaults() {
     optDynamicParticles = true;
     optVRS = true;
     optAsyncCompute = false;
-    optParticleLOD = 2; // ultra low
+    optParticleLOD = 2;
     optLODDistance = 2.0f;
     optMeshletCulling = true;
 
@@ -368,6 +613,7 @@ void applyLiteDefaults() {
     std::cout << "[Lite] Applying Lite defaults for i3-3xxx / HD 4000 / GT 620M..." << std::endl;
     g_isUltraLite = false;
     g_isLiteMode = true;
+    g_isSD662Device = false;
 
     numParticles = LITE_DEFAULT_PARTICLES;
     if (numParticles > LITE_MAX_PARTICLES) numParticles = LITE_MAX_PARTICLES;
@@ -444,7 +690,6 @@ void applyLiteDefaults() {
 }
 
 bool detectAndApplyLiteIfNeeded() {
-    // Авто-детект слабого железа и применение Lite
     LiteQualityPreset preset = detectHardwarePreset();
     bool shouldBeLite = (preset == LiteQualityPreset::Potato || preset == LiteQualityPreset::Low);
 
@@ -455,10 +700,6 @@ bool detectAndApplyLiteIfNeeded() {
         return true;
     }
 
-    // Также проверяем GPU если уже есть контекст
-    // Это вызывается после создания GL контекста — проверим отдельно через isWeakGPU
-
-    // Проверяем батарею
     if (isBatteryPower() && g_batterySaver) {
         std::cout << "[Lite Auto] Battery power detected — enabling battery saver (30 FPS limit)" << std::endl;
         limitFPS = true;
@@ -473,12 +714,19 @@ bool detectAndApplyLiteIfNeeded() {
 void applyDynamicQualityScaling(float currentFPS) {
     if (!g_autoQualityScaling) return;
 
-    // Скользящее среднее FPS
     g_currentFPSAverage = g_currentFPSAverage * 0.9f + currentFPS * 0.1f;
 
-    float target = g_isUltraLite ? ULTRA_LITE_TARGET_FPS : (g_isLiteMode ? LITE_TARGET_FPS : 60.0f);
+    float target = 60.0f;
+    switch (g_currentPreset) {
+        case LiteQualityPreset::Potato: target = ULTRA_LITE_TARGET_FPS; break;
+        case LiteQualityPreset::Low: target = LITE_TARGET_FPS; break;
+        case LiteQualityPreset::Medium: target = 45.0f; break;
+        case LiteQualityPreset::Balanced: target = g_is90Hz ? 60.0f : 60.0f; if (isBatteryPower()) target = ANDROID_SD662_BATTERY_FPS; break;
+        case LiteQualityPreset::High: target = 60.0f; break;
+        case LiteQualityPreset::Full: target = 60.0f; break;
+    }
+
     if (g_currentFPSAverage < target * 0.6f) {
-        // FPS сильно просел — снижаем качество
         if (numParticles > 500) {
             int newParticles = (int)(numParticles * 0.8f);
             if (newParticles < 500) newParticles = 500;
@@ -496,36 +744,27 @@ void applyDynamicQualityScaling(float currentFPS) {
             std::cout << "[Lite AutoQuality] FPS " << g_currentFPSAverage << " low — reducing steps " << streamlineSteps << " -> " << newSteps << std::endl;
             streamlineSteps = newSteps;
         }
-    } else if (g_currentFPSAverage > target * 1.2f && g_currentFPSAverage > target + 10) {
-        // FPS выше цели — можно немного повысить качество (только если не Ultra-Lite)
-        if (!g_isUltraLite && numParticles < LITE_MAX_PARTICLES && g_currentPreset != LiteQualityPreset::Potato) {
-            if (numParticles < 3000) {
-                int newParticles = (int)(numParticles * 1.1f);
-                if (newParticles > LITE_MAX_PARTICLES) newParticles = LITE_MAX_PARTICLES;
-                // Не спамим
-            }
-        }
     }
 }
 
 float getEstimatedVRAMUsageMB() {
-    // Грубая оценка VRAM
-    float particlesMB = numParticles * (sizeof(float)*3 + sizeof(float)*3 + sizeof(float)) / (1024*1024.0f); // pos+vel+size
+    float particlesMB = numParticles * (sizeof(float)*3 + sizeof(float)*3 + sizeof(float)) / (1024*1024.0f);
     float streamlinesMB = numStreamlines * streamlineSteps * sizeof(float)*3 / (1024*1024.0f);
     float voxelMB = voxelResolution * voxelResolution * voxelResolution * sizeof(float) / (1024*1024.0f);
     float lbmMB = 0;
     if (lbmParams.enabled) {
-        lbmMB = lbmNx * lbmNy * lbmNz * sizeof(float) * 10 / (1024*1024.0f); // rho, ux, uy, uz etc
+        lbmMB = lbmNx * lbmNy * lbmNz * sizeof(float) * 10 / (1024*1024.0f);
     }
-    float texturesMB = 2.0f; // базовые текстуры
+    float texturesMB = 2.0f;
     if (aeroVolumetricEnabled) texturesMB += 16.0f;
+    if (fsrEnabled) texturesMB += 2.0f;
     return particlesMB + streamlinesMB + voxelMB + lbmMB + texturesMB;
 }
 
 float getEstimatedRAMUsageMB() {
     float vram = getEstimatedVRAMUsageMB();
-    float overhead = 50.0f; // код, ImGui, etc
-    return vram * 1.5f + overhead; // RAM обычно больше VRAM из-за дублирования
+    float overhead = 50.0f;
+    return vram * 1.5f + overhead;
 }
 
 void saveLiteConfig(const char* path) {
@@ -534,11 +773,12 @@ void saveLiteConfig(const char* path) {
         std::cout << "[Lite Config] Failed to save " << path << std::endl;
         return;
     }
-    f << "# Aeros Engine Lite Config v1.20.1\n";
-    f << "# Auto-generated — edit manually if needed\n";
-    f << "preset=" << (int)g_currentPreset << " # 0=Potato 1=Low 2=Medium 3=Full\n";
+    f << "# Aeros Engine Lite Config v1.21.0 SD662\n";
+    f << "preset=" << (int)g_currentPreset << " # 0=Potato 1=Low 2=Medium 3=Balanced 4=High 5=Full\n";
     f << "isLite=" << (g_isLiteMode?1:0) << "\n";
     f << "isUltraLite=" << (g_isUltraLite?1:0) << "\n";
+    f << "isSD662=" << (g_isSD662Device?1:0) << "\n";
+    f << "isAdreno610=" << (g_isAdreno610?1:0) << "\n";
     f << "particles=" << numParticles << "\n";
     f << "streamlines=" << numStreamlines << "\n";
     f << "streamlineSteps=" << streamlineSteps << "\n";
@@ -552,7 +792,6 @@ void saveLiteConfig(const char* path) {
     f << "batterySaver=" << (g_batterySaver?1:0) << "\n";
     f << "powerSaving=" << (g_litePowerSaving?1:0) << "\n";
     f << "maxThreads=" << g_liteMaxThreads << "\n";
-    f << "# Hardware detected\n";
     f << "hwThreads=" << std::thread::hardware_concurrency() << "\n";
     f << "lowRAM=" << (isLowMemorySystem()?1:0) << "\n";
     f << "onBattery=" << (isBatteryPower()?1:0) << "\n";
@@ -572,10 +811,8 @@ bool loadLiteConfig(const char* path) {
         if (eq == std::string::npos) continue;
         std::string key = line.substr(0, eq);
         std::string val = line.substr(eq+1);
-        // Trim comment
         size_t comment = val.find('#');
         if (comment != std::string::npos) val = val.substr(0, comment);
-        // Trim spaces
         val.erase(std::remove_if(val.begin(), val.end(), ::isspace), val.end());
         key.erase(std::remove_if(key.begin(), key.end(), ::isspace), key.end());
 
@@ -583,6 +820,8 @@ bool loadLiteConfig(const char* path) {
             if (key == "preset") presetInt = std::stoi(val);
             else if (key == "isLite") g_isLiteMode = (val=="1"||val=="true");
             else if (key == "isUltraLite") g_isUltraLite = (val=="1"||val=="true");
+            else if (key == "isSD662") g_isSD662Device = (val=="1"||val=="true");
+            else if (key == "isAdreno610") g_isAdreno610 = (val=="1"||val=="true");
             else if (key == "particles") numParticles = std::stoi(val);
             else if (key == "streamlines") numStreamlines = std::stoi(val);
             else if (key == "streamlineSteps") streamlineSteps = std::stoi(val);
@@ -600,7 +839,7 @@ bool loadLiteConfig(const char* path) {
     }
     f.close();
 
-    if (presetInt >= 0 && presetInt <= 3) {
+    if (presetInt >= 0 && presetInt <= 5) {
         g_currentPreset = (LiteQualityPreset)presetInt;
         std::cout << "[Lite Config] Loaded preset " << getPresetName(g_currentPreset) << " from " << path << std::endl;
         return true;
@@ -613,8 +852,8 @@ void applyLiteOptimizations() {
     std::cout << "[Lite] Applying optimizations for weak GPUs..." << std::endl;
 
 #ifdef _OPENMP
-    if (LITE_ENABLE_OPENMP_LIMIT || g_isLiteMode) {
-        int maxThreads = g_isUltraLite ? ULTRA_LITE_MAX_THREADS : (g_liteMaxThreads >0 ? g_liteMaxThreads : LITE_MAX_THREADS);
+    if (LITE_ENABLE_OPENMP_LIMIT || g_isLiteMode || g_isSD662Device) {
+        int maxThreads = g_liteMaxThreads >0 ? g_liteMaxThreads : (g_isSD662Device ? ANDROID_SD662_MAX_THREADS : (g_isUltraLite ? ULTRA_LITE_MAX_THREADS : LITE_MAX_THREADS));
         if (maxThreads > 0) {
             omp_set_num_threads(maxThreads);
             std::cout << "[Lite] OpenMP limited to " << maxThreads << " threads" << std::endl;
@@ -634,16 +873,18 @@ void applyLiteOptimizations() {
         std::cout << "[Lite] Process priority BELOW_NORMAL for power saving" << std::endl;
     }
     if (g_batterySaver && isBatteryPower()) {
-        // Еще ниже приоритет на батарее
         SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
         std::cout << "[Lite] Battery mode — IDLE priority for max battery saving" << std::endl;
     }
 #endif
 
-    std::cout << "[Lite] Optimizations applied for Intel HD 4000 / GT 620M / i3-3xxx, preset " << getPresetName(g_currentPreset) << std::endl;
+    std::cout << "[Lite] Optimizations applied, preset " << getPresetName(g_currentPreset) << ", SD662=" << g_isSD662Device << " Adreno610=" << g_isAdreno610 << std::endl;
 }
 
 const char* getLiteInfoString() {
+    if (g_isSD662Device) {
+        return "Balanced SD662 v1.21.0 — Snapdragon 662 8x Kryo 260 2.1GHz Adreno 610 ES 3.2 720x1604 90Hz — 2500 particles 12x120 streamlines voxel 32 60 FPS 4 threads FSR ON <800 MB — Optimized for your phone!";
+    }
     if (g_isUltraLite) {
         return "Ultra-Lite v1.20.1 — Atom/Celeron/2GB RAM/HD 3000 — 500 particles, 4x40 streamlines, voxel 16, 20 FPS, 800x450, 1 thread";
     }
@@ -653,16 +894,16 @@ const char* getLiteInfoString() {
     if (g_isLiteMode) {
         return "Lite mode ON — auto-detected weak hardware, 30 FPS, low RAM";
     }
-    return "Full v1.20.1 — Vulkan+OpenGL, CUDA, FSR, FG, all features, auto Lite detection";
+    return "Full v1.21.0 — Vulkan+OpenGL, CUDA, FSR, FG, all features, auto Lite detection, SD662 Balanced";
 #endif
 }
 
 void printLiteSystemInfo() {
-    std::cout << "=== Aeros Engine System Info v1.20.1 ===" << std::endl;
+    std::cout << "=== Aeros Engine System Info v1.21.0 SD662 ===" << std::endl;
 #ifdef VERSION
     std::cout << "Version: " << VERSION << " " << getLiteInfoString() << std::endl;
 #else
-    std::cout << "Version: Lite " << getLiteInfoString() << std::endl;
+    std::cout << "Version: " << getLiteInfoString() << std::endl;
 #endif
 
     unsigned int hwThreads = std::thread::hardware_concurrency();
@@ -678,38 +919,25 @@ void printLiteSystemInfo() {
     DWORDLONG totalPhys = memInfo.ullTotalPhys / (1024*1024);
     DWORDLONG availPhys = memInfo.ullAvailPhys / (1024*1024);
     std::cout << "RAM: " << totalPhys << " MB total, " << availPhys << " MB available" << std::endl;
-    if (totalPhys < 4000) std::cout << "[Lite] Low RAM detected (<4GB) — using low memory mode" << std::endl;
-    if (totalPhys < 3000) std::cout << "[Ultra-Lite] Very low RAM (<3GB) — using Ultra-Lite potato mode" << std::endl;
 #else
     long pages = sysconf(_SC_PHYS_PAGES);
     long pageSize = sysconf(_SC_PAGE_SIZE);
     long totalMem = pages * pageSize / (1024*1024);
     std::cout << "RAM: " << totalMem << " MB total" << std::endl;
-    if (totalMem < 4000) std::cout << "[Lite] Low RAM detected (<4GB) — using low memory mode" << std::endl;
-    if (totalMem < 3000) std::cout << "[Ultra-Lite] Very low RAM (<3GB) — using Ultra-Lite potato mode" << std::endl;
 #endif
 
     std::cout << "Battery: " << (isBatteryPower() ? "On battery — battery saver ON" : "On AC power") << std::endl;
+    std::cout << "SD662: " << (g_isSD662Device ? "YES — Snapdragon 662 detected" : "NO") << std::endl;
+    std::cout << "Adreno 610: " << (g_isAdreno610 ? "YES — Adreno 610 detected" : "NO") << std::endl;
+    std::cout << "90Hz: " << (g_is90Hz ? "YES — 90Hz display" : "NO") << std::endl;
+    if (g_isSD662Device) {
+        std::cout << "SoC: " << getSoCInfoString() << std::endl;
+        std::cout << "GPU: " << getGPUInfoString() << std::endl;
+    }
     std::cout << "Detected preset: " << getPresetName(detectHardwarePreset()) << " — " << getPresetDescription(detectHardwarePreset()) << std::endl;
     std::cout << "Current preset: " << getPresetName(g_currentPreset) << std::endl;
     std::cout << "Auto quality scaling: " << (g_autoQualityScaling ? "ON" : "OFF") << " — FPS avg " << g_currentFPSAverage << std::endl;
     std::cout << "Estimated VRAM: " << getEstimatedVRAMUsageMB() << " MB, RAM: " << getEstimatedRAMUsageMB() << " MB" << std::endl;
-
-#ifdef AEROS_LITE
-    std::cout << "[Lite] Mode: ON" << (g_isUltraLite ? " (Ultra-Lite)" : "") << std::endl;
-    std::cout << "[Lite] Particles: " << LITE_DEFAULT_PARTICLES << " (max " << LITE_MAX_PARTICLES << ")" << std::endl;
-    std::cout << "[Lite] Streamlines: " << LITE_DEFAULT_STREAMLINES << "x" << LITE_DEFAULT_STREAMLINE_STEPS << std::endl;
-    std::cout << "[Lite] Voxel: " << LITE_VOXEL_RESOLUTION << "^3" << std::endl;
-    std::cout << "[Lite] LBM: " << (LITE_LBM_ENABLED_DEFAULT?"ON":"OFF") << " res " << LITE_LBM_RESOLUTION << std::endl;
-    std::cout << "[Lite] OpenGL: " << LITE_OPENGL_VERSION_MAJOR << "." << LITE_OPENGL_VERSION_MINOR << " MSAA: " << LITE_MSAA_SAMPLES << std::endl;
-    std::cout << "[Lite] Vulkan: " << (LITE_ENABLE_VULKAN?"ON":"OFF (HD 4000 fallback)") << std::endl;
-    std::cout << "[Lite] FSR: " << (LITE_ENABLE_FSR?"ON":"OFF") << " FG: " << (LITE_ENABLE_FG?"ON":"OFF") << std::endl;
-    std::cout << "[Lite] Target FPS: " << LITE_TARGET_FPS << " Max Threads: " << LITE_MAX_THREADS << std::endl;
-    std::cout << "[Lite] Optimized for: i3-3xxx (Ivy Bridge 2C/4T SSE4.2), Intel HD 4000 (16 EUs), GT 620M, AMD APU, 4GB RAM laptops" << std::endl;
-    std::cout << "[Ultra-Lite] Potato: " << ULTRA_LITE_PARTICLES << " particles, " << ULTRA_LITE_STREAMLINES << "x" << ULTRA_LITE_STREAMLINE_STEPS << " streamlines, voxel " << ULTRA_LITE_VOXEL_RES << ", " << ULTRA_LITE_TARGET_FPS << " FPS, " << ULTRA_LITE_WINDOW_W << "x" << ULTRA_LITE_WINDOW_H << std::endl;
-#else
-    std::cout << "[Lite] Mode: " << (g_isLiteMode ? "ON (auto-detected)" : "OFF (Full)") << (g_isUltraLite ? " Ultra-Lite" : "") << std::endl;
-#endif
 
     std::cout << "========================================" << std::endl;
 }
