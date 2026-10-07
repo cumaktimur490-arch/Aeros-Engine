@@ -1,0 +1,81 @@
+name: Android APK Build
+
+on:
+  push:
+    branches: [ "arena/*" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        continue-on-error: true
+      - name: Install NDK
+        run: |
+          sdkmanager --install "platform-tools" "build-tools;34.0.0" "platforms;android-34" "platforms;android-21" "ndk;25.1.8937393" || true
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.1.8937393" >> $GITHUB_ENV
+          echo "NDK path: $ANDROID_HOME/ndk/25.1.8937393"
+          ls $ANDROID_HOME/ndk/ || true
+        continue-on-error: true
+      - name: Build APKs Full Engine
+        run: |
+          set +e
+          cd aeros/android
+          chmod +x *.sh gradlew || true
+          echo "=== Building with gradle ===" | tee /tmp/gradle.log
+          ./gradlew assembleBalancedRelease --stacktrace --info | tee -a /tmp/gradle.log || true
+          ./gradlew assembleLiteRelease assemblePotatoRelease --stacktrace | tee -a /tmp/gradle.log || true
+          echo "=== Build outputs ===" | tee -a /tmp/gradle.log
+          find app/build -type f -name "*.log" | xargs ls -lh 2>/dev/null | tee -a /tmp/gradle.log || true
+          find app/build/outputs -name "*.apk" -exec ls -lh {} \; 2>/dev/null | tee -a /tmp/gradle.log || true
+          ls -lh ../../release/ 2>/dev/null | tee -a /tmp/gradle.log || true
+          ls -lh apks/ 2>/dev/null | tee -a /tmp/gradle.log || true
+          # Try build-all-apk.sh
+          ./build-all-apk.sh balanced 2>&1 | tee -a /tmp/gradle.log || true
+          ls -lh ../../release/ 2>/dev/null | tee -a /tmp/gradle.log || true
+          # Copy logs to repo for debugging
+          cp /tmp/gradle.log ../../gradle-build.log || true
+          cp /tmp/gradle.log ./gradle-build.log || true
+          cat /tmp/gradle.log | tail -n 200
+        continue-on-error: true
+      - name: Commit build log
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add gradle-build.log aeros/android/gradle-build.log 2>/dev/null || true
+          git commit -m "build log from CI" || true
+          git push origin HEAD:arena/01a1023f-aeros-engine || true
+        continue-on-error: true
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-apks-${{ github.sha }}
+          path: |
+            aeros/android/app/build/outputs/apk/**/*.apk
+            aeros/android/apks/*.apk
+            release/*.apk
+            gradle-build.log
+            aeros/android/gradle-build.log
+          if-no-files-found: warn
+      - name: Create Release with APKs
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.apk
+            aeros/android/apks/*.apk
+            aeros/android/app/build/outputs/apk/**/*.apk
+          fail_on_unmatched_files: false
+          token: ${{ secrets.GITHUB_TOKEN }}
