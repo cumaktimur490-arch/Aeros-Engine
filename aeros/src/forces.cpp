@@ -258,7 +258,7 @@ void updateVertexColors() {
             else if (aeroVisMode == AeroVisMode::Schlieren || aeroVisMode == AeroVisMode::Shadowgraph) {
                 float eps = maxDim*0.02f;
                 glm::vec3 pp(p.x,p.y,p.z);
-                glm::vec3 vx = computeVelocityFieldCPU(pp+glm::vec3(eps,0,0)) - computeVelocityFieldCPU(pp-glm::vec3(eps,0,0));
+                glm::vec3 vx = computeVelocityFieldCPU(pp+glm::vec3(eps,0,0), flowParams) - computeVelocityFieldCPU(pp-glm::vec3(eps,0,0), flowParams);
                 float grad = glm::length(vx)/(2*eps*vinf+1e-6f);
                 float t = glm::clamp(grad*2.0f*aeroSchlierenSensitivity, 0.0f, 1.0f);
                 col = glm::vec3(t);

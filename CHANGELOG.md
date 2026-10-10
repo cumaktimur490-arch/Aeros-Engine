@@ -18,6 +18,8 @@
   GPU бэкенд автоматически CPU.
 - CI (.github/workflows/pc-release.yml): сборка по тегу vX.Y.Z и автопубликация
   GitHub Release; версии — из aeros/src/version.h и VERSION.
+- Фикс v1.22.1: в forces.cpp (шлирен) вызов computeVelocityFieldCPU был без
+  параметра потока — сборка не компилировалась; добавлен `flowParams`.
 - Фиксы конвейера: vcvars целевой архитектуры вызывается всегда (cross-сборки в CI
   иначе подхватывали чужой cl.exe); портативные пакеты несут glfw3.dll только своей
   архитектуры.
