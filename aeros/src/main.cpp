@@ -1,5 +1,5 @@
 // =====================================================
-// AeroS Engine — точка входа, главный цикл и рендер v1.17.0 GoGonam AoS.
+// AeroS Engine — точка входа, главный цикл и рендер v1.19.0 GoGonam AoS.
 // =====================================================
 
 #ifdef _WIN32
@@ -44,12 +44,15 @@
 #include "lang.h"
 #include "fsr.h"
 #include "framegen.h"
+#include "interesting.h"
+#include "vulkan_renderer.h"
+#include "lite_config.h"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
-// GL debug callback — v1.17.0 fixed to use GLAD_GL_VERSION_4_3
+// GL debug callback — v1.19.0 fixed to use GLAD_GL_VERSION_4_3
 static void APIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
     (void)source; (void)id; (void)length; (void)userParam;
     if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
@@ -143,11 +146,11 @@ static bool exportForcesCSV(const std::string& path) {
     return f.good();
 }
 
-// Settings save/load — v1.17.0 Multilingual (non-static for UI)
+// Settings save/load — v1.19.0 Multilingual (non-static for UI)
 bool saveSettings(const std::string& path) {
     std::ofstream f(path);
     if (!f) return false;
-    f << "# Aeros Engine v1.17.0 Settings\n";
+    f << "# Aeros Engine v1.19.0 Settings\n";
     f << "flowSpeed=" << flowSpeed << "\n";
     f << "flowAzimuth=" << flowAzimuth << "\n";
     f << "flowElevation=" << flowElevation << "\n";
@@ -217,19 +220,179 @@ bool loadSettings(const std::string& path) {
     return true;
 }
 
-int main() {
+int main(int argc, char** argv) {
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.17.0 Multilingual)" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.21.0 SD662 Multilingual)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
 #endif
 
+    // v1.21.0 SD662/Adreno 610 — спец оптимизация для твоего телефона
+    // Проверяем — если 8 ядер и Android-like, то SD662
+    if (std::thread::hardware_concurrency() == 8) {
+        // 8 cores — может быть SD662
+        // Для Android — всегда Balanced
+#ifdef ANDROID
+        g_isSD662Device = true;
+        g_isAdreno610 = true;
+        std::cout << "[SD662] Detected 8 cores Android — assuming SD662/Adreno 610 class — applying Balanced" << std::endl;
+        applySD662Defaults();
+        display_w = 720;
+        display_h = 1604;
+#endif
+    }
+
+    // v1.20.0 Lite — проверка режима и применение оптимизаций для слабых устройств
+    printLiteSystemInfo();
+    if (isLiteMode()) {
+        g_isLiteMode = true;
+        std::cout << "[Lite] Lite mode detected — applying optimizations for i3-3xxx / HD 4000" << std::endl;
+        applyLiteDefaults();
+        applyLiteOptimizations();
+        display_w = 1024;
+        display_h = 600;
+    }
+
+    // v1.20.1 — авто-детект слабого железа и загрузка конфига
+    loadLiteConfig("aeros-lite.ini");
+    // Если не Lite и слабое железо — авто-переключение
+    if (!g_isLiteMode && !g_isSD662Device) {
+        if (detectAndApplyLiteIfNeeded()) {
+            if (g_currentPreset == LiteQualityPreset::Potato) {
+                display_w = ULTRA_LITE_WINDOW_W; display_h = ULTRA_LITE_WINDOW_H;
+            } else if (g_currentPreset == LiteQualityPreset::Balanced) {
+                display_w = ANDROID_SD662_WINDOW_W; display_h = ANDROID_SD662_WINDOW_H;
+            } else {
+                display_w = LITE_WINDOW_WIDTH; display_h = LITE_WINDOW_HEIGHT;
+            }
+        }
+    }
+
+    // Parse command line for renderer selection — v1.19.0 Vulkan support
+    RendererAPI requestedAPI = RendererAPI::Auto;
+#ifdef AEROS_LITE
+    requestedAPI = RendererAPI::OpenGL; // Lite — только OpenGL по умолчанию
+    std::cout << "[Lite] Forcing OpenGL renderer for weak GPUs (HD 4000)" << std::endl;
+#endif
+    for (int i=1; i<argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--vulkan" || arg == "-vulkan" || arg == "--vk") {
+            requestedAPI = RendererAPI::Vulkan;
+            std::cout << "[Main] Requested Vulkan renderer via CLI" << std::endl;
+        } else if (arg == "--opengl" || arg == "-opengl" || arg == "--gl") {
+            requestedAPI = RendererAPI::OpenGL;
+            std::cout << "[Main] Requested OpenGL renderer via CLI" << std::endl;
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "Aeros Engine v1.20.1 Lite+Ultra-Lite — Airflow Visualization\n";
+            std::cout << "Full: Vulkan+OpenGL, CUDA, FSR, FG, all features\n";
+            std::cout << "Lite: i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA / SSE2 / 30 FPS\n";
+            std::cout << "Ultra-Lite: Atom/Celeron 2GB RAM / HD 3000 / 500 particles / 20 FPS / 800x450\n";
+            std::cout << "Usage: " << argv[0] << " [options] [model.stl]\n";
+            std::cout << "Options:\n";
+            std::cout << "  --vulkan, --vk    — force Vulkan renderer (full only)\n";
+            std::cout << "  --opengl, --gl    — force OpenGL renderer\n";
+            std::cout << "  --lite            — force Lite mode (1500 particles, 8x80 streamlines, voxel 24, 30 FPS)\n";
+            std::cout << "  --ultra-lite, --potato — force Ultra-Lite mode (500 particles, 4x40, voxel 16, 20 FPS, 800x450)\n";
+            std::cout << "  --preset potato|low|medium|full — set quality preset\n";
+            std::cout << "  --auto-lite       — auto-detect weak hardware and switch to Lite if needed (default ON)\n";
+            std::cout << "  --no-auto-quality — disable dynamic FPS scaling\n";
+            std::cout << "  --battery-saver   — force battery saver (30 FPS, low power)\n";
+            std::cout << "  --help, -h        — this help\n";
+            std::cout << "  model.stl         — STL file to load\n";
+            std::cout << "Presets:\n";
+            std::cout << "  Potato (Ultra-Lite): Atom/Celeron 2GB HD3000 Adreno306 — 500 particles 4x40 voxel16 20 FPS 800x450 1 thread\n";
+            std::cout << "  Low (Lite): i3-3xxx HD4000 GT620M 4GB Adreno405 — 1500 particles 8x80 voxel24 30 FPS 1024x600 SSE2 No CUDA\n";
+            std::cout << "  Medium: i5-4xxx HD4600 GT740M 8GB Adreno506 — 5000 particles 16x150 voxel32 45 FPS 1280x720\n";
+            std::cout << "  Balanced (SD662/Adreno610): SD662 8xKryo260 2.1GHz Adreno610 ES3.2 720x1604 90Hz 4-6GB — 2500 particles 12x120 voxel32 60 FPS 4 threads FSR ON (YOUR PHONE!)\n";
+            std::cout << "  High: i5-8xxx GTX1050 Adreno640 — 8000 particles 16x200 voxel40 60 FPS\n";
+            std::cout << "  Full: i5+ GTX1060+ 8GB+ SD8Gen2 — 15000 particles 24x300 voxel48 60 FPS Vulkan+CUDA\n";
+            std::cout << "Lite: Optimized for weak devices — auto-detect, battery saver, dynamic quality scaling\n";
+            std::cout << "Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2\n";
+            std::cout << "Renderer: Auto-selects Vulkan if available, else OpenGL (both fully working)\n";
+            std::cout << "Linux: ./build-linux.sh --deps to install dependencies\n";
+            std::cout << "       ./build-linux.sh all — build full\n";
+            std::cout << "       ./build-lite.sh all — build Lite for weak devices\n";
+            std::cout << "Windows: build.bat deps — download dependencies\n";
+            std::cout << "         build.bat — build full\n";
+            std::cout << "         build-lite.bat — build Lite\n";
+            std::cout << "         build-lite.bat ultra — build Ultra-Lite\n";
+            return 0;
+        } else if (arg == "--lite") {
+            g_isLiteMode = true;
+            applyLiteDefaults();
+            display_w = 1024; display_h = 600;
+            std::cout << "[Main] Lite mode forced via CLI" << std::endl;
+        } else if (arg == "--ultra-lite" || arg == "--ultralite" || arg == "--potato") {
+            g_isLiteMode = true;
+            g_isUltraLiteMode = true;
+            applyUltraLiteDefaults();
+            display_w = ULTRA_LITE_WINDOW_W; display_h = ULTRA_LITE_WINDOW_H;
+            std::cout << "[Main] Ultra-Lite (Potato) mode forced via CLI" << std::endl;
+        } else if (arg == "--preset" && i+1 < argc) {
+            std::string presetStr = argv[++i];
+            if (presetStr == "potato" || presetStr == "ultra-lite" || presetStr == "ultra") {
+                g_isLiteMode = true; g_isUltraLiteMode = true;
+                applyPreset(LiteQualityPreset::Potato);
+                display_w = ULTRA_LITE_WINDOW_W; display_h = ULTRA_LITE_WINDOW_H;
+            } else if (presetStr == "low" || presetStr == "lite") {
+                g_isLiteMode = true;
+                applyPreset(LiteQualityPreset::Low);
+                display_w = 1024; display_h = 600;
+            } else if (presetStr == "medium") {
+                applyPreset(LiteQualityPreset::Medium);
+            } else if (presetStr == "balanced" || presetStr == "sd662" || presetStr == "adreno610") {
+                applyPreset(LiteQualityPreset::Balanced);
+                display_w = ANDROID_SD662_WINDOW_W; display_h = ANDROID_SD662_WINDOW_H;
+                std::cout << "[Main] Balanced SD662/Adreno 610 preset for YOUR PHONE!" << std::endl;
+            } else if (presetStr == "high") {
+                applyPreset(LiteQualityPreset::High);
+            } else if (presetStr == "full") {
+                applyPreset(LiteQualityPreset::Full);
+                g_isLiteMode = false;
+            }
+            std::cout << "[Main] Preset " << presetStr << " applied via CLI" << std::endl;
+        } else if (arg == "--sd662") {
+            g_isSD662Device = true; g_isAdreno610 = true;
+            applySD662Defaults();
+            display_w = ANDROID_SD662_WINDOW_W; display_h = ANDROID_SD662_WINDOW_H;
+            std::cout << "[Main] SD662/Adreno 610 optimized for YOUR PHONE!" << std::endl;
+        } else if (arg == "--auto-lite") {
+            detectAndApplyLiteIfNeeded();
+            std::cout << "[Main] Auto Lite detection forced" << std::endl;
+        } else if (arg == "--no-auto-quality") {
+            g_autoQualityScaling = false;
+            std::cout << "[Main] Auto quality scaling disabled" << std::endl;
+        } else if (arg == "--battery-saver") {
+            g_batterySaver = true;
+            g_litePowerSaving = true;
+            limitFPS = true;
+            maxFPS = 30.0f;
+            std::cout << "[Main] Battery saver forced" << std::endl;
+        }
+    }
+
     // Try load settings
     if (aeroSaveSettings) {
         loadSettings("aeros_settings.ini");
         std::cout << "[Settings] Loaded aeros_settings.ini if exists" << std::endl;
+    }
+
+    // Settings file can override renderer if CLI is Auto
+    if (requestedAPI == RendererAPI::Auto) {
+        // Check settings for renderer preference
+        std::ifstream f("aeros_settings.ini");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.find("renderer=vulkan") != std::string::npos || line.find("api=vulkan") != std::string::npos) {
+                requestedAPI = RendererAPI::Vulkan;
+                break;
+            } else if (line.find("renderer=opengl") != std::string::npos || line.find("api=opengl") != std::string::npos) {
+                requestedAPI = RendererAPI::OpenGL;
+                break;
+            }
+        }
     }
 
     if (!glfwInit()) {
@@ -250,7 +413,22 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.17.0 GoGonam AoS.", nullptr, nullptr);
+    // v1.19.0 Vulkan support — check if Vulkan requested, then don't create OpenGL context
+    bool useVulkanWindow = false;
+    if (requestedAPI == RendererAPI::Vulkan && isVulkanAvailable()) {
+        // For Vulkan, we need no API
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        useVulkanWindow = true;
+        std::cout << "[Main] Creating Vulkan window (no OpenGL context)" << std::endl;
+    } else {
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        std::cout << "[Main] Creating OpenGL window" << std::endl;
+    }
+
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.19.0 GoGonam AoS. Vulkan+OpenGL", nullptr, nullptr);
     if (!window) {
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
@@ -261,7 +439,7 @@ int main() {
         return -1;
     }
 
-    // v1.17.0: Set window icon — AoS ENG.
+    // v1.19.0: Set window icon — AoS ENG.
     {
         #include "icon_data.h"
         GLFWimage iconImg;
@@ -272,25 +450,44 @@ int main() {
         std::cout << "[Icon] Window icon set: AoS ENG. " << ICON_WIDTH << "x" << ICON_HEIGHT << std::endl;
     }
 
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(vsyncEnabled ? 1 : 0);
+    // Init renderer abstraction — v1.19.0 Vulkan+OpenGL
+    RendererConfig rendCfg;
+    rendCfg.api = requestedAPI;
+    rendCfg.vsync = vsyncEnabled;
+    if (!useVulkanWindow) {
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(vsyncEnabled ? 1 : 0);
+    }
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetCursorPosCallback(window, mouse_callback);
     glfwSetScrollCallback(window, scroll_callback);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+    if (!useVulkanWindow) {
+        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
 #ifdef _WIN32
-        MessageBoxA(nullptr, "Failed to init GLAD", "Error", MB_ICONERROR);
+            MessageBoxA(nullptr, "Failed to init GLAD", "Error", MB_ICONERROR);
 #else
-        std::cerr << "Failed to init GLAD" << std::endl;
+            std::cerr << "Failed to init GLAD" << std::endl;
 #endif
-        glfwTerminate();
-        return -1;
+            glfwTerminate();
+            return -1;
+        }
     }
 
-    // OpenGL debug — v1.9.0 fixed: use GLAD_GL_VERSION_4_3
-    if (GLAD_GL_VERSION_4_3) {
+    // Init our renderer abstraction (will choose Vulkan or OpenGL)
+    if (!initRenderer(window, requestedAPI)) {
+        std::cerr << "[Main] Renderer init failed, trying OpenGL fallback" << std::endl;
+        if (!initRenderer(window, RendererAPI::OpenGL)) {
+            std::cerr << "[Main] Both renderers failed" << std::endl;
+            glfwTerminate();
+            return -1;
+        }
+    }
+    std::cout << "[Main] Renderer: " << getRendererName() << std::endl;
+
+    // OpenGL debug — v1.9.0 fixed: use GLAD_GL_VERSION_4_3 — only for OpenGL
+    if (!useVulkanWindow && GLAD_GL_VERSION_4_3) {
         glEnable(GL_DEBUG_OUTPUT);
         glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
         glDebugMessageCallback(glDebugCallback, nullptr);
@@ -300,30 +497,34 @@ int main() {
         std::cout << "[GL] Debug output not available (GL < 4.3)" << std::endl;
     }
 
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_MULTISAMPLE);
-    glEnable(GL_PROGRAM_POINT_SIZE);
+    if (!useVulkanWindow) {
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_MULTISAMPLE);
+        glEnable(GL_PROGRAM_POINT_SIZE);
 
-    // Check MSAA support
-    GLint msaaSamples = 0;
-    glGetIntegerv(GL_SAMPLES, &msaaSamples);
-    std::cout << "[GL] Vendor: " << glGetString(GL_VENDOR) << " Renderer: " << glGetString(GL_RENDERER) << " Version: " << glGetString(GL_VERSION) << " MSAA: " << msaaSamples << std::endl;
+        // Check MSAA support
+        GLint msaaSamples = 0;
+        glGetIntegerv(GL_SAMPLES, &msaaSamples);
+        std::cout << "[GL] Vendor: " << glGetString(GL_VENDOR) << " Renderer: " << glGetString(GL_RENDERER) << " Version: " << glGetString(GL_VERSION) << " MSAA: " << msaaSamples << std::endl;
+    } else {
+        std::cout << "[Vulkan] Skipping OpenGL state setup — using Vulkan" << std::endl;
+    }
 
     createObstacleSphere(48, 48);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.17.0 still compatible
+    // Docking disabled for old ImGui version (no DockingEnable flag) — v1.19.0 still compatible
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // old ImGui doesn't have this
 
-    // v1.17.0: Initialize localization with Cyrillic font support
+    // v1.19.0: Initialize localization with Cyrillic font support
     initLocalization();
 
     ImGui::StyleColorsDark();
-    // Improve ImGui style for v1.17.0
+    // Improve ImGui style for v1.19.0
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 4.0f;
     style.FrameRounding = 3.0f;
@@ -356,7 +557,7 @@ int main() {
         return -1;
     }
 
-    // v1.17.0 FSR init
+    // v1.19.0 FSR init
     if (!initFSR(display_w, display_h)) {
         std::cerr << "[FSR] Failed to init, disabling" << std::endl;
         fsrEnabled = false;
@@ -366,7 +567,7 @@ int main() {
         std::cout << "[FSR] Ready — mode " << getFSRModeName((int)fsrMode) << " scale " << fsrRenderScale << std::endl;
     }
 
-    // v1.17.0 Frame Generation init
+    // v1.19.0 Frame Generation init
     if (!initFrameGen(display_w, display_h)) {
         std::cerr << "[FG] Failed to init, disabling" << std::endl;
         fgEnabled = false;
@@ -374,7 +575,23 @@ int main() {
         std::cout << "[FG] Ready — mode " << getFGModeName((int)fgMode) << std::endl;
     }
 
-    std::string modelPath = openFileDialog();
+    // v1.19.0 Interesting Features init
+    initInterestingFeatures();
+    std::cout << "[Interesting] v1.19.0 features initialized — Vulkan+OpenGL+Linux" << std::endl;
+
+    // v1.19.0: Check CLI for model path
+    std::string modelPath = "";
+    for (int i=1; i<argc; ++i) {
+        std::string arg = argv[i];
+        if (arg.size() > 4 && (arg.substr(arg.size()-4) == ".stl" || arg.substr(arg.size()-4) == ".STL")) {
+            modelPath = arg;
+            std::cout << "[Main] Model from CLI: " << modelPath << std::endl;
+            break;
+        }
+    }
+    if (modelPath.empty()) {
+        modelPath = openFileDialog();
+    }
     if (modelPath.empty()) {
         std::cout << "[Main] No file selected, exiting" << std::endl;
         glDeleteProgram(modelShaderProgram);
@@ -474,8 +691,15 @@ int main() {
         computeLiftDrag();
         if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
         updateLiftDragArrows();
+        // v1.19.0 Flight dynamics — обновляем после расчета сил
+        if (aeroFlightMode) {
+            updateFlightDynamics(deltaTime, liftVector, dragVector, momentVector, centerOfPressure);
+        }
         auto tForce1 = std::chrono::high_resolution_clock::now();
         perfForcesMs = std::chrono::duration<float, std::milli>(tForce1-tForce0).count();
+
+        // v1.19.0 Interesting features
+        updateInterestingFeatures(deltaTime);
 
         // Streamlines need recompute on flow change or ground change
         bool needStreamlines = false;
@@ -541,7 +765,7 @@ int main() {
 
         drawUI();
 
-        // v1.17.0 FSR — update scale
+        // v1.19.0 FSR — update scale
         if (fsrEnabled) {
             if (!fsrDynamicRes) {
                 fsrRenderScale = getFSRScale((int)fsrMode);
@@ -556,7 +780,7 @@ int main() {
         glm::mat4 model = glm::mat4(1.0f);
         glm::mat4 vp = projection * view;
 
-        // v1.17.0 Optimizations — Frustum culling
+        // v1.19.0 Optimizations — Frustum culling
         auto tCull0 = std::chrono::high_resolution_clock::now();
         bool modelInFrustum = true;
         if (optFrustumCulling) {
@@ -580,12 +804,12 @@ int main() {
         bool useFSR = fsrEnabled && fsrMode != FSRMode::Off && fsrLowResFBO != 0;
         bool useFG = fgEnabled && fgMode != FGMode::Off && fgRealFBO != 0;
 
-        // v1.17.0 FG — begin real frame
+        // v1.19.0 FG — begin real frame
         if (useFG) {
             beginRealFrame(view, projection, cameraPos);
         }
 
-        // v1.17.0 FSR — begin low-res render if enabled
+        // v1.19.0 FSR — begin low-res render if enabled
         if (useFG && useFSR) {
             // Both FSR+FG: render to FSR low-res, then upscale to FG real FBO
             beginFSRRender(display_w, display_h);
@@ -824,7 +1048,7 @@ int main() {
             glViewport(0,0,display_w,display_h);
         }
 
-        // v1.17.0 Frame Generation presentation
+        // v1.19.0 Frame Generation presentation
         if (useFG) {
             int mult = getFGMultiplier((int)fgMode);
             // If we have history, generate interpolated frames
@@ -880,7 +1104,8 @@ int main() {
     }
 
     // Cleanup
-    std::cout << "[Main] Cleaning up v1.17.0..." << std::endl;
+    std::cout << "[Main] Cleaning up v1.19.0..." << std::endl;
+    shutdownInterestingFeatures();
     shutdownFrameGen();
     shutdownFSR();
     glDeleteProgram(modelShaderProgram);

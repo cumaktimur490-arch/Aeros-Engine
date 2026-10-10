@@ -3,7 +3,7 @@
 #define AEROS_VERSION_MINOR 24
 #define AEROS_VERSION_PATCH 0
 #define AEROS_VERSION_STRING "1.24.0"
-#define AEROS_VERSION_FULL   "Aeros Engine v1.24.0 GoGonam AoS."
+#define AEROS_VERSION_FULL   "#define AEROS_PLACEHOLDER_X Vulkan+OpenGL+Linux"
 #define AEROS_APP_NAME       "Aeros Engine"
 #define AEROS_APP_PUBLISHER  "GoGonam AoS."
 #define AEROS_APP_URL        "https://github.com/cumaktimur490-arch/Aeros-Engine"

@@ -1,13 +1,15 @@
-; Aeros Engine — общие определения для Inno Setup
+; Aeros Engine — общие определения для Inno Setup v1.20.0 Lite + Full + Vulkan + Linux
 ; Подключается через #include
 
 #define AppName "Aeros Engine"
 #define AppPublisher "GoGonam AoS."
 #define AppURL "https://github.com/cumaktimur490-arch/Aeros-Engine"
 #define AppExeName "main.exe"
+#define AppExeNameLinux "aeros-engine"
+#define AppExeNameLite "aeros-engine-lite.exe"
 
 #ifndef AppVersion
-  #define AppVersion "1.8.0"
+  #define AppVersion "1.20.0"
 #endif
 
 #ifndef Arch
@@ -29,5 +31,5 @@
 #endif
 
 #ifndef OutputBaseName
-  #define OutputBaseName "Aeros-Engine-Setup-" + ArchSuffix + "-v" + AppVersion
+  #define OutputBaseName "Aeros-Engine-Setup-" + ArchSuffix + "-v" + AppVersion + "-Vulkan-OpenGL"
 #endif

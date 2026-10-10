@@ -1,21 +1,33 @@
 @echo off
 setlocal enabledelayedexpansion
 rem =====================================================
-rem Aeros Engine — универсальный build.bat
-rem Поддерживает: x64 (по умолчанию) и x86 (Win32)
+rem Aeros Engine — универсальный build.bat v1.19.0 Vulkan + OpenGL + Linux ready
+rem Поддерживает: x64 (по умолчанию), x86, arm64, Vulkan, OpenGL
 rem Использование:
-rem   build.bat         -> x64
+rem   build.bat         -> x64 auto (Vulkan+OpenGL)
 rem   build.bat x64     -> x64
 rem   build.bat x86     -> Win32
-rem   build.bat x32     -> Win32 (alias)
+rem   build.bat vulkan  -> Vulkan only
+rem   build.bat opengl  -> OpenGL only
 rem   build.bat clean   -> очистка
+rem   build.bat deps    -> только скачать зависимости
 rem =====================================================
 
-set "ARCH=%~1"
+set "ARG1=%~1"
+if "%ARG1%"=="" set "ARG1=x64"
+
+if /I "%ARG1%"=="clean" goto :clean
+if /I "%ARG1%"=="deps" goto :deps
+if /I "%ARG1%"=="vulkan" set "RENDERER=vulkan" & set "ARG1=x64" & goto :start
+if /I "%ARG1%"=="opengl" set "RENDERER=opengl" & set "ARG1=x64" & goto :start
+if /I "%ARG1%"=="all" set "RENDERER=all" & set "ARG1=x64" & goto :start
+
+:start
+set "ARCH=%ARG1%"
 if "%ARCH%"=="" set "ARCH=x64"
 if /I "%ARCH%"=="x32" set "ARCH=x86"
 if /I "%ARCH%"=="Win32" set "ARCH=x86"
-if /I "%ARCH%"=="clean" goto :clean
+if not defined RENDERER set "RENDERER=all"
 
 if /I "%ARCH%"=="x64" (
     set "VCVARS=vcvars64.bat"
@@ -34,14 +46,21 @@ if /I "%ARCH%"=="x64" (
     set "GLFW_LIBDIR=lib-vc2022-arm64"
     set "OUT_ARCH=arm64"
 ) else (
-    echo [ERROR] Unknown arch "%ARCH%". Use x64, x86, or arm64.
+    echo [ERROR] Unknown arch "%ARCH%". Use x64, x86, arm64, vulkan, opengl, deps, clean.
     exit /b 1
 )
 
-echo [Aeros] Building for %OUT_ARCH% using %VCVARS% ...
+echo [Aeros] Building v1.19.0 for %OUT_ARCH% renderer=%RENDERER% using %VCVARS% ...
 
 taskkill /IM main.exe /F 2>nul
 taskkill /IM main-%OUT_ARCH%.exe /F 2>nul
+taskkill /IM aeros-engine.exe /F 2>nul
+
+rem --- Авто-загрузка зависимостей ---
+call :download_deps
+if !errorlevel! neq 0 (
+    echo [WARN] Dependency download had issues, continuing...
+)
 
 rem --- Всегда инициализируем vcvars целевой архитектуры: при сборке нескольких
 rem архитектур в одном CI-джобе иначе берётся чужой cl.exe из PATH ---
@@ -58,7 +77,6 @@ if exist "!VSWHERE!" (
     )
 )
 
-rem Fallback пути — используем !VAR! чтобы избежать проблем с (x86) в пути
 if not defined VCVARS_PATH (
     if exist "D:\c++\VC\Auxiliary\Build\!VCVARS!" set "VCVARS_PATH=D:\c++\VC\Auxiliary\Build\!VCVARS!"
 )
@@ -83,7 +101,6 @@ if not defined VCVARS_PATH (
 
 if not defined VCVARS_PATH (
     echo [WARN] vcvars not found: !VCVARS!, trying to continue with existing environment...
-    echo [WARN] If build fails, install Visual Studio 2022 with C++ workload
     goto :skip_vcvars
 )
 
@@ -117,80 +134,89 @@ if !errorlevel! neq 0 (
 if not exist bin mkdir bin
 set "LIBDIR=%~dp0..\libs"
 
-rem v1.7.0: Full rebuild always — clean old artifacts to ensure aerodynamics changes visible
 echo [Aeros] Cleaning previous build artifacts for full rebuild...
 del /Q bin\*.obj 2>nul
 del /Q bin\main-%OUT_ARCH%.exe 2>nul
 del /Q bin\main.exe 2>nul
+del /Q bin\aeros-engine*.exe 2>nul
 
-rem --- Проверка GLFW lib для выбранной архитектуры ---
+rem --- Проверка GLFW lib ---
 if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
     echo [WARN] GLFW lib not found: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
     if /I "!OUT_ARCH!"=="x86" (
-        echo [INFO] Trying to use x64 lib as fallback or download 32-bit GLFW.
-        echo [INFO] Run tools\get-glfw-x86.ps1 or download from https://www.glfw.org/download.html
+        echo [INFO] Trying fallback...
         if exist "!LIBDIR!\glfw\lib-vc2022\glfw3.lib" (
-            echo [WARN] Fallback to lib-vc2022 - x64 - build may fail for x86 target.
             set "GLFW_LIBDIR=lib-vc2022"
         ) else (
-            echo [ERROR] No GLFW lib found at all
+            echo [ERROR] No GLFW lib found
             exit /b 1
         )
     ) else if /I "!OUT_ARCH!"=="arm64" (
-        echo [INFO] Trying to build GLFW for arm64 from source...
         powershell -ExecutionPolicy Bypass -File "%~dp0..\tools\build-glfw-arm64.ps1" -Arch arm64
         if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
-            echo [WARN] Failed to build GLFW arm64, trying fallback to x64 lib
             if exist "!LIBDIR!\glfw\lib-vc2022\glfw3.lib" set "GLFW_LIBDIR=lib-vc2022"
         )
     ) else (
         echo [ERROR] GLFW lib not found for x64: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
+        echo [INFO] Run build.bat deps to download
         exit /b 1
     )
 )
-if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
-    echo [ERROR] GLFW lib still not found: !LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib
-    if /I "!OUT_ARCH!"=="arm64" (
-        echo [INFO] For arm64, ensure tools\build-glfw-arm64.ps1 succeeded or manually build GLFW
+
+rem --- Проверка Vulkan SDK ---
+set "VULKAN_SDK_FOUND=0"
+set "VULKAN_LIB="
+if defined VULKAN_SDK (
+    if exist "%VULKAN_SDK%\Lib\vulkan-1.lib" set "VULKAN_SDK_FOUND=1" & set "VULKAN_LIB=%VULKAN_SDK%\Lib\vulkan-1.lib"
+)
+if exist "%ProgramFiles%\VulkanSDK" (
+    for /D %%D in ("%ProgramFiles%\VulkanSDK\*") do (
+        if exist "%%D\Lib\vulkan-1.lib" set "VULKAN_SDK_FOUND=1" & set "VULKAN_LIB=%%D\Lib\vulkan-1.lib"
     )
-    exit /b 1
+)
+if "%VULKAN_SDK_FOUND%"=="1" (
+    echo [Aeros] Vulkan SDK found: !VULKAN_LIB!
+) else (
+    echo [WARN] Vulkan SDK not found — Vulkan renderer will be stub, OpenGL fallback will be used
+    echo [INFO] Install Vulkan SDK from https://vulkan.lunarg.com/
 )
 
-rem --- Версия из VERSION файла ---
+rem --- Версия ---
 set "VERSION_FILE=%~dp0..\VERSION"
-set "APP_VERSION=1.0.0"
+set "APP_VERSION=1.19.0"
 if exist "!VERSION_FILE!" (
     set /p APP_VERSION=<"!VERSION_FILE!"
 )
 
-echo [Aeros] Version: !APP_VERSION!
-echo [Aeros] Libs: !LIBDIR!
-echo [Aeros] GLFW lib dir: !GLFW_LIBDIR!
-echo [Aeros] Checking tools...
+echo [Aeros] Version: !APP_VERSION! Libs: !LIBDIR! GLFW: !GLFW_LIBDIR! Vulkan: !VULKAN_SDK_FOUND! Renderer: !RENDERER!
 
-rem --- Сборка иконки ---
+rem --- Иконка ---
 if exist src\app_icon.rc (
     echo [Aeros] Compiling icon resource...
     rc /fo bin\app_icon.res src\app_icon.rc
     if !errorlevel! neq 0 (
-        echo [WARN] Icon resource compile failed, continuing without icon
         set "ICON_RES="
     ) else (
         set "ICON_RES=bin\app_icon.res"
-        echo [Aeros] Icon resource compiled: !ICON_RES!
     )
 ) else (
     set "ICON_RES="
 )
 
-rem --- Сборка ---
-echo [Aeros] Starting nvcc compilation for !OUT_ARCH!...
-
+rem --- Флаги ---
 set "NVCC_ARCH=-arch=sm_75"
-rem Для поддержки новых MSVC (19.51+) добавляем allow-unsupported-compiler
 set "NVCC_FLAGS=-allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp:llvm -Xcompiler /arch:AVX2 -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
 
-echo nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc -I ... -o bin\main-!OUT_ARCH!.exe (OPTIMIZED)
+if "%RENDERER%"=="vulkan" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_VULKAN -Xcompiler /DVULKAN_SUPPORTED"
+if "%RENDERER%"=="opengl" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_OPENGL"
+if "%VULKAN_SDK_FOUND%"=="1" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DVULKAN_SUPPORTED -Xcompiler /DHAS_VULKAN_H"
+
+set "VULKAN_LINK="
+if "%VULKAN_SDK_FOUND%"=="1" (
+    set "VULKAN_LINK=!VULKAN_LIB!"
+)
+
+echo [Aeros] Starting nvcc compilation for !OUT_ARCH! renderer=!RENDERER! ...
 
 nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -I "!LIBDIR!\glfw\include" ^
@@ -200,12 +226,12 @@ nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -I src\imgui ^
   src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
   src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^
-  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp src\framegen.cpp ^
+  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp src\framegen.cpp src\interesting.cpp src\vulkan_renderer.cpp src\lite_config.cpp src\benchmark.cpp ^
   src\glad.c src\kernel.cu ^
   src\imgui\imgui.cpp src\imgui\imgui_draw.cpp src\imgui\imgui_tables.cpp src\imgui\imgui_widgets.cpp ^
   src\imgui\imgui_impl_glfw.cpp src\imgui\imgui_impl_opengl3.cpp ^
   -L "!LIBDIR!\glfw\!GLFW_LIBDIR!" ^
-  -lglfw3 -lopengl32 -luser32 -lgdi32 -lshell32 -lcomdlg32 !ICON_RES! ^
+  -lglfw3 -lopengl32 -luser32 -lgdi32 -lshell32 -lcomdlg32 !VULKAN_LINK! !ICON_RES! ^
   -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup ^
   -o bin\main-!OUT_ARCH!.exe
 
@@ -222,17 +248,79 @@ if !errorlevel! neq 0 (
 )
 
 copy /Y bin\main-!OUT_ARCH!.exe bin\main.exe >nul
-echo [Aeros] Build OK: bin\main-!OUT_ARCH!.exe
+copy /Y bin\main-!OUT_ARCH!.exe bin\aeros-engine-%OUT_ARCH%.exe >nul
+echo [Aeros] Build OK: bin\main-!OUT_ARCH%.exe and bin\aeros-engine-%OUT_ARCH%.exe
 
 if exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.dll" (
     copy /Y "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.dll" bin\ >nul
     echo [Aeros] Copied glfw3.dll from !GLFW_LIBDIR!
-) else (
-    echo [WARN] glfw3.dll not found in !LIBDIR!\glfw\!GLFW_LIBDIR!
+)
+
+if "%VULKAN_SDK_FOUND%"=="1" (
+    if exist "%VULKAN_SDK%\Bin\vulkan-1.dll" copy /Y "%VULKAN_SDK%\Bin\vulkan-1.dll" bin\ >nul
 )
 
 :done
-echo [Aeros] Done.
+echo [Aeros] Done. Version !APP_VERSION! Arch !OUT_ARCH! Renderer !RENDERER! Vulkan !VULKAN_SDK_FOUND!
+goto :eof
+
+:download_deps
+echo [Aeros] Checking and downloading dependencies...
+set "LIBDIR=%~dp0..\libs"
+if not exist "%LIBDIR%" mkdir "%LIBDIR%"
+
+rem GLM
+if not exist "%LIBDIR%\glm\glm\glm.hpp" (
+    echo [Deps] GLM not found, downloading...
+    powershell -Command "if (!(Test-Path '%LIBDIR%\glm')) { New-Item -ItemType Directory -Force -Path '%LIBDIR%\glm' | Out-Null }; if (Test-Path env:TEMP) { $tmp = Join-Path $env:TEMP 'glm_aeros'; if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }; git clone --depth 1 https://github.com/g-truc/glm.git $tmp; if (Test-Path $tmp\glm) { Copy-Item -Recurse -Force $tmp\glm '%LIBDIR%\glm\'; Write-Host '[Deps] GLM downloaded via git' } else { Write-Host '[Deps] GLM git clone failed' } } else { Write-Host '[Deps] TEMP not found' }"
+    if not exist "%LIBDIR%\glm\glm\glm.hpp" (
+        echo [Deps] Trying curl for GLM...
+        powershell -Command "try { Invoke-WebRequest -Uri 'https://github.com/g-truc/glm/archive/refs/tags/0.9.9.8.zip' -OutFile \"$env:TEMP\glm.zip\"; Expand-Archive -Path \"$env:TEMP\glm.zip\" -DestinationPath \"$env:TEMP\" -Force; Copy-Item -Recurse -Force \"$env:TEMP\glm-0.9.9.8\glm\" \"%LIBDIR%\glm\"; } catch { Write-Host '[Deps] GLM download failed' }"
+    )
+) else (
+    echo [Deps] GLM OK
+)
+
+rem GLAD
+if not exist "%LIBDIR%\glad\include\glad\glad.h" (
+    echo [Deps] GLAD not found, downloading...
+    if not exist "%LIBDIR%\glad\include\glad" mkdir "%LIBDIR%\glad\include\glad"
+    if not exist "%LIBDIR%\glad\include\KHR" mkdir "%LIBDIR%\glad\include\KHR"
+    if not exist "%LIBDIR%\glad\src" mkdir "%LIBDIR%\glad\src"
+    powershell -Command "try { Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Dav1dde/glad/master/include/glad/glad.h' -OutFile '%LIBDIR%\glad\include\glad\glad.h'; Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Dav1dde/glad/master/src/glad.c' -OutFile '%LIBDIR%\glad\src\glad.c'; Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Dav1dde/glad/master/include/KHR/khrplatform.h' -OutFile '%LIBDIR%\glad\include\KHR\khrplatform.h'; Write-Host '[Deps] GLAD downloaded' } catch { Write-Host '[Deps] GLAD download failed' }"
+) else (
+    echo [Deps] GLAD OK
+)
+
+rem GLFW
+if not exist "%LIBDIR%\glfw\include\GLFW\glfw3.h" (
+    echo [Deps] GLFW header not found, downloading...
+    if not exist "%LIBDIR%\glfw\include\GLFW" mkdir "%LIBDIR%\glfw\include\GLFW"
+    powershell -Command "try { Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/glfw/glfw/master/include/GLFW/glfw3.h' -OutFile '%LIBDIR%\glfw\include\GLFW\glfw3.h'; Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/glfw/glfw/master/include/GLFW/glfw3native.h' -OutFile '%LIBDIR%\glfw\include\GLFW\glfw3native.h'; Write-Host '[Deps] GLFW headers downloaded' } catch { Write-Host '[Deps] GLFW header download failed' }"
+) else (
+    echo [Deps] GLFW header OK
+)
+
+if not exist "%LIBDIR%\glfw\lib-vc2022\glfw3.lib" (
+    echo [Deps] GLFW lib not found for x64, downloading prebuilt...
+    powershell -Command "try { $url='https://github.com/glfw/glfw/releases/download/3.3.8/glfw-3.3.8.bin.WIN64.zip'; Invoke-WebRequest -Uri $url -OutFile \"$env:TEMP\glfw.zip\"; Expand-Archive -Path \"$env:TEMP\glfw.zip\" -DestinationPath \"$env:TEMP\" -Force; $src=Get-ChildItem \"$env:TEMP\glfw-3.3.8.bin.WIN64\" -Recurse -Filter glfw3.lib | Select-Object -First 1; if ($src) { New-Item -ItemType Directory -Force -Path '%LIBDIR%\glfw\lib-vc2022' | Out-Null; Copy-Item $src.FullName '%LIBDIR%\glfw\lib-vc2022\glfw3.lib' -Force; $dll=Get-ChildItem \"$env:TEMP\glfw-3.3.8.bin.WIN64\" -Recurse -Filter glfw3.dll | Select-Object -First 1; if ($dll) { Copy-Item $dll.FullName '%LIBDIR%\glfw\lib-vc2022\' -Force }; Write-Host '[Deps] GLFW lib downloaded' } } catch { Write-Host '[Deps] GLFW lib download failed' }"
+) else (
+    echo [Deps] GLFW lib OK
+)
+
+rem ImGui
+if not exist "src\imgui\imgui.h" (
+    echo [Deps] ImGui not found, downloading...
+    powershell -Command "try { $tmp=Join-Path $env:TEMP 'imgui_aeros'; if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }; git clone --depth 1 https://github.com/ocornut/imgui.git $tmp; if (Test-Path $tmp\imgui.h) { New-Item -ItemType Directory -Force -Path 'src\imgui' | Out-Null; Copy-Item $tmp\*.cpp, $tmp\*.h src\imgui\ -Force; Copy-Item $tmp\backends\imgui_impl_glfw.* src\imgui\ -Force; Copy-Item $tmp\backends\imgui_impl_opengl3.* src\imgui\ -Force; Write-Host '[Deps] ImGui downloaded' } } catch { Write-Host '[Deps] ImGui download failed' }"
+) else (
+    echo [Deps] ImGui OK
+)
+
+echo [Deps] All dependencies checked
+goto :eof
+
+:deps
+call :download_deps
 goto :eof
 
 :clean
@@ -240,6 +328,7 @@ echo [Aeros] Cleaning...
 if exist bin\main.exe del /Q bin\main.exe
 if exist bin\main-x64.exe del /Q bin\main-x64.exe
 if exist bin\main-x86.exe del /Q bin\main-x86.exe
+if exist bin\aeros-engine*.exe del /Q bin\aeros-engine*.exe
 if exist bin\*.obj del /Q bin\*.obj
 echo [Aeros] Clean done.
 goto :eof

@@ -133,7 +133,7 @@ bool loadSTL(const std::string& filename, std::vector<float>& vertices, std::vec
 }
 
 // =====================================================
-// Диалог выбора файла (Win32) v1.8.0 — улучшено
+// Диалог выбора файла v1.19.0 — Windows + Linux (zenity/kdialog/console)
 // =====================================================
 std::string openFileDialog() {
 #ifdef _WIN32
@@ -148,13 +148,59 @@ std::string openFileDialog() {
     ofn.lpstrFile = fileName;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrInitialDir = initialDir;
-    ofn.lpstrTitle = "Select STL Model - Aeros Engine v1.8.0";
+    ofn.lpstrTitle = "Select STL Model - Aeros Engine v1.19.0 Vulkan+OpenGL";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     ofn.lpstrDefExt = "stl";
     if (GetOpenFileNameA(&ofn)) return std::string(fileName);
     return "";
 #else
-    // Linux fallback — try to find an STL in current dir or return empty
-    return "";
+    // Linux — try zenity, kdialog, or fallback
+    // Try zenity
+    FILE* fp = popen("zenity --file-selection --file-filter='STL files | *.stl *.STL' --title='Open STL Model - Aeros Engine v1.19.0' 2>/dev/null", "r");
+    if (fp) {
+        char path[1024] = {0};
+        if (fgets(path, sizeof(path), fp)) {
+            pclose(fp);
+            std::string s(path);
+            s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
+            s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+            if (!s.empty()) return s;
+        } else pclose(fp);
+    }
+    // Try kdialog
+    fp = popen("kdialog --getopenfilename . '*.stl | STL Models' 2>/dev/null", "r");
+    if (fp) {
+        char path[1024] = {0};
+        if (fgets(path, sizeof(path), fp)) {
+            pclose(fp);
+            std::string s(path);
+            s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
+            s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+            if (!s.empty()) return s;
+        } else pclose(fp);
+    }
+    // Fallback: check common locations
+    std::vector<std::string> candidates = {
+        "./models/model.stl", "./model.stl", "./bin/models/model.stl",
+        "./aeros/models/model.stl", "./aeros/bin/models/sample_cube.stl",
+        "/usr/share/aeros-engine/models/model.stl",
+        "/usr/local/share/aeros-engine/models/model.stl",
+        "./sample_cube.stl"
+    };
+    for (auto& c : candidates) {
+        std::ifstream f(c);
+        if (f.good()) {
+            std::cout << "[FileDialog] Linux fallback using: " << c << std::endl;
+            return c;
+        }
+    }
+    // Last resort: console input
+    std::cout << "Enter STL file path (or drag & drop): ";
+    std::string input;
+    std::getline(std::cin, input);
+    // Remove quotes if present
+    if (!input.empty() && input.front() == '\'' && input.back() == '\'') input = input.substr(1, input.size()-2);
+    if (!input.empty() && input.front() == '"' && input.back() == '"') input = input.substr(1, input.size()-2);
+    return input;
 #endif
 }

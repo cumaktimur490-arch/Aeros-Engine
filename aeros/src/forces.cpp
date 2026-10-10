@@ -19,7 +19,7 @@
 #endif
 
 // =====================================================
-// Давление — v1.17.0 Physics Logic Fix
+// Давление — v1.19.0 Physics Logic Fix
 // - Cp физичный: (p-p_inf)/q для LBM, Bernoulli для потенциала
 // - Сжимаемость: Prandtl-Glauert + Karman-Tsien для Cp
 // - RefArea — проекционная фронтальная площадь
@@ -97,7 +97,87 @@ void updateVertexColors() {
             else if (aeroVisMode == AeroVisMode::Helicity) { float hel = getLBMHelicityWorld(p); col = getHelicityColor(hel); }
             else if (aeroVisMode == AeroVisMode::TotalPressure) {
                 float pt = getLBMTotalPressureWorld(p); float ptInf = airPressure + 0.5f*airDensity*vinf*vinf; col = getTotalPressureColor(pt, ptInf);
-            } else col = getRealisticPressureColor(cp);
+            }
+            // v1.19.0 new modes
+            else if (aeroVisMode == AeroVisMode::Schlieren) {
+                // |∇ρ| via LBM pressure gradient as proxy
+                float eps = maxDim*0.02f;
+                glm::vec3 pp = p;
+                float pXp = 0, pXm = 0, pYp = 0, pYm = 0;
+                // sample pressure nearby
+                auto getP = [&](glm::vec3 qpos)->float {
+                    float fx = (qpos.x - lbmMinX)/lbmCellSizeX, fy = (qpos.y - lbmMinY)/lbmCellSizeY, fz = (qpos.z - lbmMinZ)/lbmCellSizeZ;
+                    int ix=(int)fx, iy=(int)fy, iz=(int)fz;
+                    if (ix>=0&&ix<lbmNx&&iy>=0&&iy<lbmNy&&iz>=0&&iz<lbmNz) {
+                        int cell=(iz*lbmNy+iy)*lbmNx+ix;
+                        if (cell>=0&&cell<(int)lbmPressure.size()) return lbmPressure[cell];
+                    }
+                    return 0.0f;
+                };
+                pXp=getP(pp+glm::vec3(eps,0,0)); pXm=getP(pp-glm::vec3(eps,0,0));
+                pYp=getP(pp+glm::vec3(0,eps,0)); pYm=getP(pp-glm::vec3(0,eps,0));
+                float grad = sqrtf((pXp-pXm)*(pXp-pXm)+(pYp-pYm)*(pYp-pYm))/(2*eps*qInf+1e-6f);
+                float t = glm::clamp(grad*2.0f*aeroSchlierenSensitivity, 0.0f, 1.0f);
+                if (aeroSchlierenColor) {
+                    if (t<0.25f) col=glm::vec3(0, t*2.0f, 0.5f+t*2.0f*0.5f);
+                    else if (t<0.5f) col=glm::vec3(0, 0.5f+(t-0.25f)*2.0f, 1.0f-(t-0.25f)*0.6f);
+                    else if (t<0.75f) col=glm::vec3((t-0.5f)*3.2f, 1.0f, 0.7f-(t-0.5f)*2.8f);
+                    else col=glm::vec3(0.8f+(t-0.75f)*0.8f, 1.0f-(t-0.75f)*2.0f, 0.0f);
+                } else col=glm::vec3(0.5f+(t-0.5f)*0.8f);
+            }
+            else if (aeroVisMode == AeroVisMode::Shadowgraph) {
+                float eps = maxDim*0.02f;
+                auto getP = [&](glm::vec3 qpos)->float {
+                    float fx = (qpos.x - lbmMinX)/lbmCellSizeX, fy = (qpos.y - lbmMinY)/lbmCellSizeY, fz = (qpos.z - lbmMinZ)/lbmCellSizeZ;
+                    int ix=(int)fx, iy=(int)fy, iz=(int)fz;
+                    if (ix>=0&&ix<lbmNx&&iy>=0&&iy<lbmNy&&iz>=0&&iz<lbmNz) {
+                        int cell=(iz*lbmNy+iy)*lbmNx+ix;
+                        if (cell>=0&&cell<(int)lbmPressure.size()) return lbmPressure[cell];
+                    }
+                    return 0.0f;
+                };
+                float pc=getP(p), pxp=getP(p+glm::vec3(eps,0,0)), pxm=getP(p-glm::vec3(eps,0,0)), pyp=getP(p+glm::vec3(0,eps,0)), pym=getP(p-glm::vec3(0,eps,0));
+                float lapl = (pxp+pxm+pyp+pym-4*pc)/(eps*eps*qInf+1e-6f);
+                float t = glm::clamp(lapl*0.5f*aeroSchlierenSensitivity+0.5f, 0.0f, 1.0f);
+                col = glm::vec3(t);
+            }
+            else if (aeroVisMode == AeroVisMode::ShockWaves) {
+                float mach = getLBMMachWorld(p);
+                if (mach > 1.05f) {
+                    float pr = 1.0f + (mach-1.0f)*2.0f;
+                    float t = glm::clamp((pr-1.0f)/4.0f, 0.0f, 1.0f);
+                    col = glm::vec3(0.2f+t*0.8f, 0.4f+t*0.3f, 1.0f-t*0.5f);
+                    if (t>0.5f) col = glm::vec3(1.0f, 0.7f-(t-0.5f), 0.5f-(t-0.5f));
+                } else {
+                    float t = mach/1.05f;
+                    col = glm::vec3(t*0.3f, t*0.3f, 0.5f+t*0.2f);
+                }
+            }
+            else if (aeroVisMode == AeroVisMode::AeroAcoustic) {
+                float vort = getLBMVorticityWorld(p);
+                float tke = getLBMTKEWorld(p);
+                float acoustic = vort * tke * 0.1f;
+                float t = glm::clamp(acoustic*0.2f, 0.0f, 1.0f);
+                if (t<0.5f) col=glm::vec3(t, t, 0.5f+t*0.5f);
+                else col=glm::vec3(0.5f+(t-0.5f), 0.5f-(t-0.5f)*0.6f, 1.0f-(t-0.5f));
+            }
+            else if (aeroVisMode == AeroVisMode::Temperature) {
+                float mach = getLBMMachWorld(p);
+                float T = airTemperature * (1.0f + 0.2f*mach*mach);
+                float dT = T - airTemperature;
+                float t = glm::clamp(dT/50.0f, 0.0f, 1.0f);
+                if (t<0.25f) col=glm::vec3(0, t*0.8f, 0.8f+t*0.2f);
+                else if (t<0.5f) col=glm::vec3((t-0.25f)*3.2f, 0.2f+(t-0.25f)*2.0f, 1.0f-(t-0.25f)*2.0f);
+                else if (t<0.75f) col=glm::vec3(0.8f+(t-0.5f)*0.8f, 0.7f+(t-0.5f)*0.8f, 0.5f-(t-0.5f)*2.0f);
+                else col=glm::vec3(1.0f, 0.9f-(t-0.75f)*1.6f, (t-0.75f)*1.2f);
+            }
+            else if (aeroVisMode == AeroVisMode::VolumetricSmoke) {
+                col = getVelocityMagnitudeColor(speed, vinf*1.6f) * 0.7f + glm::vec3(0.8f,0.8f,0.9f)*0.3f;
+            }
+            else if (aeroVisMode == AeroVisMode::LIC) {
+                col = modelColor;
+            }
+            else col = getRealisticPressureColor(cp);
 
             if (aeroShowSeparation) {
                 float vort = getLBMVorticityWorld(p);
@@ -175,6 +255,26 @@ void updateVertexColors() {
             else if (aeroVisMode == AeroVisMode::SkinFriction) { float cf = speed * 0.02f / vinf; float t = glm::clamp(cf*5.0f, 0.0f, 1.0f); col = glm::vec3(t, 1-t, 0.5f); }
             else if (aeroVisMode == AeroVisMode::MachNumber) { float mach = speed / (speedOfSound + 1e-6f); col = getMachColor(mach); }
             else if (aeroVisMode == AeroVisMode::TotalPressure) { float pt = airPressure + 0.5f*airDensity*speed*speed; float ptInf = airPressure + 0.5f*airDensity*vinf*vinf; col = getTotalPressureColor(pt, ptInf); }
+            else if (aeroVisMode == AeroVisMode::Schlieren || aeroVisMode == AeroVisMode::Shadowgraph) {
+                float eps = maxDim*0.02f;
+                glm::vec3 pp(p.x,p.y,p.z);
+                glm::vec3 vx = computeVelocityFieldCPU(pp+glm::vec3(eps,0,0)) - computeVelocityFieldCPU(pp-glm::vec3(eps,0,0));
+                float grad = glm::length(vx)/(2*eps*vinf+1e-6f);
+                float t = glm::clamp(grad*2.0f*aeroSchlierenSensitivity, 0.0f, 1.0f);
+                col = glm::vec3(t);
+                if (aeroSchlierenColor) col = glm::vec3(t*0.8f, t*0.5f, 0.5f+t*0.5f);
+            }
+            else if (aeroVisMode == AeroVisMode::ShockWaves) {
+                float mach = speed/(speedOfSound+1e-6f);
+                col = mach>1.0f ? glm::vec3(1,0.3f,0.2f) : glm::vec3(0.2f,0.3f,0.8f);
+            }
+            else if (aeroVisMode == AeroVisMode::AeroAcoustic) col = glm::vec3(0.5f,0.5f,0.8f);
+            else if (aeroVisMode == AeroVisMode::Temperature) {
+                float mach = speed/(speedOfSound+1e-6f);
+                float T = airTemperature*(1+0.2f*mach*mach);
+                float t = glm::clamp((T-airTemperature)/50.0f,0.0f,1.0f);
+                col = glm::vec3(t, 0.5f*t, 1.0f-t);
+            }
             else col = getRealisticPressureColor(cp);
 
             if (!std::isfinite(col.x)) col = glm::vec3(0.5f);
@@ -197,7 +297,7 @@ void updateVertexColors() {
 }
 
 // =====================================================
-// Lift / Drag — v1.17.0 Physics Logic Fix — полный аудит
+// Lift / Drag — v1.19.0 Physics Logic Fix — полный аудит
 // Исправлено по аэродинамике:
 // - RefArea: фронтальная проекция, не BB
 // - Трение: Schlichting Cf = (0.455/log10(Re)^2.58) для турбулентного, Blasius для ламинарного

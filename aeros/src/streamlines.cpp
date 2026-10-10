@@ -19,7 +19,7 @@
 #endif
 
 // =====================================================
-// Линии тока — v1.17.0 Physics Logic Fix — аэродинамика
+// Линии тока — v1.19.0 Physics Logic Fix — аэродинамика
 // - RK45 адаптивный с контролем ошибки
 // - Сидинг по аэродинамике: LE + вихревые зоны
 // - Терминация: стагнация, вихрь, выход, поверхность, отрыв
@@ -345,7 +345,7 @@ void computeStreamlines() {
     auto t1 = std::chrono::high_resolution_clock::now();
     perfStreamlinesMs = std::chrono::duration<float, std::milli>(t1-t0).count();
 
-    std::cout << "Streamlines v1.17.0 Physics Logic Fix (RK45 aero" << (lbmParams.enabled ? "+LBM" : "") << (aeroColorStreamlinesByVelocity ? "+VelColor" : "") << "): " << numLines << " lines, " << (verts.size()/6) << " vertices in " << perfStreamlinesMs << " ms" << std::endl;
+    std::cout << "Streamlines v1.19.0 Physics Logic Fix (RK45 aero" << (lbmParams.enabled ? "+LBM" : "") << (aeroColorStreamlinesByVelocity ? "+VelColor" : "") << "): " << numLines << " lines, " << (verts.size()/6) << " vertices in " << perfStreamlinesMs << " ms" << std::endl;
     streamlineVertexCount = (int)(verts.size() / 6);
 
     if (streamlineVAO == 0) glGenVertexArrays(1, &streamlineVAO);

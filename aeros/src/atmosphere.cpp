@@ -68,7 +68,7 @@ const char* speedUnitShort(SpeedUnit unit) {
     }
 }
 
-// v1.17.0 Physics Logic Fix — точная ISA до 80км с вычисляемыми pBase для непрерывности
+// v1.19.0 Physics Logic Fix — точная ISA до 80км с вычисляемыми pBase для непрерывности
 // Использует данные ICAO Standard Atmosphere
 // Lapse rates по слоям, pBase вычисляется последовательно для точной непрерывности
 struct ISALayerDef {

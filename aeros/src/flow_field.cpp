@@ -11,7 +11,7 @@
 #include "lbm.h"
 
 // =====================================================
-// FlowParams — v1.17.0 Physics Logic Fix — полный аудит
+// FlowParams — v1.19.0 Physics Logic Fix — полный аудит
 // Исправлено по аэродинамике:
 // - Re физичный rho*V*L/mu с Sutherland mu(T)
 // - Потенциал эллипсоида корректный: трансформация в сферу, дублет, обратно
@@ -215,7 +215,7 @@ static inline glm::vec3 divergenceFreeNoise(const glm::vec3& p, float t, float s
 }
 
 // =====================================================
-// Поле скоростей CPU — v1.17.0 Physics Logic Fix
+// Поле скоростей CPU — v1.19.0 Physics Logic Fix
 // =====================================================
 glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
     // LBM приоритет — физически точнее

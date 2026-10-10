@@ -137,6 +137,10 @@ cl /c !CXXFLAGS! src\fsr.cpp /Fo:bin\fsr.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\framegen.cpp /Fo:bin\framegen.obj
 if !errorlevel! neq 0 exit /b 1
+cl /c !CXXFLAGS! src\interesting.cpp /Fo:bin\interesting.obj
+if !errorlevel! neq 0 exit /b 1
+cl /c !CXXFLAGS! src\vulkan_renderer.cpp /Fo:bin\vulkan_renderer.obj
+if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\cuda_stub.cpp /Fo:bin\cuda_stub.obj
 if !errorlevel! neq 0 exit /b 1
 
@@ -172,7 +176,7 @@ echo [Aeros CPU] Linking (LTCG optimized)...
 link /LTCG /OUT:bin\main-!OUT_ARCH!.exe ^
   bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
   bin\voxel_grid.obj bin\flow_field.obj bin\particles.obj bin\streamlines.obj ^
-  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\cuda_stub.obj bin\glad.obj ^
+  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\cuda_stub.obj bin\glad.obj ^
   bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
   bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj !ICON_RES! ^
   /LIBPATH:"!LIBDIR!\glfw\!GLFW_LIBDIR!" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^

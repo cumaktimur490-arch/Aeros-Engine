@@ -18,7 +18,7 @@
 #endif
 
 // =====================================================
-// SDF sampling (CPU) — v1.17.0 Physics Logic Fix
+// SDF sampling (CPU) — v1.19.0 Physics Logic Fix
 // - Трилинейная интерполяция для гладкости
 // - Проверка границ
 // =====================================================
@@ -120,7 +120,7 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
 }
 
 // =====================================================
-// Вокселизация — v1.17.0 Physics Logic Fix — Евклидов SDF
+// Вокселизация — v1.19.0 Physics Logic Fix — Евклидов SDF
 // - 26 соседей с евклидовыми весами, а не 6
 // - Fast Sweeping с 8 проходами для точного Евклида
 // - Гауссовское сглаживание вместо box blur
@@ -170,7 +170,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     if (res < 8) res = 8;
     if (res > 256) res = 256;
 
-    std::cout << "Voxelizing at resolution " << res << "... (v1.17.0 Physics Logic Fix)" << std::endl;
+    std::cout << "Voxelizing at resolution " << res << "... (v1.19.0 Physics Logic Fix)" << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
     if (!std::isfinite(minBB.x) || !std::isfinite(maxBB.x) || glm::length(maxBB-minBB) < 1e-6f) {
@@ -275,7 +275,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         return;
     }
 
-    // v1.17.0: Евклидов SDF — Fast Sweeping с 26 соседями и евклидовыми весами
+    // v1.19.0: Евклидов SDF — Fast Sweeping с 26 соседями и евклидовыми весами
     // Инициализация поверхности
     std::vector<int> q;
     q.reserve(total/3 + 1);
@@ -368,7 +368,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         }
     }
 
-    // v1.17.0: Гауссовское сглаживание с сохранением острых углов — bilateral-like
+    // v1.19.0: Гауссовское сглаживание с сохранением острых углов — bilateral-like
     {
         std::vector<float> temp = g_distanceField;
         // 2 итерации гауссовского с sigma=1.0
@@ -433,7 +433,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-    std::cout << "Voxelized v1.17.0 Physics Logic Fix: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
+    std::cout << "Voxelized v1.19.0 Physics Logic Fix: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
               << " (" << total << " cells, " << tris.size() << " tris) in " << ms << " ms"
 #ifdef _OPENMP
               << " [OpenMP] [26-neighbor Euclidean]"

@@ -11,7 +11,7 @@
 #include <algorithm>
 
 // =====================================================
-// Helpers — v1.17.0 with aerodynamic data
+// Helpers — v1.19.0 with aerodynamic data
 // =====================================================
 float getFGScale(int mode) {
     switch ((FGMode)mode) {
@@ -50,7 +50,7 @@ void main() {
 }
 )";
 
-// Motion vector generation — v1.17.0 Physics Logic Fix — с аэродинамикой
+// Motion vector generation — v1.19.0 Physics Logic Fix — с аэродинамикой
 // Использует данные: flowParams, Re, Mach, ground, wake
 static const char* motionFragSrc = R"(
 #version 330 core
@@ -333,7 +333,7 @@ static unsigned int compileShader(const char* vs, const char* fs) {
 }
 
 bool initFrameGen(int displayW, int displayH) {
-    std::cout << "[FG] Init v1.17.0 Physics Logic Fix — " << displayW << "x" << displayH << std::endl;
+    std::cout << "[FG] Init v1.19.0 Physics Logic Fix — " << displayW << "x" << displayH << std::endl;
 
     float quad[] = {
         -1,-1, 0,0,
@@ -368,7 +368,7 @@ bool initFrameGen(int displayW, int displayH) {
     fgGeneratedCount = 0;
     fgRealCount = 0;
 
-    std::cout << "[FG] Init OK v1.17.0 — motion=" << fgMotionProgram << " interp=" << fgInterpProgram << " aero=ON" << std::endl;
+    std::cout << "[FG] Init OK v1.19.0 — motion=" << fgMotionProgram << " interp=" << fgInterpProgram << " aero=ON" << std::endl;
     return true;
 }
 
@@ -466,7 +466,7 @@ void resizeFrameGen(int displayW, int displayH) {
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    std::cout << "[FG] Resize v1.17.0 " << w << "x" << h << " aero=ON" << std::endl;
+    std::cout << "[FG] Resize v1.19.0 " << w << "x" << h << " aero=ON" << std::endl;
 }
 
 void beginRealFrame(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& camPos) {

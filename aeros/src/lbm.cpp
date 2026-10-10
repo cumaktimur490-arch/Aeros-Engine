@@ -387,7 +387,7 @@ void initLBM() {
         float rho = 1.0f;
         float ux = 0, uy = 0, uz = 0;
         if (!solidPtr[cell] && !groundPtr[cell]) { ux = inUx; uy = inUy; uz = inUz; }
-        // v1.17.0: divergence-free турбулентность через curl векторного потенциала
+        // v1.19.0: divergence-free турбулентность через curl векторного потенциала
         if (lbmParams.inletTurbulence > 0.001f && !solidPtr[cell] && !groundPtr[cell]) {
             float turb = lbmParams.inletTurbulence * 0.04f;
             int x = cell % lbmNx;
@@ -431,7 +431,7 @@ void initLBM() {
         }
     }
 
-    // v1.17.0 Physics Logic Fix — Sutherland + tau из объекта, не домена
+    // v1.19.0 Physics Logic Fix — Sutherland + tau из объекта, не домена
     float T = airTemperature + 273.15f;
     if (!std::isfinite(T) || T < 50.0f) T = 288.15f;
     const float T0 = 273.15f;

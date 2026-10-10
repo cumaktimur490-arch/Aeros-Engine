@@ -18,7 +18,7 @@
 #endif
 
 // =====================================================
-// Частицы — v1.17.0 Physics Logic Fix — аэродинамика
+// Частицы — v1.19.0 Physics Logic Fix — аэродинамика
 // - Уравнение движения: m*dv/dt = Fd + Fg + Fb
 // - Fd = 0.5*Cd*rho*A*|Vrel|*Vrel, Cd(Re_p) Whitaker
 // - Re_p = rho*|Vrel|*d / mu, mu Sutherland
@@ -184,7 +184,7 @@ void initParticles() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
-    std::cout << "[Particles] Initialized " << numParticles << " v1.17.0 Physics Logic Fix" << std::endl;
+    std::cout << "[Particles] Initialized " << numParticles << " v1.19.0 Physics Logic Fix" << std::endl;
 }
 
 void updateParticles(float dt) {

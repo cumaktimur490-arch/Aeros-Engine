@@ -169,7 +169,7 @@ extern float perfForcesMs;
 extern float perfVoxelMs;
 extern int   perfOpenMPThreads;
 
-// --- Realistic Aero (v1.7.0+) + v1.9.0 новые режимы ---
+// --- Realistic Aero (v1.7.0+) + v1.9.0 + v1.18.0 интересные ---
 enum class AeroVisMode {
     Pressure,           // Cp — как на фото 4 (NASCAR rainbow)
     VelocityMagnitude,  // |U| — как на фото 1 (U Magnitude)
@@ -180,7 +180,14 @@ enum class AeroVisMode {
     BoundaryLayer,      // толщина погранслоя
     MachNumber,         // Mach — сжимаемость (v1.9.0)
     Helicity,           // Helicity — спиральность (v1.9.0)
-    TotalPressure       // Total Pressure — полное давление (v1.9.0)
+    TotalPressure,      // Total Pressure — полное давление (v1.9.0)
+    Schlieren,          // Шлирен — градиент плотности |∇ρ| (v1.18.0) — как в реальных трубах
+    Shadowgraph,        // Теневой — лапласиан плотности ∇²ρ (v1.18.0)
+    VolumetricSmoke,    // Объемный дым — ray marching плотности (v1.18.0)
+    ShockWaves,         // Скачки уплотнения — ударные волны (v1.18.0) supersonic
+    AeroAcoustic,       // Аэроакустика — источники шума Lighthill (v1.18.0)
+    Temperature,        // Температура — нагрев от сжатия (v1.18.0)
+    LIC                 // LIC — Line Integral Convolution на поверхности (v1.18.0)
 };
 extern AeroVisMode aeroVisMode;
 extern bool aeroGroundEffect;       // земля для авто (фото 2,5)
@@ -330,5 +337,90 @@ extern float perfFGms;
 extern float perfMotionMs;
 extern float perfInterpMs;
 extern float fgEffectiveFPS;
+
+// --- v1.18.0 Interesting Features ---
+extern bool aeroShowVortexTubes;
+extern bool aeroShowShockWaves;
+extern bool aeroShowLIC;
+extern bool aeroVolumetricEnabled;
+extern bool aeroSchlierenEnabled;
+extern bool aeroFlightMode;
+extern bool aeroShowAeroAcoustic;
+extern bool aeroShowTemperature;
+
+// Vortex tubes
+extern float aeroVortexTubeRadius;
+extern float aeroVortexTubeOpacity;
+extern int aeroVortexTubeCount;
+extern float aeroVortexHelicityScale;
+
+// Shock waves
+extern float aeroShockOpacity;
+extern float aeroShockAngle;
+extern bool aeroShowMachCone;
+extern bool aeroShowExpansionFans;
+
+// Schlieren / Shadowgraph
+extern float aeroSchlierenSensitivity;
+extern float aeroSchlierenCutoff;
+extern bool aeroSchlierenColor;
+extern int aeroSchlierenMode; // 0=schlieren, 1=shadowgraph
+
+// Volumetric smoke
+extern float aeroSmokeDensity;
+extern float aeroSmokeBuoyancy;
+extern float aeroSmokeDissipation;
+extern int aeroSmokeInjectors;
+extern float aeroSmokeOpacity;
+extern bool aeroSmokeVolumetricLight;
+extern float aeroSmokeTurbulence;
+
+// Flight dynamics 6DOF
+extern float aeroFlightMass;
+extern float aeroFlightThrust;
+extern float aeroFlightVelocity;
+extern glm::vec3 aeroFlightPos;
+extern glm::vec3 aeroFlightVel;
+extern glm::vec3 aeroFlightAngVel;
+extern glm::vec3 aeroFlightAngles; // pitch,yaw,roll
+extern bool aeroFlightAutoTrim;
+extern float aeroFlightInertia;
+extern float aeroFlightAltitude;
+
+// LIC
+extern float aeroLICStrength;
+extern int aeroLICSteps;
+extern float aeroLICOpacity;
+
+// Aeroacoustic
+extern float aeroAcousticFreq;
+extern float aeroAcousticOpacity;
+
+// Interesting - particle streaks
+extern bool aeroShowStreaklines;
+extern int aeroStreakHistory;
+extern float aeroStreakOpacity;
+
+// Performance v1.18.0
+extern float perfVolumetricMs;
+extern float perfVortexMs;
+extern float perfSchlierenMs;
+
+// --- v1.20.0 Lite ---
+extern bool g_isLiteMode;
+extern bool g_litePowerSaving;
+extern float g_liteTargetFPS;
+extern int g_liteMaxThreads;
+
+// --- v1.20.1 Lite+ extra ---
+extern bool g_isUltraLiteMode;
+extern bool g_autoQualityScaling;
+extern bool g_batterySaver;
+extern float g_currentFPSAverage;
+
+// --- v1.21.0 SD662/Adreno 610 ---
+extern bool g_isSD662Device;
+extern bool g_isAdreno610;
+extern bool g_is90Hz;
 
 #endif // GLOBALS_H

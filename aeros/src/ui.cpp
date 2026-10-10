@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <thread>
 
 #include "globals.h"
 #include "stl_loader.h"
@@ -22,16 +23,18 @@
 #include "lang.h"
 #include "fsr.h"
 #include "framegen.h"
+#include "interesting.h"
+#include "lite_config.h"
 
 // =====================================================
-// Панель управления — v1.17.0 GoGonam AoS.
+// Панель управления — v1.19.0 GoGonam AoS.
 // =====================================================
 void drawUI() {
 ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
 ImGui::SetNextWindowSize(ImVec2(540, 1150), ImGuiCond_Once);
-ImGui::Begin(_TR("Aeros Control v1.17.0 GoGonam AoS.", "Управление Aeros v1.17.0 GoGonam AoS."));
+ImGui::Begin(_TR("Aeros Control v1.19.0 GoGonam AoS.", "Управление Aeros v1.19.0 GoGonam AoS."));
 
-ImGui::Text("%s: %.1f | %s: %.2f ms | v1.17.0 [%s]",
+ImGui::Text("%s: %.1f | %s: %.2f ms | v1.19.0 [%s]",
     _TR("FPS", "Кадров/с"), deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f,
     _TR("Frame", "Кадр"), perfFrameMs,
     getCurrentLanguageName());
@@ -71,7 +74,7 @@ if (ImGui::CollapsingHeader(_TR("Language / Язык", "Язык / Language"), I
         "Весь интерфейс поддерживает русский и английский. Переключайте язык в любой момент."));
 }
 
-if (ImGui::CollapsingHeader(_TR("Performance v1.17.0", "Производительность v1.17.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Performance v1.19.0", "Производительность v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %.2f ms (%.1f FPS) | LBM: %.2f ms",
         _TR("Frame", "Кадр"), perfFrameMs, perfFrameMs>1e-3f?1000.0f/perfFrameMs:0, perfLBMms);
     ImGui::Text("%s: %.2f ms | %s: %.2f ms | %s: %.2f ms",
@@ -103,14 +106,14 @@ if (ImGui::CollapsingHeader(_TR("Performance v1.17.0", "Производител
         ImGui::PlotLines(_TR("Frame Time", "Время кадра"), frameHistory, 100, histIdx, overlay, 0, 100, ImVec2(0,60));
     }
     ImGui::Separator();
-    ImGui::Text("%s v1.17.0:", _TR("Features", "Возможности"));
+    ImGui::Text("%s v1.19.0:", _TR("Features", "Возможности"));
     ImGui::BulletText("%s", _TR("Mach + Helicity + Total Pressure visualization", "Визуализация Маха + Спиральности + Полного давления"));
     ImGui::BulletText("%s", _TR("Screenshot BMP + CSV export + settings save/load", "Скриншот BMP + экспорт CSV + сохранение настроек"));
     ImGui::BulletText("%s", _TR("Adaptive LBM + RK4 particles + surface streamlines", "Адаптивный LBM + частицы RK4 + поверхностные линии тока"));
     ImGui::BulletText("%s", _TR("Multilingual EN/RU + Cyrillic font support", "Мультиязычность EN/RU + поддержка кириллицы"));
 }
 
-if (ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.17.0 — Super Resolution", "FSR и Оптимизации v1.17.0 — Супер Разрешение"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.19.0 — Super Resolution", "FSR и Оптимизации v1.19.0 — Супер Разрешение"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %.2f ms | %s: %.2f ms | %s: %d tris culled",
         _TR("FSR", "ФСР"), perfFSRms,
         _TR("Culling", "Отсечение"), perfCullingMs,
@@ -194,7 +197,7 @@ if (ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.17.0 — Super Resolutio
     ImGui::BulletText("%s", _TR("Dynamic LOD: less particles when far/slow", "Динамический LOD: меньше частиц вдали/при лагах"));
 }
 
-if (ImGui::CollapsingHeader(_TR("Frame Generation v1.17.0 — Custom FG", "Генерация кадров v1.17.0 — Собственная ГП"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Frame Generation v1.19.0 — Custom FG", "Генерация кадров v1.19.0 — Собственная ГП"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %.2f ms | Motion: %.2f ms | Interp: %.2f ms | Eff FPS: %.1f",
         _TR("FG", "ГП"), perfFGms, perfMotionMs, perfInterpMs, fgEffectiveFPS);
     ImGui::Text("%s: %d real + %d gen = %d total | %s: %s",
@@ -243,7 +246,7 @@ if (ImGui::CollapsingHeader(_TR("Frame Generation v1.17.0 — Custom FG", "Ге�
     ImGui::BulletText("%s", _TR("Like DLSS FG but custom — no tensor cores needed", "Как DLSS FG но своё — без тензорных ядер"));
 }
 
-if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.17.0 — Ultra Photo Mode", "Реалистичная Аэро v1.17.0 — Ультра Фото Режим"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 — Ultra Photo Mode", "Реалистичная Аэро v1.19.0 — Ультра Фото Режим"), ImGuiTreeNodeFlags_DefaultOpen)) {
     const char* visModesEn[] = {
         "Pressure Cp (NASCAR rainbow)",
         "Velocity |U| (UAV/Cybertruck)",
@@ -254,7 +257,14 @@ if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.17.0 — Ultra Photo Mode", "
         "Boundary Layer",
         "Mach Number (NEW v1.9.0)",
         "Helicity (NEW v1.9.0)",
-        "Total Pressure (NEW v1.9.0)"
+        "Total Pressure (NEW v1.9.0)",
+        "Schlieren |∇ρ| (NEW v1.19.0) — wind tunnel",
+        "Shadowgraph ∇²ρ (NEW v1.19.0)",
+        "Volumetric Smoke (NEW v1.19.0)",
+        "Shock Waves (NEW v1.19.0)",
+        "Aeroacoustics Lighthill (NEW v1.19.0)",
+        "Temperature (NEW v1.19.0)",
+        "LIC Surface (NEW v1.19.0)"
     };
     const char* visModesRu[] = {
         "Давление Cp (NASCAR радуга)",
@@ -266,7 +276,14 @@ if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.17.0 — Ultra Photo Mode", "
         "Погранслой",
         "Число Маха (НОВОЕ v1.9.0)",
         "Спиральность (НОВОЕ v1.9.0)",
-        "Полное давление (НОВОЕ v1.9.0)"
+        "Полное давление (НОВОЕ v1.9.0)",
+        "Шлирен |∇ρ| (НОВОЕ v1.19.0) — как в трубе",
+        "Теневой ∇²ρ (НОВОЕ v1.19.0)",
+        "Объемный дым (НОВОЕ v1.19.0)",
+        "Скачки уплотнения (НОВОЕ v1.19.0)",
+        "Аэроакустика Lighthill (НОВОЕ v1.19.0)",
+        "Температура (НОВОЕ v1.19.0)",
+        "LIC Surface (НОВОЕ v1.19.0)"
     };
     int visIdx = (int)aeroVisMode;
     if (isRussian()) {
@@ -440,6 +457,306 @@ if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.17.0 — Ultra Photo Mode", "
         lbmParams.enabled = false;
         shutdownLBM();
     }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("NEW v1.19.0 Interesting Presets", "НОВОЕ v1.19.0 Интересные пресеты"));
+    if (ImGui::Button(_TR("Schlieren Wind Tunnel", "Шлирен Аэр труба"))) {
+        aeroVisMode = AeroVisMode::Schlieren;
+        aeroSchlierenEnabled = true;
+        aeroSchlierenSensitivity = 1.2f;
+        aeroSchlierenColor = true;
+        aeroColorMap = 0;
+        updateVertexColors();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Shock Waves (Supersonic)", "Скачки (Сверхзвук)"))) {
+        aeroVisMode = AeroVisMode::ShockWaves;
+        aeroShowShockWaves = true;
+        aeroShowMachCone = true;
+        flowSpeed = 400.0f;
+        aeroMachEffects = true;
+        updateVertexColors();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Volumetric Smoke", "Объемный дым"))) {
+        aeroVisMode = AeroVisMode::VolumetricSmoke;
+        aeroVolumetricEnabled = true;
+        aeroSmokeDensity = 1.0f;
+        aeroSmokeOpacity = 0.7f;
+        aeroSmokeInjectors = 5;
+        showParticles = true;
+    }
+    if (ImGui::Button(_TR("Vortex Tubes", "Вихревые трубки"))) {
+        aeroShowVortexTubes = true;
+        aeroVortexTubeCount = 20;
+        aeroVortexTubeRadius = 0.03f;
+        aeroVisMode = AeroVisMode::QCriterion;
+        updateVertexColors();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Flight Mode", "Режим полета"))) {
+        aeroFlightMode = !aeroFlightMode;
+        if (aeroFlightMode) {
+            aeroFlightMass = 1.0f;
+            aeroFlightThrust = 5.0f;
+            resetFlightDynamics();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Aeroacoustic Noise", "Аэроакустика"))) {
+        aeroVisMode = AeroVisMode::AeroAcoustic;
+        aeroShowAeroAcoustic = true;
+        updateVertexColors();
+    }
+    if (ImGui::Button(_TR("Temperature (Heating)", "Температура (Нагрев)"))) {
+        aeroVisMode = AeroVisMode::Temperature;
+        aeroShowTemperature = true;
+        updateVertexColors();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("LIC Surface Flow", "LIC Поверхность"))) {
+        aeroVisMode = AeroVisMode::LIC;
+        aeroShowLIC = true;
+        updateVertexColors();
+    }
+}
+
+if (ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — Schlieren, Smoke, Shocks, Vortex, Flight", "Интересное v1.19.0 — Шлирен, Дым, Скачки, Вихри, Полет"), ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("%s", _TR("Real wind tunnel visualizations & flight dynamics", "Реальные визуализации из трубы и динамика полета"));
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Schlieren & Shadowgraph (real wind tunnel optics)", "Шлирен и теневой (реальная оптика трубы)"));
+    ImGui::Checkbox(_TR("Enable Schlieren", "Включить шлирен"), &aeroSchlierenEnabled);
+    if (aeroSchlierenEnabled) {
+        ImGui::SliderFloat(_TR("Sensitivity", "Чувствительность"), &aeroSchlierenSensitivity, 0.1f, 5.0f, "%.2f");
+        ImGui::SliderFloat(_TR("Cutoff", "Отсечка"), &aeroSchlierenCutoff, 0.0f, 1.0f);
+        ImGui::Checkbox(_TR("Color Schlieren", "Цветной шлирен"), &aeroSchlierenColor);
+        const char* schlModes[] = {"Schlieren |∇ρ|", "Shadowgraph ∇²ρ"};
+        ImGui::Combo(_TR("Mode", "Режим"), &aeroSchlierenMode, schlModes, 2);
+        ImGui::Text("  %s: |∇ρ| ~ |∇p|/(R T) — shows density gradients", _TR("Physics", "Физика"));
+        ImGui::Text("  %s: knife edge blocks 50%% light, gradient shifts image", _TR("Optics", "Оптика"));
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Volumetric Smoke Tunnel", "Объемная дымовая труба"));
+    ImGui::Checkbox(_TR("Volumetric Smoke", "Объемный дым"), &aeroVolumetricEnabled);
+    if (aeroVolumetricEnabled) {
+        ImGui::SliderFloat(_TR("Smoke Density", "Плотность дыма"), &aeroSmokeDensity, 0.1f, 3.0f);
+        ImGui::SliderFloat(_TR("Smoke Opacity", "Прозрачность"), &aeroSmokeOpacity, 0.1f, 1.0f);
+        ImGui::SliderFloat(_TR("Buoyancy", "Плавучесть"), &aeroSmokeBuoyancy, 0.0f, 0.5f);
+        ImGui::SliderFloat(_TR("Dissipation", "Диссипация"), &aeroSmokeDissipation, 0.8f, 0.999f, "%.3f");
+        ImGui::SliderFloat(_TR("Turbulence", "Турбулентность"), &aeroSmokeTurbulence, 0.0f, 1.0f);
+        ImGui::SliderInt(_TR("Injectors", "Инжекторы"), &aeroSmokeInjectors, 1, 10);
+        ImGui::Checkbox(_TR("Volumetric Light", "Объемный свет"), &aeroSmokeVolumetricLight);
+        ImGui::Text("  Perf: %.2f ms | Particles: %zu", perfVolumetricMs, g_smokeParticles.size());
+        if (ImGui::Button(_TR("Reset Smoke", "Сбросить дым"))) initSmokeTunnel();
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Shock Waves — Supersonic (θ-β-M)", "Скачки — Сверхзвук (θ-β-M)"));
+    ImGui::Checkbox(_TR("Show Shock Waves", "Показывать скачки"), &aeroShowShockWaves);
+    if (aeroShowShockWaves) {
+        ImGui::SliderFloat(_TR("Shock Opacity", "Прозрачность скачка"), &aeroShockOpacity, 0.1f, 1.0f);
+        ImGui::Checkbox(_TR("Mach Cone", "Конус Маха"), &aeroShowMachCone);
+        ImGui::Checkbox(_TR("Expansion Fans", "Волны разрежения"), &aeroShowExpansionFans);
+        float mach = flowSpeed / (speedOfSound+1e-6f);
+        float mu = (mach>1.0f) ? asinf(1.0f/mach)*57.29578f : 90.0f;
+        ImGui::Text("  Mach: %.2f | μ (Mach angle): %.1f° | β (shock): %.1f°", mach, mu, aeroShockAngle);
+        ImGui::Text("  Physics: tanθ = 2cotβ(M²sin²β-1)/(M²(γ+cos2β)+2)");
+        ImGui::Text("  Prandtl-Meyer: ν(M)=√((γ+1)/(γ-1)) atan(√((γ-1)/(γ+1)(M²-1))) - atan(√(M²-1))");
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Vortex Tubes — Q-criterion & λ2", "Вихревые трубки — Q и λ2"));
+    ImGui::Checkbox(_TR("Show Vortex Tubes", "Показывать трубки"), &aeroShowVortexTubes);
+    if (aeroShowVortexTubes) {
+        ImGui::SliderFloat(_TR("Tube Radius", "Радиус трубки"), &aeroVortexTubeRadius, 0.005f, 0.1f, "%.3f");
+        ImGui::SliderFloat(_TR("Opacity", "Прозрачность"), &aeroVortexTubeOpacity, 0.1f, 1.0f);
+        ImGui::SliderInt(_TR("Count", "Количество"), &aeroVortexTubeCount, 1, 50);
+        ImGui::SliderFloat(_TR("Helicity Scale", "Масштаб спиральности"), &aeroVortexHelicityScale, 0.1f, 3.0f);
+        ImGui::Text("  Cores: %zu | Perf: %.2f ms | Q>5, |ω|>√10", g_vortexCores.size(), perfVortexMs);
+        if (ImGui::Button(_TR("Extract Vortex Cores", "Найти вихри"))) extractVortexCores();
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Flight Dynamics 6DOF — model really flies!", "Динамика полета 6DOF — модель реально летит!"));
+    ImGui::Checkbox(_TR("Flight Mode", "Режим полета"), &aeroFlightMode);
+    if (aeroFlightMode) {
+        ImGui::SliderFloat(_TR("Mass (kg)", "Масса (кг)"), &aeroFlightMass, 0.1f, 10.0f, "%.2f");
+        ImGui::SliderFloat(_TR("Thrust (N)", "Тяга (Н)"), &aeroFlightThrust, 0.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat(_TR("Inertia", "Инерция"), &aeroFlightInertia, 0.1f, 5.0f);
+        ImGui::Checkbox(_TR("Auto Trim", "Авто-триммирование"), &aeroFlightAutoTrim);
+        ImGui::Text("  Pos: (%.2f, %.2f, %.2f) | Vel: %.2f m/s", aeroFlightPos.x, aeroFlightPos.y, aeroFlightPos.z, aeroFlightVelocity);
+        ImGui::Text("  Angles: pitch %.1f° yaw %.1f° roll %.1f°", aeroFlightAngles.x*57.29578f, aeroFlightAngles.y*57.29578f, aeroFlightAngles.z*57.29578f);
+        ImGui::Text("  Alt: %.2f m | %s", aeroFlightAltitude, isFlightFlying() ? "FLYING!" : g_flightState.onGround ? "ON GROUND" : "FALLING");
+        if (ImGui::Button(_TR("Reset Flight", "Сброс полета"))) resetFlightDynamics();
+        ImGui::SameLine();
+        if (ImGui::Button(_TR("Takeoff!", "Взлет!"))) { aeroFlightThrust = 10.0f; g_flightState.velocity.y = 2.0f; }
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("LIC — Line Integral Convolution", "LIC — Интегральная свертка"));
+    ImGui::Checkbox(_TR("Show LIC", "Показывать LIC"), &aeroShowLIC);
+    if (aeroShowLIC) {
+        ImGui::SliderFloat(_TR("Strength", "Сила"), &aeroLICStrength, 0.1f, 2.0f);
+        ImGui::SliderInt(_TR("Steps", "Шаги"), &aeroLICSteps, 5, 100);
+        ImGui::SliderFloat(_TR("LIC Opacity", "Прозрачность"), &aeroLICOpacity, 0.1f, 1.0f);
+        if (ImGui::Button(_TR("Compute LIC", "Вычислить LIC"))) computeLICOnSurface();
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Aeroacoustics — Lighthill analogy", "Аэроакустика — аналогия Лайтхилла"));
+    ImGui::Checkbox(_TR("Show Aeroacoustic", "Показывать шум"), &aeroShowAeroAcoustic);
+    if (aeroShowAeroAcoustic) {
+        ImGui::SliderFloat(_TR("Acoustic Opacity", "Прозрачность"), &aeroAcousticOpacity, 0.1f, 1.0f);
+        ImGui::SliderFloat(_TR("Freq Scale", "Масштаб частоты"), &aeroAcousticFreq, 100.0f, 10000.0f, "%.0f Hz");
+        ImGui::Text("  Sources: %zu | T_ij = ρ v_i v_j + (p-c²ρ)δ_ij", g_acousticSources.size());
+        if (ImGui::Button(_TR("Compute Noise Sources", "Найти источники шума"))) computeAeroacousticSources();
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Streaklines & Other", "Линии окрашенного дыма и др."));
+    ImGui::Checkbox(_TR("Show Streaklines", "Показывать streaklines"), &aeroShowStreaklines);
+    if (aeroShowStreaklines) {
+        ImGui::SliderInt(_TR("History", "История"), &aeroStreakHistory, 10, 200);
+        ImGui::SliderFloat(_TR("Streak Opacity", "Прозрачность"), &aeroStreakOpacity, 0.1f, 1.0f);
+        if (ImGui::Button(_TR("Clear Streaks", "Очистить"))) clearStreaklines();
+    }
+    ImGui::Checkbox(_TR("Show Temperature", "Показывать температуру"), &aeroShowTemperature);
+}
+
+if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra-Lite (NEW v1.20.1)", "Lite — Слабые устройства i3-3xxx / HD 4000 / Ultra-Lite (НОВОЕ v1.20.1)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("%s", getLiteInfoString());
+    ImGui::Text("%s: %s", _TR("Lite Mode", "Lite режим"), isLiteMode() ? (isUltraLiteMode() ? "ULTRA-LITE Potato" : "ON — Optimized for weak devices") : "OFF — Full version");
+    ImGui::Text("%s: %d", _TR("HW Threads", "Потоков CPU"), std::thread::hardware_concurrency());
+    ImGui::Text("%s: %d", _TR("Max Threads", "Макс потоков"), getLiteMaxThreads() >0 ? getLiteMaxThreads() : (int)std::thread::hardware_concurrency());
+    ImGui::Text("%s: %s", _TR("Battery", "Батарея"), isBatteryPower() ? "On battery — saver ON" : "On AC");
+    ImGui::Text("%s: %s", _TR("Low RAM", "Мало RAM"), isLowMemorySystem() ? "Yes <4GB — Lite recommended" : "No");
+    ImGui::Text("%s: %s", _TR("Detected", "Определено"), getPresetName(detectHardwarePreset()));
+    ImGui::Text("%s: %s", _TR("Current Preset", "Текущий пресет"), getPresetName(g_currentPreset));
+    ImGui::Text("VRAM est: %.1f MB, RAM est: %.1f MB, FPS avg: %.1f", getEstimatedVRAMUsageMB(), getEstimatedRAMUsageMB(), g_currentFPSAverage);
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Presets", "Пресеты"));
+    if (ImGui::Button("Potato (Ultra-Lite)")) { applyPreset(LiteQualityPreset::Potato); }
+    ImGui::SameLine();
+    if (ImGui::Button("Low (Lite)")) { applyPreset(LiteQualityPreset::Low); }
+    ImGui::SameLine();
+    if (ImGui::Button("Medium")) { applyPreset(LiteQualityPreset::Medium); }
+    ImGui::SameLine();
+    if (ImGui::Button("Balanced (SD662)")) { applyPreset(LiteQualityPreset::Balanced); }
+    ImGui::SameLine();
+    if (ImGui::Button("Full")) { applyPreset(LiteQualityPreset::Full); g_isLiteMode=false; }
+    if (g_isSD662Device) {
+        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "YOUR PHONE: Snapdragon 662 + Adreno 610 detected! Balanced preset recommended!");
+        ImGui::Text("SoC: %s", getSoCInfoString());
+        ImGui::Text("GPU: %s", getGPUInfoString());
+    }
+    ImGui::Text("%s: %s", _TR("Potato desc", "Potato"), getPresetDescription(LiteQualityPreset::Potato));
+    ImGui::Text("%s: %s", _TR("Low desc", "Low"), getPresetDescription(LiteQualityPreset::Low));
+    ImGui::Text("%s: %s", _TR("Medium desc", "Medium"), getPresetDescription(LiteQualityPreset::Medium));
+    ImGui::Text("Balanced: %s", getPresetDescription(LiteQualityPreset::Balanced));
+    ImGui::Text("%s: %s", _TR("Full desc", "Full"), getPresetDescription(LiteQualityPreset::Full));
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Lite Optimizations for i3-3xxx / HD 4000 / GT 620M", "Оптимизации для i3-3xxx / HD 4000 / GT 620M"));
+    ImGui::BulletText("SSE2 only (no AVX2) — Ivy Bridge compatible");
+    ImGui::BulletText("O1 (not O3) — smaller binary, less heat");
+    ImGui::BulletText("No CUDA — CPU only");
+    ImGui::BulletText("No Vulkan by default — HD 4000 only supports Vulkan 1.0");
+    ImGui::BulletText("Particles 1500 (was 15000), Streamlines 8x80 (was 24x300)");
+    ImGui::BulletText("Voxel 24 (was 48) — 8x less memory, LBM OFF, 32 res");
+    ImGui::BulletText("Target 30 FPS, VSync ON, power saving, small window 1024x600");
+    ImGui::BulletText("Auto-detect weak hardware, battery saver, dynamic quality scaling");
+    ImGui::BulletText("Ultra-Lite: Atom/Celeron 2GB — 500 particles 4x40 voxel16 20 FPS 800x450 1 thread");
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Lite Settings", "Настройки Lite"));
+    ImGui::SliderInt(_TR("Particles", "Частицы"), &numParticles, 100, 10000);
+    ImGui::SliderInt(_TR("Streamlines", "Линии тока"), &numStreamlines, 2, 32);
+    ImGui::SliderInt(_TR("Steps", "Шаги"), &streamlineSteps, 20, 300);
+    ImGui::SliderInt(_TR("Voxel Res", "Воксели"), &voxelResolution, 8, 64);
+    ImGui::Checkbox(_TR("Power Saving", "Энергосбережение"), &g_litePowerSaving);
+    ImGui::Checkbox(_TR("Battery Saver", "Экономия батареи"), &g_batterySaver);
+    ImGui::Checkbox(_TR("Auto Quality Scaling", "Авто качество по FPS"), &g_autoQualityScaling);
+    ImGui::SliderFloat(_TR("Target FPS", "Целевой FPS"), &g_liteTargetFPS, 10.0f, 60.0f, "%.0f");
+    ImGui::SliderFloat(_TR("Max FPS", "Макс FPS"), &maxFPS, 10.0f, 60.0f, "%.0f");
+    if (ImGui::Button(_TR("Apply Lite Defaults", "Применить Lite настройки"))) {
+        applyLiteDefaults();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Apply Ultra-Lite", "Применить Ultra-Lite"))) {
+        applyUltraLiteDefaults();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Print System Info", "Инфо о системе"))) {
+        printLiteSystemInfo();
+    }
+    if (ImGui::Button(_TR("Save Lite Config", "Сохранить Lite конфиг"))) {
+        saveLiteConfig("aeros-lite.ini");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Load Lite Config", "Загрузить Lite конфиг"))) {
+        loadLiteConfig("aeros-lite.ini");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Auto-Detect Hardware", "Авто-детект железа"))) {
+        detectAndApplyLiteIfNeeded();
+    }
+    ImGui::Separator();
+    if (!isLiteMode()) {
+        ImGui::Text("%s", _TR("Full version — for modern PCs with Vulkan/CUDA", "Полная версия — для современных ПК с Vulkan/CUDA"));
+        ImGui::Text("%s", _TR("For weak devices, download Lite version:", "Для слабых устройств скачайте Lite версию:"));
+        ImGui::BulletText("Aeros-Engine-Setup-Lite-x64-v*.exe");
+        ImGui::BulletText("aeros-engine-lite-linux-*");
+        ImGui::BulletText("build-lite.bat / build-lite.sh");
+        ImGui::BulletText("Potato for Atom/Celeron 2GB: --preset potato");
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Lite vs Full", "Lite vs Full"));
+    ImGui::Text("  Potato: 500 particles, 4x40 streamlines, voxel 16, LBM OFF, 20 FPS, SSE2, ~3-5 MB, <256 MB RAM, 1 thread");
+    ImGui::Text("  Lite: 1500 particles, 8x80 streamlines, voxel 24, LBM OFF, 30 FPS, SSE2, ~5-10 MB, <512 MB RAM");
+    ImGui::Text("  Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2, ~20-30 MB, 1-2 GB RAM");
+}
+
+if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("%s: %s", _TR("Current", "Текущий"), getRendererName());
+    ImGui::Text("%s: %s", _TR("Vulkan Available", "Vulkan доступен"), isVulkanAvailable() ? "Yes — Vulkan 1.3" : "No — OpenGL fallback");
+    if (isVulkanAvailable()) {
+        ImGui::Text("Vulkan Version: %s", getVulkanVersionString().c_str());
+        auto devs = getVulkanDevices();
+        if (!devs.empty()) {
+            ImGui::Text("%s:", _TR("Vulkan Devices", "Устройства Vulkan"));
+            for (size_t i=0; i<devs.size() && i<3; ++i) ImGui::BulletText("%s", devs[i].c_str());
+        }
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Select Renderer (requires restart)", "Выберите рендерер (требует перезапуск)"));
+    if (ImGui::Button("Auto (Vulkan if available, else OpenGL)")) {
+        // Save to settings
+        FILE* f = fopen("aeros_settings.ini", "a");
+        if (f) { fprintf(f, "renderer=auto\n"); fclose(f); }
+        ImGui::OpenPopup("RestartPopup");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Vulkan 1.3")) {
+        FILE* f = fopen("aeros_settings.ini", "a");
+        if (f) { fprintf(f, "renderer=vulkan\n"); fclose(f); }
+        ImGui::OpenPopup("RestartPopup");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("OpenGL 4.6")) {
+        FILE* f = fopen("aeros_settings.ini", "a");
+        if (f) { fprintf(f, "renderer=opengl\n"); fclose(f); }
+        ImGui::OpenPopup("RestartPopup");
+    }
+    if (ImGui::BeginPopup("RestartPopup")) {
+        ImGui::Text("%s", _TR("Renderer will change after restart", "Рендерер изменится после перезапуска"));
+        ImGui::Text("%s: %s", _TR("Run with", "Запуск с"), "--vulkan or --opengl");
+        if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Vulkan Benefits", "Преимущества Vulkan"));
+    ImGui::BulletText("%s", _TR("Lower CPU overhead, more draw calls", "Меньше нагрузки на CPU, больше draw calls"));
+    ImGui::BulletText("%s", _TR("Better multi-threading", "Лучше многопоточность"));
+    ImGui::BulletText("%s", _TR("Ray tracing ready (future)", "Готов к трассировке лучей (будущее)"));
+    ImGui::BulletText("%s", _TR("Works on Windows and Linux", "Работает на Windows и Linux"));
+    ImGui::Separator();
+    ImGui::Text("%s: %s", _TR("Linux Port", "Порт на Linux"), _TR("Fully supported", "Полностью поддерживается"));
+    ImGui::BulletText("build-linux.sh --deps — install deps");
+    ImGui::BulletText("build-linux.sh all — build");
+    ImGui::BulletText("installer/install-linux.sh --deps --all — full install");
+    ImGui::BulletText("Vulkan: sudo apt install libvulkan-dev");
+    ImGui::BulletText("File dialog: zenity/kdialog or console fallback");
 }
 
 if (ImGui::CollapsingHeader(_TR("Flow", "Поток"), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -535,7 +852,7 @@ if (ImGui::CollapsingHeader(_TR("Atmosphere (ISA)", "Атмосфера (ISA)"),
     ImGui::Text("%s q: %.1f Pa | q*RefArea: %.1f N", _TR("Dynamic Pressure", "Динамическое давление"), q, q*aeroRefArea);
 }
 
-if (ImGui::CollapsingHeader(_TR("Particles v1.17.0", "Частицы v1.17.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Частицы v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Particles", "Показывать частицы"), &showParticles);
     ImGui::SliderInt(_TR("Count", "Количество"), &numParticles, 100, 200000);
     if (ImGui::IsItemDeactivatedAfterEdit()) initParticles();
@@ -549,7 +866,7 @@ if (ImGui::CollapsingHeader(_TR("Particles v1.17.0", "Частицы v1.17.0"), 
     ImGui::SameLine(); if (ImGui::Button("50000")) { numParticles=50000; initParticles(); }
 }
 
-if (ImGui::CollapsingHeader(_TR("Streamlines v1.17.0", "Линии тока v1.17.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Streamlines v1.19.0", "Линии тока v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Streamlines", "Показывать линии тока"), &showStreamlines);
     ImGui::SliderInt(_TR("Count##sl", "Количество##sl"), &numStreamlines, 4, 200);
     ImGui::SliderInt(_TR("Steps", "Шагов"), &streamlineSteps, 20, 1000);
@@ -563,7 +880,7 @@ if (ImGui::CollapsingHeader(_TR("Streamlines v1.17.0", "Линии тока v1.1
     ImGui::SameLine(); if (ImGui::Button(_TR("High (64)", "Много (64)"))) { numStreamlines=64; computeStreamlines(); }
 }
 
-if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.17.0 Realistic+", "Давление и Силы v1.17.0 Реалистично+"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.19.0 Realistic+", "Давление и Силы v1.19.0 Реалистично+"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Pressure Colors", "Показывать давление"), &showPressure);
     ImGui::Checkbox(_TR("Show Lift/Drag Vectors", "Показывать векторы Под/Сопр"), &showLiftDrag);
     ImGui::Checkbox(_TR("Show Color Legend", "Показывать легенду"), &showColorLegend);
@@ -601,7 +918,7 @@ if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.17.0 Realistic+", "Дав�
     }
 }
 
-if (ImGui::CollapsingHeader(_TR("Voxel Collision v1.17.0", "Воксельная коллизия v1.17.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Voxel Collision v1.19.0", "Воксельная коллизия v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Enable Voxel Collision", "Включить воксельную коллизию"), &useVoxelCollision);
     ImGui::SliderInt(_TR("Voxel Resolution", "Разрешение вокселей"), &voxelResolution, 16, 128);
     if (ImGui::Button(_TR("Rebuild Voxel Grid", "Перестроить воксели"))) {
@@ -611,7 +928,7 @@ if (ImGui::CollapsingHeader(_TR("Voxel Collision v1.17.0", "Воксельная
     ImGui::Text("%s: %dx%dx%d = %d %s | %.1f ms", _TR("Voxel", "Воксель"), g_voxNx, g_voxNy, g_voxNz, g_voxNx*g_voxNy*g_voxNz, _TR("cells", "ячеек"), perfVoxelMs);
 }
 
-if (ImGui::CollapsingHeader(_TR("Display v1.17.0", "Отображение v1.17.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Display v1.19.0", "Отображение v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Model", "Показывать модель"), &showModel);
     ImGui::Checkbox(_TR("Show Obstacle", "Показывать препятствие"), &showObstacle);
     if (showObstacle) {
@@ -640,7 +957,7 @@ if (ImGui::CollapsingHeader(_TR("Display v1.17.0", "Отображение v1.17
         _TR("Controls", "Управление"));
 }
 
-if (ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.17.0 Ultra+", "LBM - Решеточный Больцман v1.17.0 Ультра+"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.19.0 Ultra+", "LBM - Решеточный Больцман v1.19.0 Ультра+"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Enable LBM (High-Accuracy Physics)", "Включить LBM (Точная физика)"), &lbmParams.enabled);
     if (lbmParams.enabled) {
         ImGui::TextColored(ImVec4(0.2f,1,0.8f,1), "%s", _TR("LBM Active — Navier-Stokes, realistic as photos", "LBM Активен — Навье-Стокс, реалистично как на фото"));
@@ -681,14 +998,14 @@ if (ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.17.0 Ultra+", "LBM -
     ImGui::SameLine(); if (ImGui::Button("Step 500")) { stepLBMCPU(500); }
     ImGui::SameLine(); if (ImGui::Button(_TR("Compute Vort/Q/TKE", "Вычислить вихрь/Q/TKE"))) { computeLBMVorticityAndQ(); }
     ImGui::Separator();
-    ImGui::Text("%s v1.17.0:", _TR("Realistic features", "Реалистичные фичи"));
+    ImGui::Text("%s v1.19.0:", _TR("Realistic features", "Реалистичные фичи"));
     ImGui::BulletText("%s", _TR("Zou/He inlet + convective outlet + ground", "Вход Zou/He + конвективный выход + земля"));
     ImGui::BulletText("%s", _TR("Mach + Helicity + Total Pressure", "Мах + Спиральность + Полное давление"));
     ImGui::BulletText("%s", _TR("Adaptive stepping + stability checks", "Адаптивные шаги + проверки стабильности"));
     ImGui::BulletText("%s", _TR("Rainbow/Viridis/Parula/CoolWarm + EN/RU", "Радуга/Viridis/Parula/CoolWarm + EN/RU"));
 }
 
-if (ImGui::CollapsingHeader(_TR("Compute & Export v1.17.0", "Вычисления и Экспорт v1.17.0"))) {
+if (ImGui::CollapsingHeader(_TR("Compute & Export v1.19.0", "Вычисления и Экспорт v1.19.0"))) {
     ImGui::RadioButton("CUDA", &useCUDA, 1);
     ImGui::SameLine();
     ImGui::RadioButton("CPU", &useCUDA, 0);
@@ -715,7 +1032,7 @@ if (ImGui::CollapsingHeader(_TR("Compute & Export v1.17.0", "Вычислени�
         _TR("Shortcuts", "Горячие клавиши"));
 }
 
-if (ImGui::CollapsingHeader(_TR("Test Mode v1.17.0 Ultra (Physics+Code+LBM+Opt+Realistic+New+Lang)", "Режим тестов v1.17.0 Ультра (Физика+Код+LBM+Опт+Реалистичность+Новое+Язык)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+Realistic+New+Lang)", "Режим тестов v1.19.0 Ультра (Физика+Код+LBM+Опт+Реалистичность+Новое+Язык)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Enable Test Mode", "Включить тесты"), &testModeEnabled);
     ImGui::Checkbox(_TR("Continuous Validation", "Непрерывная проверка"), &testContinuous);
     int realisticPassed = 0, realisticFailed = 0;

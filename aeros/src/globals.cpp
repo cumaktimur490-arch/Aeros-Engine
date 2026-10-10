@@ -257,3 +257,78 @@ float perfFGms = 0.0f;
 float perfMotionMs = 0.0f;
 float perfInterpMs = 0.0f;
 float fgEffectiveFPS = 0.0f;
+
+// v1.18.0 Interesting Features
+bool aeroShowVortexTubes = true;
+bool aeroShowShockWaves = true;
+bool aeroShowLIC = false;
+bool aeroVolumetricEnabled = false;
+bool aeroSchlierenEnabled = false;
+bool aeroFlightMode = false;
+bool aeroShowAeroAcoustic = false;
+bool aeroShowTemperature = false;
+
+float aeroVortexTubeRadius = 0.02f;
+float aeroVortexTubeOpacity = 0.8f;
+int aeroVortexTubeCount = 16;
+float aeroVortexHelicityScale = 1.0f;
+
+float aeroShockOpacity = 0.6f;
+float aeroShockAngle = 0.0f;
+bool aeroShowMachCone = true;
+bool aeroShowExpansionFans = true;
+
+float aeroSchlierenSensitivity = 1.0f;
+float aeroSchlierenCutoff = 0.5f;
+bool aeroSchlierenColor = true;
+int aeroSchlierenMode = 0;
+
+float aeroSmokeDensity = 1.0f;
+float aeroSmokeBuoyancy = 0.1f;
+float aeroSmokeDissipation = 0.98f;
+int aeroSmokeInjectors = 3;
+float aeroSmokeOpacity = 0.7f;
+bool aeroSmokeVolumetricLight = true;
+float aeroSmokeTurbulence = 0.3f;
+
+float aeroFlightMass = 1.0f;
+float aeroFlightThrust = 0.0f;
+float aeroFlightVelocity = 0.0f;
+glm::vec3 aeroFlightPos = glm::vec3(0.0f);
+glm::vec3 aeroFlightVel = glm::vec3(0.0f);
+glm::vec3 aeroFlightAngVel = glm::vec3(0.0f);
+glm::vec3 aeroFlightAngles = glm::vec3(0.0f);
+bool aeroFlightAutoTrim = true;
+float aeroFlightInertia = 1.0f;
+float aeroFlightAltitude = 0.0f;
+
+float aeroLICStrength = 1.0f;
+int aeroLICSteps = 30;
+float aeroLICOpacity = 0.8f;
+
+float aeroAcousticFreq = 1000.0f;
+float aeroAcousticOpacity = 0.6f;
+
+bool aeroShowStreaklines = false;
+int aeroStreakHistory = 50;
+float aeroStreakOpacity = 0.7f;
+
+float perfVolumetricMs = 0.0f;
+float perfVortexMs = 0.0f;
+float perfSchlierenMs = 0.0f;
+
+bool g_isLiteMode = false;
+bool g_litePowerSaving = true;
+float g_liteTargetFPS = 30.0f;
+int g_liteMaxThreads = 2;
+
+// v1.20.1 Lite+ extra
+bool g_isUltraLiteMode = false;
+bool g_autoQualityScaling = true;
+bool g_batterySaver = true;
+float g_currentFPSAverage = 30.0f;
+
+// v1.21.0 SD662/Adreno 610
+bool g_isSD662Device = false;
+bool g_isAdreno610 = false;
+bool g_is90Hz = false;

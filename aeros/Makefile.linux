@@ -1,0 +1,238 @@
+# Aeros Engine — Linux Makefile v1.19.0
+# Поддержка Vulkan + OpenGL, авто-загрузка зависимостей
+# Использование:
+#   make -f Makefile.linux
+#   make -f Makefile.linux clean
+#   make -f Makefile.linux install-deps
+#   make -f Makefile.linux vulkan
+#   make -f Makefile.linux opengl
+
+CXX ?= g++
+CC ?= gcc
+NVCC ?= nvcc
+
+VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo "1.19.0")
+ARCH ?= $(shell uname -m)
+
+# Пути
+LIBDIR = ../libs
+SRCDIR = src
+BINDIR = bin
+OBJDIR = obj
+
+# Флаги
+CXXFLAGS = -std=c++17 -O3 -march=native -ffast-math -fopenmp -fPIC
+CXXFLAGS += -I$(LIBDIR)/glad/include -I$(LIBDIR)/glfw/include -I$(LIBDIR)/glm -I$(SRCDIR) -I$(SRCDIR)/imgui
+CXXFLAGS += -DVERSION=\"$(VERSION)\" -DLINUX -DGLFW_INCLUDE_NONE
+CXXFLAGS += $(shell pkg-config --cflags glfw3 2>/dev/null || echo "")
+
+# Vulkan
+VULKAN_AVAILABLE = $(shell pkg-config --exists vulkan 2>/dev/null && echo "yes" || echo "no")
+ifeq ($(VULKAN_AVAILABLE),yes)
+    CXXFLAGS += -DHAS_VULKAN -DVULKAN_SUPPORTED $(shell pkg-config --cflags vulkan 2>/dev/null)
+    VULKAN_LIBS = $(shell pkg-config --libs vulkan 2>/dev/null)
+    VULKAN_ENABLED = 1
+else
+    VULKAN_LIBS =
+    VULKAN_ENABLED = 0
+endif
+
+# OpenMP
+CXXFLAGS += -fopenmp
+LDFLAGS = -fopenmp -ldl -lpthread
+
+# GLFW, OpenGL, X11
+GLFW_LIBS = $(shell pkg-config --libs glfw3 2>/dev/null || echo "-lglfw")
+GL_LIBS = -lGL -lX11 -lXrandr -lXinerama -lXcursor -lXi
+
+# CUDA (опционально)
+CUDA_AVAILABLE = $(shell which nvcc >/dev/null 2>&1 && echo "yes" || echo "no")
+ifeq ($(CUDA_AVAILABLE),yes)
+    CXXFLAGS += -DCUDA_SUPPORTED
+    CUDA_LIBS = -lcuda -lcudart
+    CUDA_OBJS = $(OBJDIR)/kernel.o
+    NVCC_FLAGS = -std=c++17 -O3 --use_fast_math -Xcompiler -fPIC -Xcompiler -fopenmp
+else
+    CUDA_LIBS =
+    CUDA_OBJS =
+    CUDA_STUB = $(OBJDIR)/cuda_stub.o
+endif
+
+# Исходники
+SOURCES = \
+    $(SRCDIR)/main.cpp \
+    $(SRCDIR)/globals.cpp \
+    $(SRCDIR)/input.cpp \
+    $(SRCDIR)/gl_utils.cpp \
+    $(SRCDIR)/stl_loader.cpp \
+    $(SRCDIR)/voxel_grid.cpp \
+    $(SRCDIR)/flow_field.cpp \
+    $(SRCDIR)/particles.cpp \
+    $(SRCDIR)/streamlines.cpp \
+    $(SRCDIR)/forces.cpp \
+    $(SRCDIR)/model.cpp \
+    $(SRCDIR)/ui.cpp \
+    $(SRCDIR)/atmosphere.cpp \
+    $(SRCDIR)/test_mode.cpp \
+    $(SRCDIR)/lbm.cpp \
+    $(SRCDIR)/lang.cpp \
+    $(SRCDIR)/fsr.cpp \
+    $(SRCDIR)/framegen.cpp \
+    $(SRCDIR)/interesting.cpp \
+    $(SRCDIR)/vulkan_renderer.cpp \
+    $(SRCDIR)/lite_config.cpp \
+    $(SRCDIR)/benchmark.cpp \
+    $(SRCDIR)/glad.c \
+    $(SRCDIR)/imgui/imgui.cpp \
+    $(SRCDIR)/imgui/imgui_draw.cpp \
+    $(SRCDIR)/imgui/imgui_tables.cpp \
+    $(SRCDIR)/imgui/imgui_widgets.cpp \
+    $(SRCDIR)/imgui/imgui_impl_glfw.cpp \
+    $(SRCDIR)/imgui/imgui_impl_opengl3.cpp
+
+ifeq ($(CUDA_AVAILABLE),yes)
+    SOURCES += $(SRCDIR)/kernel.cu
+else
+    SOURCES += $(SRCDIR)/cuda_stub.cpp
+endif
+
+OBJECTS = $(SOURCES:%.cpp=$(OBJDIR)/%.o)
+OBJECTS := $(OBJECTS:%.c=$(OBJDIR)/%.o)
+OBJECTS := $(OBJECTS:%.cu=$(OBJDIR)/%.o)
+
+TARGET = $(BINDIR)/aeros-engine-linux-$(ARCH)
+TARGET_VULKAN = $(BINDIR)/aeros-engine-vulkan-$(ARCH)
+TARGET_OPENGL = $(BINDIR)/aeros-engine-opengl-$(ARCH)
+
+# Цели
+all: check-deps $(TARGET)
+	@echo "[Linux] Build complete: $(TARGET)"
+	@echo "[Linux] Version: $(VERSION) Arch: $(ARCH) Vulkan: $(VULKAN_ENABLED) CUDA: $(CUDA_AVAILABLE)"
+
+$(TARGET): $(OBJECTS) | $(BINDIR)
+	@echo "[LD] $@"
+	@$(CXX) $(OBJECTS) -o $@ $(LDFLAGS) $(GLFW_LIBS) $(GL_LIBS) $(VULKAN_LIBS) $(CUDA_LIBS)
+	@chmod +x $@
+	@ln -sf $(notdir $@) $(BINDIR)/aeros-engine 2>/dev/null || true
+	@echo "[Linux] Binary: $@"
+
+$(OBJDIR)/%.o: %.cpp | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	@echo "[CXX] $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.c | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	@echo "[CC] $<"
+	@$(CC) $(CXXFLAGS) -c $< -o $@
+
+$(OBJDIR)/kernel.o: $(SRCDIR)/kernel.cu | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	@echo "[NVCC] $<"
+	@$(NVCC) $(NVCC_FLAGS) -c $< -o $@
+
+$(BINDIR) $(OBJDIR):
+	@mkdir -p $@
+
+check-deps:
+	@echo "[Deps] Checking dependencies..."
+	@if [ ! -f $(LIBDIR)/glad/include/glad/glad.h ]; then echo "[Deps] GLAD missing, downloading..."; $(MAKE) -f Makefile.linux download-deps; fi
+	@if [ ! -f $(LIBDIR)/glm/glm/glm.hpp ]; then echo "[Deps] GLM missing, downloading..."; $(MAKE) -f Makefile.linux download-deps; fi
+	@if [ ! -f $(LIBDIR)/glfw/include/GLFW/glfw3.h ]; then echo "[Deps] GLFW header missing, trying system..."; fi
+	@which pkg-config >/dev/null || echo "[Deps] WARNING: pkg-config not found"
+	@pkg-config --exists glfw3 && echo "[Deps] glfw3: OK (system)" || echo "[Deps] glfw3: using bundled"
+	@if [ "$(VULKAN_ENABLED)" = "1" ]; then echo "[Deps] Vulkan: OK"; else echo "[Deps] Vulkan: not found (will build OpenGL only) — install libvulkan-dev"; fi
+	@if [ "$(CUDA_AVAILABLE)" = "yes" ]; then echo "[Deps] CUDA: OK"; else echo "[Deps] CUDA: not found (CPU fallback)"; fi
+
+download-deps:
+	@echo "[Deps] Downloading dependencies..."
+	@mkdir -p $(LIBDIR)
+	@if [ ! -d $(LIBDIR)/glm/glm ]; then \
+		echo "[Deps] Downloading GLM..."; \
+		cd /tmp && rm -rf glm && git clone --depth 1 https://github.com/g-truc/glm.git && cp -r glm/glm $(LIBDIR)/glm/ 2>/dev/null || mkdir -p $(LIBDIR)/glm && cp -r /tmp/glm/glm $(LIBDIR)/glm/; \
+	fi
+	@if [ ! -f $(LIBDIR)/glad/include/glad/glad.h ]; then \
+		echo "[Deps] Downloading GLAD..."; \
+		mkdir -p $(LIBDIR)/glad/include/glad $(LIBDIR)/glad/src; \
+		curl -sL https://raw.githubusercontent.com/Dav1dde/glad/master/include/glad/glad.h -o $(LIBDIR)/glad/include/glad/glad.h || wget -q https://raw.githubusercontent.com/Dav1dde/glad/master/include/glad/glad.h -O $(LIBDIR)/glad/include/glad/glad.h; \
+		curl -sL https://raw.githubusercontent.com/Dav1dde/glad/master/src/glad.c -o $(LIBDIR)/glad/src/glad.c || wget -q https://raw.githubusercontent.com/Dav1dde/glad/master/src/glad.c -O $(LIBDIR)/glad/src/glad.c; \
+		mkdir -p $(LIBDIR)/glad/include/KHR && curl -sL https://raw.githubusercontent.com/Dav1dde/glad/master/include/KHR/khrplatform.h -o $(LIBDIR)/glad/include/KHR/khrplatform.h || true; \
+	fi
+	@if [ ! -f $(LIBDIR)/glfw/include/GLFW/glfw3.h ]; then \
+		echo "[Deps] GLFW header missing — please install libglfw3-dev or download"; \
+		echo "  sudo apt install libglfw3-dev"; \
+	fi
+	@echo "[Deps] Done"
+
+install-deps:
+	@echo "[Install Deps] Installing system dependencies..."
+	@if which apt-get >/dev/null 2>&1; then \
+		echo "[apt] Installing..."; \
+		sudo apt-get update && sudo apt-get install -y \
+			build-essential cmake pkg-config \
+			libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev \
+			libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+			libvulkan-dev vulkan-tools glslc \
+			zenity kdialog \
+			libopenmp-dev; \
+	elif which dnf >/dev/null 2>&1; then \
+		sudo dnf install -y gcc-c++ cmake pkgconfig glfw-devel mesa-libGL-devel libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel vulkan-devel vulkan-tools glslc zenity kdialog libomp-devel; \
+	elif which pacman >/dev/null 2>&1; then \
+		sudo pacman -S --noconfirm base-devel cmake pkgconf glfw mesa libx11 libxrandr libxinerama libxcursor libxi vulkan-headers vulkan-tools shaderc zenity kdialog openmp; \
+	elif which zypper >/dev/null 2>&1; then \
+		sudo zypper install -y gcc-c++ cmake pkg-config glfw-devel Mesa-libGL-devel libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel vulkan-devel vulkan-tools glslc zenity kdialog libomp-devel; \
+	else \
+		echo "[Install Deps] Unknown package manager, please install manually:"; \
+		echo "  build-essential, cmake, libglfw3-dev, libGL, X11, vulkan, zenity"; \
+	fi
+	@$(MAKE) -f Makefile.linux download-deps
+
+vulkan:
+	@echo "[Vulkan] Building Vulkan-only version..."
+	@$(MAKE) -f Makefile.linux CXXFLAGS="$(CXXFLAGS) -DFORCE_VULKAN" TARGET=$(TARGET_VULKAN)
+
+opengl:
+	@echo "[OpenGL] Building OpenGL-only version..."
+	@$(MAKE) -f Makefile.linux CXXFLAGS="$(CXXFLAGS) -DFORCE_OPENGL" TARGET=$(TARGET_OPENGL)
+
+clean:
+	@echo "[Clean] Removing build artifacts..."
+	@rm -rf $(OBJDIR) $(BINDIR)/aeros-engine-linux-* $(BINDIR)/aeros-engine-vulkan-* $(BINDIR)/aeros-engine-opengl-* $(BINDIR)/aeros-engine
+	@echo "[Clean] Done"
+
+install: all
+	@echo "[Install] Installing to /usr/local/bin..."
+	@sudo cp $(TARGET) /usr/local/bin/aeros-engine
+	@sudo chmod +x /usr/local/bin/aeros-engine
+	@echo "[Install] Installed to /usr/local/bin/aeros-engine"
+	@echo "[Install] You can now run: aeros-engine"
+
+uninstall:
+	@sudo rm -f /usr/local/bin/aeros-engine
+	@echo "[Uninstall] Removed"
+
+package:
+	@echo "[Package] Creating tar.gz..."
+	@mkdir -p $(BINDIR)/package
+	@cp $(TARGET) $(BINDIR)/package/
+	@cp -r ../README.md ../LICENSE $(BINDIR)/package/ 2>/dev/null || true
+	@cp -r ../models $(BINDIR)/package/ 2>/dev/null || true
+	@tar -czf $(BINDIR)/aeros-engine-$(VERSION)-linux-$(ARCH).tar.gz -C $(BINDIR)/package .
+	@echo "[Package] Created $(BINDIR)/aeros-engine-$(VERSION)-linux-$(ARCH).tar.gz"
+
+help:
+	@echo "Aeros Engine Linux Makefile v1.19.0"
+	@echo "Targets:"
+	@echo "  all          — build (auto-detect Vulkan/CUDA)"
+	@echo "  vulkan       — build Vulkan-only"
+	@echo "  opengl       — build OpenGL-only"
+	@echo "  check-deps   — check dependencies"
+	@echo "  download-deps — download bundled deps (GLM, GLAD)"
+	@echo "  install-deps — install system deps via apt/dnf/pacman/zypper"
+	@echo "  clean        — clean build"
+	@echo "  install      — install to /usr/local/bin"
+	@echo "  uninstall    — uninstall"
+	@echo "  package      — create tar.gz"
+	@echo "  help         — this help"
+
+.PHONY: all check-deps download-deps install-deps vulkan opengl clean install uninstall package help

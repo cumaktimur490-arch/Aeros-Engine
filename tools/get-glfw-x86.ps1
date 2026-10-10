@@ -1,4 +1,4 @@
-# Скачивает GLFW 32-bit бинарники для сборки x86 версии
+﻿# Скачивает GLFW 32-bit бинарники для сборки x86 версии
 # Использование: .\get-glfw-x86.ps1
 
 $ErrorActionPreference = "Stop"
@@ -41,7 +41,6 @@ Write-Host "[OK] Copied $($srcLib.FullName) -> $destDir" -ForegroundColor Green
 
 if ($srcDll) {
     Copy-Item $srcDll.FullName -Destination (Join-Path $destDir "glfw3.dll") -Force
-    # Копию в bin — под арх-суффиксом, чтобы не затирать x64 glfw3.dll
     $binDll = Join-Path $RootDir "aeros\bin\glfw3-x86.dll"
     Copy-Item $srcDll.FullName -Destination $binDll -Force
     Write-Host "[OK] Copied DLL $($srcDll.FullName) (+ $binDll)" -ForegroundColor Green
