@@ -140,6 +140,7 @@ if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\interesting.cpp /Fo:bin\interesting.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\vulkan_renderer.cpp /Fo:bin\vulkan_renderer.obj
+if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\lite_config.cpp /Fo:bin\lite_config.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\cuda_stub.cpp /Fo:bin\cuda_stub.obj
