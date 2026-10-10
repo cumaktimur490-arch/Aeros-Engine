@@ -27,15 +27,11 @@
 #include <sys/system_properties.h>
 #endif
 
-// Глобальные
-bool g_autoQualityScaling = true;
-bool g_batterySaver = true;
-float g_currentFPSAverage = 30.0f;
+// Глобальные (g_autoQualityScaling, g_batterySaver, g_currentFPSAverage,
+// g_isSD662Device, g_isAdreno610, g_is90Hz определены в globals.cpp —
+// здесь только уникальные для lite_config)
 LiteQualityPreset g_currentPreset = LiteQualityPreset::Low;
 static bool g_isUltraLite = false;
-bool g_isSD662Device = false;
-bool g_isAdreno610 = false;
-bool g_is90Hz = false;
 
 bool isLiteMode() {
 #ifdef AEROS_LITE
