@@ -107,8 +107,6 @@ try {
         if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x64") { Build-Installer "AerosEngine-x64.iss" }
         if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x86") { Build-Installer "AerosEngine-x86.iss" }
         if ($Arch -eq "all" -or $Arch -eq "arm64") { Build-Installer "AerosEngine-arm64.iss" }
-        # Lite — для слабых устройств i3-3xxx / HD 4000
-        if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x64") { Build-Installer "AerosEngine-Lite-x64.iss" }
     }
     if ($Type -eq "update" -or $Type -eq "all") {
         if ($Arch -eq "both" -or $Arch -eq "all" -or $Arch -eq "x64") { Build-Installer "AerosEngine-Updater-x64.iss" }
