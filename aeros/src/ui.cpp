@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "globals.h"
+#include "vulkan_renderer.h"
 #include "stl_loader.h"
 #include "model.h"
 #include "particles.h"

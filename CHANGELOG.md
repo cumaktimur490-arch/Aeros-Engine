@@ -18,8 +18,13 @@
   GPU бэкенд автоматически CPU.
 - CI (.github/workflows/pc-release.yml): сборка по тегу vX.Y.Z и автопубликация
   GitHub Release; версии — из aeros/src/version.h и VERSION.
-- Фикс v1.22.1: в forces.cpp (шлирен) вызов computeVelocityFieldCPU был без
-  параметра потока — сборка не компилировалась; добавлен `flowParams`.
+- Фиксы v1.22.1 (Windows-сборка не компилировалась у апстрима):
+  - forces.cpp (шлирен): вызов computeVelocityFieldCPU без FlowParams;
+  - ui.cpp: не был подключён vulkan_renderer.h (getRendererName/isVulkanAvailable);
+  - lite_config.h: в обычной (не Lite) сборке отсутствовали LITE_*-макросы,
+    нужные lite_config.cpp и benchmark.cpp;
+  - build-cpu.bat: добавлен lite_config.cpp (applyLiteDefaults вызывается
+    безусловно из main/ui, иначе не линкуется).
 - Фиксы конвейера: vcvars целевой архитектуры вызывается всегда (cross-сборки в CI
   иначе подхватывали чужой cl.exe); портативные пакеты несут glfw3.dll только своей
   архитектуры.
