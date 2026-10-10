@@ -21,6 +21,7 @@
 - Фиксы v1.22.1 (Windows-сборка не компилировалась у апстрима):
   - forces.cpp (шлирен): вызов computeVelocityFieldCPU без FlowParams;
   - ui.cpp: не был подключён vulkan_renderer.h (getRendererName/isVulkanAvailable);
+  - vulkan_renderer.cpp: GetSaveFileNameA без <commdlg.h> (Windows);
   - lite_config.h: в обычной (не Lite) сборке отсутствовали LITE_*-макросы,
     нужные lite_config.cpp и benchmark.cpp;
   - build-cpu.bat: добавлен lite_config.cpp (applyLiteDefaults вызывается
