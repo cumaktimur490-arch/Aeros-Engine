@@ -1,0 +1,15 @@
+#!/bin/bash
+# Gradle wrapper stub — for environments without gradle wrapper jar
+# In real Android Studio project, gradlew is generated via gradle wrapper task
+# This stub tries to use system gradle or downloads it
+
+if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+    exec java -jar gradle/wrapper/gradle-wrapper.jar "$@"
+elif command -v gradle >/dev/null 2>&1; then
+    exec gradle "$@"
+else
+    echo "[ERROR] Gradle not found and no wrapper jar"
+    echo "Install gradle or run: gradle wrapper"
+    echo "Or use Android Studio"
+    exit 1
+fi

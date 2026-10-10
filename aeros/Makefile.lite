@@ -1,0 +1,135 @@
+# Aeros Engine — Lite Makefile v1.20.0
+# Для слабых устройств: i3-3xxx (Ivy Bridge, нет AVX2), Intel HD 4000, GT 620M, 4GB RAM, без CUDA
+# Использование:
+#   make -f Makefile.lite
+#   make -f Makefile.lite clean
+#   make -f Makefile.lite install-deps
+#   make -f Makefile.lite package
+
+CXX ?= g++
+CC ?= gcc
+
+VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo "1.20.0")
+ARCH ?= $(shell uname -m)
+
+LIBDIR = ../libs
+SRCDIR = src
+BINDIR = bin
+OBJDIR = obj-lite
+
+# Lite флаги — SSE2 только, O1, без AVX2, без CUDA, без Vulkan по умолчанию
+CXXFLAGS = -std=c++17 -O1 -msse2 -mfpmath=sse -fPIC -fopenmp
+CXXFLAGS += -I$(LIBDIR)/glad/include -I$(LIBDIR)/glfw/include -I$(LIBDIR)/glm -I$(SRCDIR) -I$(SRCDIR)/imgui
+CXXFLAGS += -DAEROS_LITE -DCPU_ONLY -DLITE_MODE -DVERSION=\"$(VERSION) Lite\" -DLINUX -DGLFW_INCLUDE_NONE
+CXXFLAGS += $(shell pkg-config --cflags glfw3 2>/dev/null || echo "")
+
+LDFLAGS = -fopenmp -ldl -lpthread -lGL -lX11 -lXrandr -lXinerama -lXcursor -lXi
+GLFW_LIBS = $(shell pkg-config --libs glfw3 2>/dev/null || echo "-lglfw")
+
+SOURCES = \
+    $(SRCDIR)/main.cpp \
+    $(SRCDIR)/globals.cpp \
+    $(SRCDIR)/input.cpp \
+    $(SRCDIR)/gl_utils.cpp \
+    $(SRCDIR)/stl_loader.cpp \
+    $(SRCDIR)/voxel_grid.cpp \
+    $(SRCDIR)/flow_field.cpp \
+    $(SRCDIR)/particles.cpp \
+    $(SRCDIR)/streamlines.cpp \
+    $(SRCDIR)/forces.cpp \
+    $(SRCDIR)/model.cpp \
+    $(SRCDIR)/ui.cpp \
+    $(SRCDIR)/atmosphere.cpp \
+    $(SRCDIR)/test_mode.cpp \
+    $(SRCDIR)/lbm.cpp \
+    $(SRCDIR)/lang.cpp \
+    $(SRCDIR)/fsr.cpp \
+    $(SRCDIR)/framegen.cpp \
+    $(SRCDIR)/interesting.cpp \
+    $(SRCDIR)/vulkan_renderer.cpp \
+    $(SRCDIR)/lite_config.cpp \
+    $(SRCDIR)/benchmark.cpp \
+    $(SRCDIR)/cuda_stub.cpp \
+    $(SRCDIR)/glad.c \
+    $(SRCDIR)/imgui/imgui.cpp \
+    $(SRCDIR)/imgui/imgui_draw.cpp \
+    $(SRCDIR)/imgui/imgui_tables.cpp \
+    $(SRCDIR)/imgui/imgui_widgets.cpp \
+    $(SRCDIR)/imgui/imgui_impl_glfw.cpp \
+    $(SRCDIR)/imgui/imgui_impl_opengl3.cpp
+
+OBJECTS = $(SOURCES:%.cpp=$(OBJDIR)/%.o)
+OBJECTS := $(OBJECTS:%.c=$(OBJDIR)/%.o)
+
+TARGET = $(BINDIR)/aeros-engine-lite-linux-$(ARCH)
+
+all: check-deps $(TARGET)
+	@echo "[Lite] Build complete: $(TARGET)"
+	@echo "[Lite] Version: $(VERSION) Arch: $(ARCH) — i3-3xxx / HD 4000 / 4GB RAM / No CUDA / SSE2 / O1 / 30 FPS"
+	@ls -lh $(TARGET)
+
+$(TARGET): $(OBJECTS) | $(BINDIR)
+	@echo "[LD Lite] $@"
+	@$(CXX) $(OBJECTS) -o $@ $(LDFLAGS) $(GLFW_LIBS)
+	@chmod +x $@
+	@ln -sf $(notdir $@) $(BINDIR)/aeros-engine-lite 2>/dev/null || true
+	@ln -sf $(notdir $@) $(BINDIR)/main-lite 2>/dev/null || true
+
+$(OBJDIR)/%.o: %.cpp | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	@echo "[CXX Lite] $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.c | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	@echo "[CC Lite] $<"
+	@$(CC) $(CXXFLAGS) -c $< -o $@
+
+$(BINDIR) $(OBJDIR):
+	@mkdir -p $@
+
+check-deps:
+	@echo "[Lite Deps] Checking for weak devices build..."
+	@if [ ! -f $(LIBDIR)/glm/glm/glm.hpp ]; then echo "[Lite Deps] GLM missing — run make -f Makefile.lite download-deps"; fi
+	@if [ ! -f $(LIBDIR)/glad/include/glad/glad.h ]; then echo "[Lite Deps] GLAD missing"; fi
+	@echo "[Lite Deps] Lite needs only: g++, libglfw3-dev, libGL, X11, openmp — no Vulkan, no CUDA"
+	@echo "[Lite Deps] For i3-3xxx: SSE2 only, no AVX2, O1, low RAM"
+
+download-deps:
+	@echo "[Lite Deps] Downloading..."
+	@mkdir -p $(LIBDIR)
+	@if [ ! -f $(LIBDIR)/glm/glm/glm.hpp ]; then \
+		echo "[Lite Deps] Downloading GLM..."; \
+		cd /tmp && rm -rf glm && git clone --depth 1 https://github.com/g-truc/glm.git && cp -r glm/glm $(LIBDIR)/glm/ 2>/dev/null || mkdir -p $(LIBDIR)/glm && cp -r /tmp/glm/glm $(LIBDIR)/glm/; \
+	fi
+
+install-deps:
+	@echo "[Lite Install Deps] Minimal deps (no Vulkan, no CUDA) for weak laptops..."
+	@if which apt-get >/dev/null 2>&1; then \
+		sudo apt-get update && sudo apt-get install -y build-essential pkg-config libglfw3-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libopenmp-dev zenity git curl wget; \
+	elif which dnf >/dev/null 2>&1; then \
+		sudo dnf install -y gcc-c++ pkgconfig glfw-devel mesa-libGL-devel libX11-devel libomp-devel git curl wget zenity; \
+	elif which pacman >/dev/null 2>&1; then \
+		sudo pacman -S --noconfirm base-devel pkgconf glfw mesa libx11 openmp git curl wget zenity; \
+	fi
+
+clean:
+	@echo "[Lite Clean] Removing..."
+	@rm -rf $(OBJDIR) $(BINDIR)/aeros-engine-lite* $(BINDIR)/main-lite*
+	@echo "[Lite Clean] Done"
+
+package:
+	@echo "[Lite Package] Creating tar.gz..."
+	@mkdir -p $(BINDIR)/package-lite
+	@cp $(TARGET) $(BINDIR)/package-lite/ 2>/dev/null || true
+	@cp ../README.md ../LICENSE $(BINDIR)/package-lite/ 2>/dev/null || true
+	@tar -czf $(BINDIR)/aeros-engine-lite-$(VERSION)-linux-$(ARCH).tar.gz -C $(BINDIR)/package-lite .
+	@echo "[Lite Package] Created $(BINDIR)/aeros-engine-lite-$(VERSION)-linux-$(ARCH).tar.gz"
+	@ls -lh $(BINDIR)/aeros-engine-lite*.tar.gz
+
+help:
+	@echo "Aeros Engine Lite Makefile v1.20.0 — for weak devices i3-3xxx / HD 4000 / 4GB RAM"
+	@echo "Targets: all, check-deps, download-deps, install-deps, clean, package, help"
+	@echo "Optimizations: SSE2 only (no AVX2), O1, no CUDA, no Vulkan by default, low particles 1500, voxel 24, LBM OFF, 30 FPS, small binary"
+
+.PHONY: all check-deps download-deps install-deps clean package help

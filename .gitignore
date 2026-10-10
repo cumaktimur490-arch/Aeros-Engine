@@ -15,3 +15,5 @@ imgui.ini
 
 # IDE
 .vs/
+release/
+dist/

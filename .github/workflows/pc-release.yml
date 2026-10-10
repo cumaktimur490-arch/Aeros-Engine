@@ -1,0 +1,250 @@
+# PC-релиз AeroS Engine: как в прежних PC-версиях — установщики, апдейтеры
+# и портативные zip для x64 / x86 / arm64 + SHA256SUMS.
+# x64 собирается с CUDA (fallback — CPU), x86 и arm64 — CPU-сборки.
+# Версия читается из aeros/src/version.h и сверяется с тегом vX.Y.Z.
+name: PC Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  pc-release:
+    name: Windows x64/x86/arm64 (MSVC + CUDA + Inno)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version from aeros/src/version.h
+        id: ver
+        shell: pwsh
+        run: |
+          $h = Get-Content aeros/src/version.h -Raw
+          if ($h -notmatch '#define AEROS_VERSION_STRING "([^"]+)"') { throw "AEROS_VERSION_STRING not found in aeros/src/version.h" }
+          $v = $Matches[1]
+          Write-Host "AEROS_VERSION = $v"
+          "version=$v" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Tag must match AEROS_VERSION
+        shell: pwsh
+        run: |
+          $ref = "$env:GITHUB_REF"
+          if ($ref -like 'refs/tags/*') {
+            $tag = $ref -replace '^refs/tags/',''
+            $want = "v${{ steps.ver.outputs.version }}"
+            if ($tag -ne $want) { throw "Tag '$tag' does not match AEROS_VERSION (expected '$want')" }
+            Write-Host "Tag OK: $tag"
+          }
+
+      - name: Setup MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.2.0'
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed" }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          "ISCC=$iscc" | Out-File -Append $env:GITHUB_ENV
+          Write-Host "ISCC: $iscc"
+
+      - name: GLFW for x86 (prebuilt)
+        shell: pwsh
+        run: .\tools\get-glfw-x86.ps1
+
+      - name: GLFW for arm64 (from source)
+        shell: pwsh
+        run: .\tools\build-glfw-arm64.ps1 -Arch arm64
+
+      - name: Build x64 (CUDA, fallback CPU)
+        shell: pwsh
+        run: |
+          $out = cmd /c "cd aeros && call build.bat x64" 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path aeros\bin\main-x64.exe)) {
+            Write-Host "[ci] CUDA build failed or no exe - CPU fallback"
+            $out2 = cmd /c "cd aeros && call build-cpu.bat x64" 2>&1 | Out-String
+            Write-Host $out2
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path aeros\bin\main-x64.exe)) {
+              $tail = (($out + $out2) -split "`r?`n") | Select-Object -Last 30
+              Write-Host ("::error::tail x64 build%0A" + ($tail -join "%0A"))
+              throw "x64 build failed"
+            }
+          }
+          Get-ChildItem aeros\bin\main*.exe | Format-Table Name, Length
+
+      - name: Setup MSVC x86
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Build x86 (CPU)
+        shell: pwsh
+        run: |
+          cl 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "CLBANNER: $_" }
+          $out = cmd /c "cd aeros && call build-cpu.bat x86" 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            $tail = ($out -split "`r?`n") | Select-Object -Last 40
+            Write-Host ("::error::tail of build-cpu.bat x86%0A" + ($tail -join "%0A"))
+            throw "build-cpu.bat x86 failed"
+          }
+
+      - name: Setup MSVC arm64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Build arm64 (CPU)
+        shell: pwsh
+        run: |
+          cl 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "CLBANNER: $_" }
+          $out = cmd /c "cd aeros && call build-cpu.bat arm64" 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            $tail = ($out -split "`r?`n") | Select-Object -Last 40
+            Write-Host ("::error::tail of build-cpu.bat arm64%0A" + ($tail -join "%0A"))
+            throw "build-cpu.bat arm64 failed"
+          }
+
+      - name: Build portable zips
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          .\installer\build-portable.ps1 -Version $v -Arch all -OutputDir release
+          Get-ChildItem release | Format-Table Name, Length
+          $missing = @("x64","x86","arm64") | Where-Object { -not (Test-Path "release\Aeros-Engine-Portable-$_-v$v.zip") }
+          if ($missing) { throw "portable zips missing: $($missing -join ', ')" }
+          Write-Host "[ci] all 3 portable zips present"
+
+      - name: Build installers and updaters (iscc)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $out = .\installer\build-installers.ps1 -Version $v -Arch all -Type all -ISCCPath "$env:ISCC" 2>&1 | Out-String
+          Write-Host $out
+          # Успех = все 6 установщиков на месте (Write-Host скрипта не попадает в $out)
+          $missing = @()
+          foreach ($a in @("x64","x86","arm64")) {
+            foreach ($t in @("Setup","Update")) {
+              $f = "release\Aeros-Engine-$t-$a-v$v.exe"
+              if (-not (Test-Path $f)) { $missing += $f }
+            }
+          }
+          if ($LASTEXITCODE -or $missing.Count -gt 0) {
+            $tail = ($out -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -Last 10
+            foreach ($line in $tail) { Write-Host "::error::$line" }
+            throw "build-installers.ps1 failed (exit=$LASTEXITCODE, missing: $($missing -join ', '))"
+          }
+          Write-Host "[ci] all 6 installers present"
+          Get-ChildItem release | Format-Table Name, Length
+
+      - name: Checksums and release README
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          Push-Location release
+          if (Test-Path SHA256SUMS.txt) { Remove-Item SHA256SUMS.txt -Force }
+          Get-ChildItem -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)" | Out-File -Append SHA256SUMS.txt -Encoding ascii
+          }
+          @"
+          AeroS Engine v$v — PC-релиз (Windows)
+
+          Установщики (рекомендуется):
+            Aeros-Engine-Setup-x64-v$v.exe    — 64-bit Windows 10/11 (Intel/AMD)
+            Aeros-Engine-Setup-x86-v$v.exe    — 32-bit Windows 10/11
+            Aeros-Engine-Setup-arm64-v$v.exe  — ARM64 Windows 10/11 (Snapdragon и т.п.)
+
+          Обновления (если программа уже установлена):
+            Aeros-Engine-Update-<arch>-v$v.exe — обновляет файлы в папке установки.
+
+          Портативные версии (без установки):
+            Aeros-Engine-Portable-<arch>-v$v.zip — распакуйте и запустите AerosEngine.exe / run.bat.
+
+          Запуск: после старта в диалоге выберите STL-модель (примеры — в папке models).
+          Управление: WASD — камера, Space/Shift — вверх/вниз, Ctrl — ускорение,
+          средняя кнопка мыши — вращение, колесо — зум, Esc — выход.
+
+          CUDA-ускорение работает на NVIDIA GPU (Turing и новее); без NVIDIA GPU
+          автоматически включается CPU-бэкенд. Контрольные суммы — в SHA256SUMS.txt.
+          "@ | Set-Content README.md -Encoding utf8
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          @"
+          # AeroS Engine v$v — PC-релиз (Windows x64 / x86 / arm64)
+
+          Движок визуализации обтекания 3D-моделей (C++17 / OpenGL 3.3 / CUDA / Dear ImGui).
+
+          ## 📦 Скачать
+          **Установщики (рекомендуется):**
+          - ``Aeros-Engine-Setup-x64-v$v.exe`` — 64-bit Windows 10/11 (Intel/AMD)
+          - ``Aeros-Engine-Setup-x86-v$v.exe`` — 32-bit Windows 10/11
+          - ``Aeros-Engine-Setup-arm64-v$v.exe`` — ARM64 Windows 10/11 (Snapdragon, Surface Pro X)
+
+          **Портативные версии (без установки):**
+          - ``Aeros-Engine-Portable-x64-v$v.zip`` / ``-x86`` / ``-arm64``
+
+          **Обновления (для уже установленной программы):**
+          - ``Aeros-Engine-Update-x64-v$v.exe`` / ``-x86`` / ``-arm64`` — обновляют файлы в папке установки.
+
+          ``SHA256SUMS.txt`` — контрольные суммы всех артефактов.
+
+          ## Установка и запуск
+          1. Скачайте установщик под вашу архитектуру (x64 — для большинства ПК) и запустите.
+          2. После установки — ярлыки в меню «Пуск» и на рабочем столе (опционально).
+          3. При старте выберите STL-модель; примеры — в папке ``models``.
+
+          Управление: WASD — полёт камеры, Space/Shift — вверх/вниз, Ctrl — ускорение, средняя кнопка мыши — вращение, колесо — зум, Esc — выход.
+
+          ## Что нового в v$v
+          - Автоопределение CUDA: на ПК без NVIDIA GPU движок сам переключается на CPU-бэкенд; в панели Compute — имя GPU или сообщение о фолбэке.
+          - Полный набор PC-артефактов, как в прежних PC-версиях: Setup / Update / Portable для x64, x86 и arm64.
+          - Установщики на русском и английском, ярлыки, деинсталлятор; exe с иконкой и сведениями о версии.
+          - Релизная сборка x64: оптимизации (/O2), GPU-архитектуры sm_75/sm_86/sm_89/sm_120 + PTX, CUDA runtime статически — CUDA-дистрибутив для запуска не нужен.
+
+          ## Требования
+          - Windows 10/11, OpenGL 3.3; Visual C++ Redistributable 2022 (обычно уже стоит).
+          - CUDA-бэкенд — NVIDIA GPU (Turing и новее); иначе автоматически CPU-бэкенд.
+
+          ## Сборка из исходников
+          VS 2022 + CUDA Toolkit: ``aeros\build-release.bat`` (x64+CUDA), ``aeros\build-cpu.bat [x64|x86|arm64]`` (CPU);
+          установщики: ``installer\build-installers.ps1``, портативные: ``installer\build-portable.ps1`` (Inno Setup 6).
+          "@ | Set-Content -Encoding utf8 RELEASE_NOTES.md
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $files = (Get-ChildItem release -File).FullName
+          Write-Host "Assets:"; $files | ForEach-Object { Write-Host "  $_" }
+          $title = "AeroS Engine v$v — PC-релиз (Windows x64/x86/arm64: установщики, апдейтеры, портативные)"
+          $exists = gh release view "v$v" --json tagName --jq .tagName 2>$null
+          if ($LASTEXITCODE -eq 0 -and $exists) {
+            Write-Host "Release v$v существует — обновляем ассеты"
+            gh release upload "v$v" $files --clobber
+            gh release edit "v$v" --title $title --notes-file RELEASE_NOTES.md
+          } else {
+            gh release create "v$v" $files --title $title --notes-file RELEASE_NOTES.md
+          }
