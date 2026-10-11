@@ -85,9 +85,17 @@ jobs:
               throw "x64 build failed"
             }
           }
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
           $cudart = Get-ChildItem "$env:CUDA_PATH\bin\cudart64*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($cudart) { Copy-Item $cudart.FullName aeros\bin\ -Force; Write-Host "[ci] bundled $($cudart.Name)" }
           Get-ChildItem aeros\bin\main*.exe | Format-Table Name, Length
+          $mach = PE-Machine "aeros\bin\main-x64.exe"
+          Write-Host "[ci] PE machine main-x64.exe = $mach (8664 = x64)"
+          if ($mach -ne "8664") { throw "main-x64.exe has wrong PE machine $mach (expected 8664)" }
 
       - name: Setup MSVC x86
         uses: ilammy/msvc-dev-cmd@v1
@@ -98,8 +106,16 @@ jobs:
         shell: pwsh
         run: |
           cl 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "CLBANNER: $_" }
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
           $out = cmd /c "cd aeros && call build-cpu.bat x86" 2>&1 | Out-String
           Write-Host $out
+          $mach = PE-Machine "aeros\bin\main-x86.exe"
+          Write-Host "[ci] PE machine main-x86.exe = $mach (014C = x86)"
+          if ($mach -ne "014C") { throw "main-x86.exe has wrong PE machine $mach (expected 014C)" }
           if ($LASTEXITCODE -ne 0) {
             $tail = ($out -split "`r?`n") | Select-Object -Last 40
             Write-Host ("::error::tail of build-cpu.bat x86%0A" + ($tail -join "%0A"))
@@ -117,6 +133,14 @@ jobs:
           cl 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "CLBANNER: $_" }
           $out = cmd /c "cd aeros && call build-cpu.bat arm64" 2>&1 | Out-String
           Write-Host $out
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $mach = PE-Machine "aeros\bin\main-arm64.exe"
+          Write-Host "[ci] PE machine main-arm64.exe = $mach (AA64 = arm64)"
+          if ($mach -ne "AA64") { throw "main-arm64.exe has wrong PE machine $mach (expected AA64)" }
           if ($LASTEXITCODE -ne 0) {
             $tail = ($out -split "`r?`n") | Select-Object -Last 40
             Write-Host ("::error::tail of build-cpu.bat arm64%0A" + ($tail -join "%0A"))
