@@ -239,14 +239,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          $files = (Get-ChildItem release -File).FullName
-          Write-Host "Assets:"; $files | ForEach-Object { Write-Host "  $_" }
+          # Порядок загрузки = порядок в списке ассетов: x64 первыми (самые частые),
+          # чтобы arm64/x86 не скачивали по ошибке
+          $order = @("Setup-x64","Update-x64","Portable-x64","Setup-x86","Update-x86","Portable-x86","Setup-arm64","Update-arm64","Portable-arm64","SHA256SUMS.txt","README.md")
+          $files = @()
+          foreach ($pat in $order) {
+            $f = Get-ChildItem release -File | Where-Object { $_.Name -like "*$pat*" } | Select-Object -First 1
+            if ($f) { $files += $f.FullName }
+          }
+          Write-Host "Assets (по порядку):"; $files | ForEach-Object { Write-Host "  $_" }
           $title = "AeroS Engine v$v — PC-релиз (Windows x64/x86/arm64: установщики, апдейтеры, портативные)"
           $exists = gh release view "v$v" --json tagName --jq .tagName 2>$null
           if ($LASTEXITCODE -eq 0 -and $exists) {
-            Write-Host "Release v$v существует — обновляем ассеты"
-            gh release upload "v$v" $files --clobber
-            gh release edit "v$v" --title $title --notes-file RELEASE_NOTES.md
+            # пересоздаём, чтобы порядок ассетов обновился (clobber порядок не меняет)
+            Write-Host "Release v$v существует — пересоздаём с новым порядком ассетов"
+            gh release delete "v$v" --yes
+            gh release create "v$v" $files --title $title --notes-file RELEASE_NOTES.md
           } else {
             gh release create "v$v" $files --title $title --notes-file RELEASE_NOTES.md
           }
