@@ -37,17 +37,19 @@ echo [Aeros CPU] Building for !OUT_ARCH! ...
 
 taskkill /IM main.exe /F 2>nul
 
-rem --- vcvars целевой архитектуры — всегда (см. комментарий в build.bat) ---
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-set "VCVARS_PATH="
-if exist "!VSWHERE!" (
-    for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -property installationPath`) do (
-        if exist "%%i\VC\Auxiliary\Build\!VCVARS!" set "VCVARS_PATH=%%i\VC\Auxiliary\Build\!VCVARS!"
+rem vcvars целевой архитектуры — всегда (иначе в CI подхватывается чужой cl.exe)
+if 1==1 (
+    set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    set "VCVARS_PATH="
+    if exist "!VSWHERE!" (
+        for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -property installationPath`) do (
+            if exist "%%i\VC\Auxiliary\Build\!VCVARS!" set "VCVARS_PATH=%%i\VC\Auxiliary\Build\!VCVARS!"
+        )
     )
-)
-if defined VCVARS_PATH (
-    echo [Aeros CPU] Using VC: !VCVARS_PATH!
-    call "!VCVARS_PATH!"
+    if defined VCVARS_PATH (
+        echo [Aeros CPU] Using VC: !VCVARS_PATH!
+        call "!VCVARS_PATH!"
+    )
 )
 
 where cl.exe >nul 2>&1

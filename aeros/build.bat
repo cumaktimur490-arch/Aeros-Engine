@@ -62,9 +62,7 @@ if !errorlevel! neq 0 (
     echo [WARN] Dependency download had issues, continuing...
 )
 
-rem --- Всегда инициализируем vcvars целевой архитектуры: при сборке нескольких
-rem архитектур в одном CI-джобе иначе берётся чужой cl.exe из PATH ---
-
+rem --- vcvars целевой архитектуры вызывается всегда (в CI cl.exe в PATH может быть чужой архитектуры) ---
 rem --- Поиск vcvars через vswhere ---
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VCVARS_PATH="

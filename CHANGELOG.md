@@ -5,30 +5,26 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [1.24.0] - 2026-10-10
+## [1.24.0] - 2026-10-11
 
-### PC-релиз на основе последних PC-обновлений (кодовая база v1.22.1)
-- Релиз собран на основе дерева последнего PC-обновления (v1.22.1): LBM, FSR,
-  атмосфера, шлирен/дым/скачки/вихри, Vulkan-наработки v1.19, test mode,
-  локализация, иконки, авто-загрузка зависимостей — всё, что было в последних
-  PC-версиях, а не в урезанном снапшоте репозитория.
+### PC-релиз на основе обновления v1.20.1
+- Релиз собран на основе дерева PC-релиза v1.20.1 (LBM, Vulkan-наработки v1.19,
+  FSR/FrameGen, атмосфера, шлирен/дым/скачки/вихри, test mode, локализация,
+  Lite/Ultra-Lite профили, benchmark).
 - Полный набор PC-артефактов, как в прежних PC-версиях: установщики, апдейтеры
   и портативные zip для x64 / x86 / arm64 + SHA256SUMS.txt.
-- x64 — с CUDA (sm_75, fallback CPU), x86 / arm64 — CPU-сборки; на ПК без NVIDIA
-  GPU бэкенд автоматически CPU.
+- x64 — с CUDA (sm_75, fallback CPU), x86 / arm64 — CPU-сборки.
 - CI (.github/workflows/pc-release.yml): сборка по тегу vX.Y.Z и автопубликация
-  GitHub Release; версии — из aeros/src/version.h и VERSION.
-- Фиксы v1.22.1 (Windows-сборка не компилировалась у апстрима):
+  GitHub Release; версия — из aeros/src/version.h и VERSION.
+- Фиксы сборки v1.20.1 под Windows (у апстрима Windows-сборка не компилировалась):
   - forces.cpp (шлирен): вызов computeVelocityFieldCPU без FlowParams;
-  - ui.cpp: не был подключён vulkan_renderer.h (getRendererName/isVulkanAvailable);
-  - vulkan_renderer.cpp: GetSaveFileNameA без <commdlg.h> (Windows);
-  - lite_config.h: в обычной (не Lite) сборке отсутствовали LITE_*-макросы,
-    нужные lite_config.cpp и benchmark.cpp;
-  - build-cpu.bat: добавлен lite_config.cpp (applyLiteDefaults вызывается
-    безусловно из main/ui, иначе не линкуется).
-- Фиксы конвейера: vcvars целевой архитектуры вызывается всегда (cross-сборки в CI
-  иначе подхватывали чужой cl.exe); портативные пакеты несут glfw3.dll только своей
-  архитектуры.
+  - ui.cpp: не был подключён vulkan_renderer.h;
+  - vulkan_renderer.cpp: GetSaveFileNameA без <commdlg.h>;
+  - lite_config.h: в обычной сборке отсутствовали LITE_*-макросы;
+  - lite_config.cpp: дубли определений глобалов из globals.cpp;
+  - build-cpu.bat: добавлен lite_config.cpp, проверки errorlevel.
+- Фиксы конвейера: vcvars целевой архитектуры вызывается всегда; портативные
+  пакеты несут glfw3.dll только своей архитектуры.
 
 ## [1.8.0] - 2026-10-05
 
