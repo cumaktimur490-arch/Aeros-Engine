@@ -203,7 +203,7 @@ if exist src\app_icon.rc (
 
 rem --- Флаги ---
 set "NVCC_ARCH=-arch=sm_75"
-set "NVCC_FLAGS=-allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp:llvm -Xcompiler /arch:AVX2 -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
+set "NVCC_FLAGS=-cudart static -allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp:llvm -Xcompiler /arch:AVX2 -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
 
 if "%RENDERER%"=="vulkan" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_VULKAN -Xcompiler /DVULKAN_SUPPORTED"
 if "%RENDERER%"=="opengl" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_OPENGL"
