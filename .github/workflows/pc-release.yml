@@ -627,6 +627,12 @@ jobs:
           Push-Location installer
           try {
             foreach ($iss in @(Get-ChildItem . -Filter *.iss -File | Sort-Object Name)) {
+              # common.iss - это include-файл без секции [Setup], компилировать его отдельно нельзя
+              if (-not (Select-String -Path $iss.Name -Pattern '^\[Setup\]' -Quiet)) {
+                Write-Host "[iss-check] пропущен include-файл $($iss.Name)"
+                $facts += "$($iss.Name)=include"
+                continue
+              }
               $o = Join-Path $tmpOut $iss.BaseName
               New-Item -ItemType Directory -Path $o -Force | Out-Null
               $log = & $iscc "/O$o" "/DAppVersion=$v" $iss.Name *>&1 | Out-String
