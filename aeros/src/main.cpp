@@ -10,6 +10,11 @@
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+// glfwGetWin32Window() — HWND окна как владелец диалога выбора модели
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -29,6 +34,7 @@
 #include <ctime>
 
 #include "globals.h"
+#include "version.h"
 #include "shaders.h"
 #include "gl_utils.h"
 #include "input.h"
@@ -150,7 +156,7 @@ static bool exportForcesCSV(const std::string& path) {
 bool saveSettings(const std::string& path) {
     std::ofstream f(path);
     if (!f) return false;
-    f << "# Aeros Engine v1.19.0 Settings\n";
+    f << "# Aeros Engine v" AEROS_VERSION_STRING " Settings\n";
     f << "flowSpeed=" << flowSpeed << "\n";
     f << "flowAzimuth=" << flowAzimuth << "\n";
     f << "flowElevation=" << flowElevation << "\n";
@@ -265,7 +271,7 @@ int main(int argc, char** argv) {
             requestedAPI = RendererAPI::OpenGL;
             std::cout << "[Main] Requested OpenGL renderer via CLI" << std::endl;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Aeros Engine v1.20.1 Lite+Ultra-Lite — Airflow Visualization\n";
+            std::cout << "Aeros Engine v" AEROS_VERSION_STRING " — Airflow Visualization\n";
             std::cout << "Full: Vulkan+OpenGL, CUDA, FSR, FG, all features\n";
             std::cout << "Lite: i3-3xxx / HD 4000 / GT 620M / 4GB RAM / No CUDA / SSE2 / 30 FPS\n";
             std::cout << "Ultra-Lite: Atom/Celeron 2GB RAM / HD 3000 / 500 particles / 20 FPS / 800x450\n";
@@ -395,7 +401,8 @@ int main(int argc, char** argv) {
         std::cout << "[Main] Creating OpenGL window" << std::endl;
     }
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Aeros Engine v1.19.0 GoGonam AoS. Vulkan+OpenGL", nullptr, nullptr);
+    // Заголовок окна — из version.h (единый источник версии), а не захардкожен
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, AEROS_VERSION_FULL, nullptr, nullptr);
     if (!window) {
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
@@ -546,7 +553,18 @@ int main(int argc, char** argv) {
     initInterestingFeatures();
     std::cout << "[Interesting] v1.19.0 features initialized — Vulkan+OpenGL+Linux" << std::endl;
 
-    // v1.19.0: Check CLI for model path
+    // Показываем окно и забираем передний план ДО диалога выбора модели.
+    // Окно создаётся скрытым (GLFW_VISIBLE=FALSE), а запускает программу обычно
+    // установщик ([Run] ... nowait) — такой процесс не получает передний план,
+    // и диалог без владельца остаётся за окном установки. Пользователь видит
+    // «программа не запускается», хотя она ждёт выбора STL-модели.
+    glClearColor(0.04f, 0.05f, 0.07f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glfwSwapBuffers(window);
+    glfwShowWindow(window);
+    glfwFocusWindow(window);
+
+    // Модель из командной строки или через диалог выбора файла
     std::string modelPath = "";
     for (int i=1; i<argc; ++i) {
         std::string arg = argv[i];
@@ -557,7 +575,11 @@ int main(int argc, char** argv) {
         }
     }
     if (modelPath.empty()) {
+#ifdef _WIN32
+        modelPath = openFileDialog((void*)glfwGetWin32Window(window));
+#else
         modelPath = openFileDialog();
+#endif
     }
     if (modelPath.empty()) {
         std::cout << "[Main] No file selected, exiting" << std::endl;
@@ -579,7 +601,7 @@ int main(int argc, char** argv) {
 #endif
     }
 
-    glfwShowWindow(window);
+    // Окно показано и активировано выше — до диалога выбора модели
 
     float prevSpeed = flowSpeed;
     float prevAz    = flowAzimuth;

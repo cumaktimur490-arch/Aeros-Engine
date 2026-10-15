@@ -18,6 +18,13 @@
 # общий bin\main.exe (архитектуры последней сборки) → «CreateProcess код 216».
 
 $ErrorActionPreference = "Stop"
+
+# Причина сбоя дублируется в аннотации GitHub Actions (::error::) — логи шагов
+# наружу не отдаются, а аннотации видны через API check-run.
+function Fail([string]$Message) {
+    Write-Host "::error::build-installers: $Message"
+    throw $Message
+}
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Resolve-Path "$ScriptDir\.."
 $ReleaseDir = Join-Path $RootDir "release"
@@ -75,11 +82,11 @@ if (-not (Test-Path $ReleaseDir)) { New-Item -ItemType Directory -Path $ReleaseD
 function Assert-ArchBinary([string]$ArchName) {
     $exe = Join-Path $BinDir "main-$ArchName.exe"
     if (-not (Test-Path $exe)) {
-        throw "Не найден $exe — соберите $ArchName до упаковки (aeros\build.bat $ArchName или aeros\build-cpu.bat $ArchName). Общий bin\main.exe намеренно не используется: он может быть чужой архитектуры."
+        Fail "Не найден $exe - соберите $ArchName до упаковки (aeros\build.bat $ArchName или aeros\build-cpu.bat $ArchName). Общий bin\main.exe намеренно не используется."
     }
     $mach = Get-PEMachine $exe
     if ($mach -ne $PEMachine[$ArchName]) {
-        throw "$(Split-Path $exe -Leaf): PE machine = $mach, ожидалось $($PEMachine[$ArchName]) ($ArchName). Бинарь собран не для той архитектуры — упаковывать нельзя."
+        Fail "$(Split-Path $exe -Leaf): PE machine = $mach, ожидалось $($PEMachine[$ArchName]) ($ArchName). Бинарь собран не для той архитектуры - упаковывать нельзя."
     }
     Write-Host "[OK] main-$ArchName.exe: PE machine $mach ($ArchName), $((Get-Item $exe).Length) байт" -ForegroundColor Green
 }
@@ -132,10 +139,10 @@ function Build-Installer($issFile, [string]$ArchName, [string]$OutName) {
 
     # 3. Результат должен появиться в release\
     $out = Join-Path $ReleaseDir $OutName
-    if (-not (Test-Path $out)) { throw "ISCC отработал без ошибки, но файл не создан: $out" }
+    if (-not (Test-Path $out)) { Fail "ISCC отработал без ошибки, но файл не создан: $out" }
     $size = (Get-Item $out).Length
     # Установщик без бинаря весит ~60–100 КБ (лицензия, README, run.bat, языки)
-    if ($size -lt 150000) { throw "$OutName подозрительно маленький ($size байт) — похоже, бинарь не упакован" }
+    if ($size -lt 150000) { Fail "$OutName подозрительно маленький ($size байт) - похоже, бинарь не упакован" }
     Write-Host "[OK] $issFile -> $OutName ($size байт)" -ForegroundColor Green
 }
 

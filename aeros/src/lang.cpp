@@ -1,4 +1,5 @@
 #include "lang.h"
+#include "version.h"
 #include "imgui.h"
 
 #ifdef _WIN32
@@ -15,7 +16,7 @@ Language currentLanguage = Language::Russian; // По умолчанию рус�
 // Таблица переводов по ключам — v1.17.0
 static std::unordered_map<std::string, std::pair<std::string, std::string>> translationTable = {
     // Общие
-    {"app.title", {"Aeros Engine v1.17.0 Ultra Realistic+ [EN/RU]", "Aeros Engine v1.17.0 Ультра Реалистичный+ [EN/RU]"}},
+    {"app.title", {"Aeros Engine v" AEROS_VERSION_STRING " Ultra Realistic+ [EN/RU]", "Aeros Engine v" AEROS_VERSION_STRING " Ультра Реалистичный+ [EN/RU]"}},
     {"fps", {"FPS", "Кадров/с"}},
     {"frame", {"Frame", "Кадр"}},
     {"vertices", {"Vertices", "Вершин"}},

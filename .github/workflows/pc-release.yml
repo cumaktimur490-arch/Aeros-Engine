@@ -11,6 +11,12 @@ on:
 permissions:
   contents: write
 
+# Два параллельных прогона одного тега удаляли и пересоздавали бы один и тот же
+# релиз одновременно (гонка при загрузке ассетов). Прогон для тега — по одному.
+concurrency:
+  group: pc-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   pc-release:
     name: Windows x64/x86/arm64 (MSVC + CUDA + Inno)
@@ -19,6 +25,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Lint PowerShell (разбор всех .ps1 до начала долгих сборок)
+        shell: pwsh
+        run: |
+          # Ошибка разбора в .ps1 ломает шаг молча и только в самом конце long build.
+          # Проверяем синтаксис сразу: Parser возвращает ошибки с номерами строк,
+          # а мы дублируем их в аннотации (логи шагов наружу не отдаются).
+          $bad = 0
+          $files = @(Get-ChildItem -Path installer, tools -Filter *.ps1 -File -Recurse)
+          foreach ($file in $files) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $bad++
+              foreach ($e in $errors) {
+                Write-Host "::error::$($file.Name):$($e.Extent.StartLineNumber): $($e.Message)"
+              }
+            } else {
+              Write-Host "[lint] OK $($file.Name)"
+            }
+          }
+          if ($bad -gt 0) { throw "PowerShell syntax errors in $bad file(s)" }
+          Write-Host "::notice::ps-lint: синтаксис $($files.Count) скриптов в порядке"
 
       - name: Read version from aeros/src/version.h
         id: ver
@@ -160,10 +189,40 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          .\installer\build-portable.ps1 -Version $v -Arch all -OutputDir release
-          Get-ChildItem release | Format-Table Name, Length
-          $missing = @("x64","x86","arm64") | Where-Object { -not (Test-Path "release\Aeros-Engine-Portable-$_-v$v.zip") }
-          if ($missing) { throw "portable zips missing: $($missing -join ', ')" }
+          # Логи шагов наружу не отдаются, поэтому всё важное дублируем в аннотации.
+          # Сначала — снимок aeros\bin: какие бинари/DLL реально лежат на диске
+          # и какой у них PE machine. Это единственный способ понять, чем именно
+          # недоволен упаковщик, без скачивания логов.
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "????" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $pre = @()
+          foreach ($n in @("main.exe","main-x64.exe","main-x86.exe","main-arm64.exe","glfw3.dll","glfw3-x86.dll","glfw3-arm64.dll")) {
+            $p = "aeros\bin\$n"
+            if (Test-Path $p) { $pre += "$n=$(PE-Machine $p)/$((Get-Item $p).Length)" } else { $pre += "$n=ABSENT" }
+          }
+          $pre += "stl=$(@(Get-ChildItem aeros\bin -Filter *.stl -File).Count)"
+          Write-Host "::notice::preflight-bin: $($pre -join ' ')"
+          $out = ""
+          $failed = $false
+          try {
+            $out = & .\installer\build-portable.ps1 -Version $v -Arch all -OutputDir release 2>&1 | Out-String
+          } catch {
+            $failed = $true
+            $out += "`nEXCEPTION: " + $_.Exception.Message + "`n" + $_.ScriptStackTrace
+          }
+          Write-Host $out
+          Get-ChildItem release -ErrorAction SilentlyContinue | Format-Table Name, Length
+          $missing = @(@("x64","x86","arm64") | Where-Object { -not (Test-Path "release\Aeros-Engine-Portable-$_-v$v.zip") })
+          if ($failed -or $missing.Count -gt 0) {
+            $lines = ($out -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -Last 25
+            foreach ($l in $lines) { Write-Host "::error::portable: $l" }
+            throw "build-portable.ps1 failed (missing: $($missing -join ', '))"
+          }
+          Write-Host "::notice::portable: все 3 zip созданы (x64/x86/arm64), PE-контроль бинарей пройден"
           Write-Host "[ci] all 3 portable zips present"
 
       - name: Verify portable zips (PE machine внутри архива)
@@ -177,37 +236,56 @@ jobs:
             return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
           }
           $expect = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }
-          foreach ($a in @("x64","x86","arm64")) {
-            $zip = "release\Aeros-Engine-Portable-$a-v$v.zip"
-            if (-not (Test-Path $zip)) { throw "нет $zip" }
-            $tmp = Join-Path $env:RUNNER_TEMP "zipcheck-$a"
-            if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-            Expand-Archive -Path $zip -DestinationPath $tmp -Force
-            foreach ($n in @("AerosEngine.exe","main.exe")) {
-              $exe = Join-Path $tmp $n
-              if (-not (Test-Path $exe)) { throw "$zip : внутри нет $n" }
-              $m = PE-Machine $exe
-              Write-Host "[ci] $zip / $n = $m (ожидалось $($expect[$a]))"
-              if ($m -ne $expect[$a]) { throw "$zip : $n имеет PE machine $m вместо $($expect[$a])" }
+          $facts = @()
+          try {
+            foreach ($a in @("x64","x86","arm64")) {
+              $zip = "release\Aeros-Engine-Portable-$a-v$v.zip"
+              if (-not (Test-Path $zip)) { throw "нет $zip" }
+              $tmp = Join-Path $env:RUNNER_TEMP "zipcheck-$a"
+              if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+              Expand-Archive -Path $zip -DestinationPath $tmp -Force
+              $one = "$a"
+              foreach ($n in @("AerosEngine.exe","main.exe")) {
+                $exe = Join-Path $tmp $n
+                if (-not (Test-Path $exe)) { throw "$zip : внутри нет $n" }
+                $m = PE-Machine $exe
+                $one += " $n=$m"
+                Write-Host "[ci] $zip / $n = $m (ожидалось $($expect[$a]))"
+                if ($m -ne $expect[$a]) { throw "$zip : $n имеет PE machine $m вместо $($expect[$a])" }
+              }
+              $dlls = @(Get-ChildItem $tmp -Filter *.dll -File)
+              foreach ($d in $dlls) {
+                $m = PE-Machine $d.FullName
+                $one += " $($d.Name)=$m"
+                Write-Host "[ci] $zip / $($d.Name) = $m"
+                if ($m -ne $expect[$a]) { throw "$zip : $($d.Name) чужой архитектуры ($m вместо $($expect[$a]))" }
+              }
+              if ($dlls.Count -eq 0) { $one += " dll=none" }
+              $facts += $one
+              Remove-Item -Recurse -Force $tmp
             }
-            # Ни одной DLL чужой архитектуры внутри быть не должно
-            $dlls = @(Get-ChildItem $tmp -Filter *.dll -File)
-            foreach ($d in $dlls) {
-              $m = PE-Machine $d.FullName
-              Write-Host "[ci] $zip / $($d.Name) = $m"
-              if ($m -ne $expect[$a]) { throw "$zip : $($d.Name) чужой архитектуры ($m вместо $($expect[$a]))" }
-            }
-            Remove-Item -Recurse -Force $tmp
+          } catch {
+            Write-Host "::error::zip-verify: $($_.Exception.Message)"
+            Write-Host "::error::zip-verify: проверено до сбоя: $($facts -join ' | ')"
+            throw "portable zip verification failed"
           }
+          Write-Host "::notice::zip-verify: $($facts -join ' | ')"
           Write-Host "[ci] портативные zip: архитектуры совпали"
 
       - name: Build installers and updaters (iscc)
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          $out = .\installer\build-installers.ps1 -Version $v -Arch all -Type all -ISCCPath "$env:ISCC" 2>&1 | Out-String
+          $out = ""
+          $failed = $false
+          try {
+            $out = & .\installer\build-installers.ps1 -Version $v -Arch all -Type all -ISCCPath "$env:ISCC" 2>&1 | Out-String
+          } catch {
+            $failed = $true
+            $out += "`nEXCEPTION: " + $_.Exception.Message + "`n" + $_.ScriptStackTrace
+          }
           Write-Host $out
-          # Успех = все 6 установщиков на месте (Write-Host скрипта не попадает в $out)
+          # Успех = все 6 установщиков на месте
           $missing = @()
           foreach ($a in @("x64","x86","arm64")) {
             foreach ($t in @("Setup","Update")) {
@@ -215,11 +293,12 @@ jobs:
               if (-not (Test-Path $f)) { $missing += $f }
             }
           }
-          if ($LASTEXITCODE -or $missing.Count -gt 0) {
-            $tail = ($out -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -Last 10
-            foreach ($line in $tail) { Write-Host "::error::$line" }
+          if ($failed -or $missing.Count -gt 0) {
+            $lines = ($out -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -Last 25
+            foreach ($line in $lines) { Write-Host "::error::iscc: $line" }
             throw "build-installers.ps1 failed (exit=$LASTEXITCODE, missing: $($missing -join ', '))"
           }
+          Write-Host "::notice::iscc: все 6 установщиков собраны, PE-контроль бинарей пройден"
           Write-Host "[ci] all 6 installers present"
           Get-ChildItem release | Format-Table Name, Length
 
@@ -234,72 +313,85 @@ jobs:
             return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
           }
           $expect = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }
+          $facts = @()
+          try {
+            # 1. Каждый установщик реально ставим и смотрим, ЧТО легло на диск.
+            #    Именно отсутствие такой проверки пропустило баг с Check: FileExists(...)
+            #    в [Files] — тогда на диск ложился arm64 exe и пользователь получал код 216.
+            foreach ($a in @("x64","x86","arm64")) {
+              $setupFile = "release\Aeros-Engine-Setup-$a-v$v.exe"
+              if (-not (Test-Path $setupFile)) { throw "нет $setupFile" }
+              $setup = (Resolve-Path $setupFile).Path
+              $dir = Join-Path $env:RUNNER_TEMP "install-test-$a"
+              if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+              New-Item -ItemType Directory -Path $dir | Out-Null
+              Write-Host "[ci] тихая установка: $setup -> $dir"
+              $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR=`"$dir`"" -Wait -PassThru
+              Write-Host "[ci] exit code = $($p.ExitCode)"
+              if ($p.ExitCode -ne 0) { throw "Setup-$a : установка завершилась с кодом $($p.ExitCode)" }
 
-          # 1. Каждый установщик реально ставим и смотрим, ЧТО легло на диск.
-          #    Это и есть та проверка, отсутствие которой пропустило bug с
-          #    Check: FileExists(...) — тогда на диск ложился arm64 exe (код 216).
-          foreach ($a in @("x64","x86","arm64")) {
-            $setupFile = "release\Aeros-Engine-Setup-$a-v$v.exe"
-            if (-not (Test-Path $setupFile)) { throw "нет $setupFile" }
-            $setup = (Resolve-Path $setupFile).Path
-            $dir = Join-Path $env:RUNNER_TEMP "install-test-$a"
+              $exe = Join-Path $dir "main.exe"
+              if (-not (Test-Path $exe)) { throw "Setup-$a : после установки нет main.exe в $dir" }
+              $m = PE-Machine $exe
+              $one = "$a installed=$m"
+              Write-Host "[ci] установленный main.exe ($a): PE machine = $m (ожидалось $($expect[$a]))"
+              if ($m -ne $expect[$a]) {
+                throw "Setup-$a : установил main.exe с PE machine $m вместо $($expect[$a]) - пользователь получил бы CreateProcess код 216"
+              }
+              $dlls = @(Get-ChildItem $dir -Filter *.dll -File)
+              foreach ($d in $dlls) {
+                $dm = PE-Machine $d.FullName
+                $one += " $($d.Name)=$dm"
+                Write-Host "[ci] установленный $($d.Name): PE machine = $dm"
+                if ($dm -ne $expect[$a]) { throw "Setup-$a : $($d.Name) чужой архитектуры ($dm вместо $($expect[$a]))" }
+              }
+              if ($dlls.Count -eq 0) { $one += " dll=none" }
+              if (Test-Path (Join-Path $dir "ARCH-MISMATCH.txt")) {
+                throw "Setup-$a : собственный контроль установщика сообщил о несовпадении архитектуры"
+              }
+              $one += " mismatch=0"
+
+              $unins = Join-Path $dir "unins000.exe"
+              if (Test-Path $unins) {
+                $u = Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
+                $one += " uninstall=$($u.ExitCode)"
+                Write-Host "[ci] деинсталляция exit = $($u.ExitCode)"
+              }
+              Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+              $facts += $one
+            }
+
+            # 2. Апдейтер обязан обновить НАЙДЕННУЮ папку установки, а не папку по умолчанию
+            $dir = Join-Path $env:RUNNER_TEMP "update-test"
             if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
-            New-Item -ItemType Directory -Path $dir | Out-Null
-            Write-Host "[ci] тихая установка: $setup -> $dir"
+            $setup = (Resolve-Path "release\Aeros-Engine-Setup-x64-v$v.exe").Path
             $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR=`"$dir`"" -Wait -PassThru
-            Write-Host "[ci] exit code = $($p.ExitCode)"
-            if ($p.ExitCode -ne 0) { throw "$setup : установка завершилась с кодом $($p.ExitCode)" }
-
-            $exe = Join-Path $dir "main.exe"
-            if (-not (Test-Path $exe)) { throw "$setup : после установки нет main.exe в $dir" }
-            $m = PE-Machine $exe
-            Write-Host "[ci] установленный main.exe ($a): PE machine = $m (ожидалось $($expect[$a]))"
-            if ($m -ne $expect[$a]) {
-              throw "$setup : установил main.exe с PE machine $m вместо $($expect[$a]) - пользователь получил бы CreateProcess код 216"
+            if ($p.ExitCode -ne 0) { throw "Setup-x64 (подготовка теста апдейтера) завершился с кодом $($p.ExitCode)" }
+            $upd = (Resolve-Path "release\Aeros-Engine-Update-x64-v$v.exe").Path
+            $q = Start-Process -FilePath $upd -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-" -Wait -PassThru
+            Write-Host "[ci] Update-x64 exit = $($q.ExitCode)"
+            if ($q.ExitCode -ne 0) { throw "Update-x64 завершился с кодом $($q.ExitCode)" }
+            if (-not (Test-Path (Join-Path $dir "update-info.txt"))) {
+              throw "Update-x64 не обновил найденную папку $dir - апдейтер ушёл в другую директорию"
             }
-            $dlls = @(Get-ChildItem $dir -Filter *.dll -File)
-            foreach ($d in $dlls) {
-              $dm = PE-Machine $d.FullName
-              Write-Host "[ci] установленный $($d.Name): PE machine = $dm"
-              if ($dm -ne $expect[$a]) { throw "$setup : $($d.Name) чужой архитектуры ($dm вместо $($expect[$a]))" }
-            }
-            if (Test-Path (Join-Path $dir "ARCH-MISMATCH.txt")) {
-              throw "$setup : собственный контроль установщика сообщил о несовпадении архитектуры"
-            }
-
+            $m = PE-Machine (Join-Path $dir "main.exe")
+            Write-Host "[ci] main.exe после апдейта: PE machine = $m"
+            if ($m -ne "8664") { throw "Update-x64 положил main.exe с PE machine $m вместо 8664" }
+            $defaultDir = Join-Path $env:LOCALAPPDATA "Programs\Aeros Engine"
+            if (Test-Path $defaultDir) { throw "Update-x64 создал копию в папке по умолчанию: $defaultDir" }
+            $facts += "update-x64 in-place=$m default-dir=none"
             $unins = Join-Path $dir "unins000.exe"
             if (Test-Path $unins) {
-              $u = Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
-              Write-Host "[ci] деинсталляция exit = $($u.ExitCode)"
+              Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru | Out-Null
             }
             Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          } catch {
+            Write-Host "::error::install-verify: $($_.Exception.Message)"
+            Write-Host "::error::install-verify: проверено до сбоя: $($facts -join ' | ')"
+            throw "installer verification failed"
           }
-          Write-Host "[ci] все 3 установщика кладут на диск exe своей архитектуры"
-
-          # 2. Апдейтер обязан обновить НАЙДЕННУЮ папку установки, а не папку по умолчанию
-          $dir = Join-Path $env:RUNNER_TEMP "update-test"
-          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
-          $setup = (Resolve-Path "release\Aeros-Engine-Setup-x64-v$v.exe").Path
-          $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR=`"$dir`"" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Setup-x64 (подготовка теста апдейтера) завершился с кодом $($p.ExitCode)" }
-          $upd = (Resolve-Path "release\Aeros-Engine-Update-x64-v$v.exe").Path
-          $q = Start-Process -FilePath $upd -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-" -Wait -PassThru
-          Write-Host "[ci] Update-x64 exit = $($q.ExitCode)"
-          if ($q.ExitCode -ne 0) { throw "Update-x64 завершился с кодом $($q.ExitCode)" }
-          if (-not (Test-Path (Join-Path $dir "update-info.txt"))) {
-            throw "Update-x64 не обновил найденную папку $dir - апдейтер ушёл в другую директорию"
-          }
-          $m = PE-Machine (Join-Path $dir "main.exe")
-          Write-Host "[ci] main.exe после апдейта: PE machine = $m"
-          if ($m -ne "8664") { throw "Update-x64 положил main.exe с PE machine $m вместо 8664" }
-          $defaultDir = Join-Path $env:LOCALAPPDATA "Programs\Aeros Engine"
-          if (Test-Path $defaultDir) { throw "Update-x64 создал копию в папке по умолчанию: $defaultDir" }
-          $unins = Join-Path $dir "unins000.exe"
-          if (Test-Path $unins) {
-            Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru | Out-Null
-          }
-          Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
-          Write-Host "[ci] апдейтер обновляет найденную папку установки"
+          Write-Host "::notice::install-verify: $($facts -join ' | ')"
+          Write-Host "[ci] установщики кладут на диск exe своей архитектуры"
 
       - name: Checksums and release README
         shell: pwsh

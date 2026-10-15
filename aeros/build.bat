@@ -204,7 +204,15 @@ if exist src\app_icon.rc (
 
 rem --- Флаги ---
 set "NVCC_ARCH=-arch=sm_75"
-set "NVCC_FLAGS=-cudart static -allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp:llvm -Xcompiler /arch:AVX2 -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
+rem Набор инструкций CPU: базовый SSE2, чтобы exe запускался на любом x64/x86 процессоре.
+rem /arch:AVX2 ломает запуск на CPU до Haswell (2013) — STATUS_ILLEGAL_INSTRUCTION.
+rem Для локальной сборки под современный CPU: set AEROS_AVX2=1
+set "CPUARCHFLAGS=-Xcompiler /arch:SSE2"
+if /I "!OUT_ARCH!"=="arm64" set "CPUARCHFLAGS="
+if defined AEROS_AVX2 if /I not "!OUT_ARCH!"=="arm64" set "CPUARCHFLAGS=-Xcompiler /arch:AVX2"
+echo [Aeros] Arch flags: !CPUARCHFLAGS!
+
+set "NVCC_FLAGS=-cudart static -allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp:llvm !CPUARCHFLAGS! -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
 
 if "%RENDERER%"=="vulkan" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_VULKAN -Xcompiler /DVULKAN_SUPPORTED"
 if "%RENDERER%"=="opengl" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_OPENGL"

@@ -11,6 +11,13 @@
 #   .\build-portable.ps1 -Version 1.0.0 -Arch x64
 
 $ErrorActionPreference = "Stop"
+
+# Логи GitHub Actions наружу не отдаются, поэтому причина сбоя дублируется
+# в аннотации (::error::) — её видно в API check-run без скачивания логов.
+function Fail([string]$Message) {
+    Write-Host "::error::build-portable: $Message"
+    throw $Message
+}
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Resolve-Path "$ScriptDir\.."
 $BinDir = Join-Path $RootDir "aeros\bin"
@@ -28,6 +35,9 @@ Write-Host "[Aeros] Building portable v$Version Arch=$Arch" -ForegroundColor Cya
 
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
 $OutputDir = Resolve-Path $OutputDir
+
+# Ожидаемое поле Machine из PE-заголовка для каждой архитектуры
+$script:PEMachineByArch = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }
 
 function Get-PEMachine([string]$Path) {
     $b = [System.IO.File]::ReadAllBytes($Path)
@@ -50,7 +60,7 @@ function Build-Portable($archSuffix) {
             if (Test-Path $p) { $exeName = $c; $exePath = $p; break }
         }
         if (-not $exePath) {
-            throw "Не найден Lite-бинарь для $archSuffix (искали: $($candidates -join ', ')) в $BinDir"
+            Fail "Не найден Lite-бинарь для $archSuffix (искали: $($candidates -join ', ')) в $BinDir"
         }
         $portablePrefix = "Aeros-Engine-Portable-Lite-$archSuffix"
         $exeDestName = "AerosEngine-Lite.exe"
@@ -61,18 +71,18 @@ function Build-Portable($archSuffix) {
         # трёх архитектур в нём лежит ПОСЛЕДНИЙ собранный exe (arm64), и портативный
         # zip для x64 молча получался с чужой архитектурой → «CreateProcess код 216».
         if (-not (Test-Path $exePath)) {
-            throw "Не найден $exePath — соберите $archSuffix (aeros\build.bat $archSuffix или aeros\build-cpu.bat $archSuffix) до упаковки портативной версии."
+            Fail "Не найден $exePath - соберите $archSuffix (aeros\build.bat или aeros\build-cpu.bat) до упаковки портативной версии."
         }
         $portablePrefix = "Aeros-Engine-Portable-$archSuffix"
         $exeDestName = "AerosEngine.exe"
     }
 
     # Контроль PE-заголовка: кладём в zip бинарь ровно той архитектуры, что заявлена
-    $expected = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }[$archSuffix]
+    $expected = $script:PEMachineByArch[$archSuffix]
     $mach = Get-PEMachine $exePath
     Write-Host "[Aeros] $exeName -> PE machine $mach (ожидалось $expected)" -ForegroundColor Gray
     if ($mach -ne $expected) {
-        throw "$(Split-Path $exePath -Leaf): PE machine $mach вместо $expected — бинарь собран не для $archSuffix, упаковывать нельзя."
+        Fail "$(Split-Path $exePath -Leaf): PE machine $mach вместо $expected - бинарь собран не для $archSuffix, упаковывать нельзя."
     }
 
     $portableDir = Join-Path $env:TEMP "$portablePrefix"
@@ -94,8 +104,8 @@ function Build-Portable($archSuffix) {
     if (Test-Path $glfwSrc) {
         Copy-Item $glfwSrc -Destination (Join-Path $portableDir "glfw3.dll") -Force
         $gm = Get-PEMachine $glfwSrc
-        $gw = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }[$archSuffix]
-        if ($gm -ne $gw) { throw "$glfwName: PE machine $gm вместо $gw — DLL чужой архитектуры" }
+        $gw = $script:PEMachineByArch[$archSuffix]
+        if ($gm -ne $gw) { Fail "$glfwName: PE machine $gm вместо $gw - DLL чужой архитектуры" }
     } else {
         Write-Host "[INFO] No glfw dll for $archSuffix ($glfwName) - static link or missing" -ForegroundColor Gray
     }

@@ -1,5 +1,6 @@
 #include "vulkan_renderer.h"
 #include "globals.h"
+#include "stl_loader.h"
 
 #include <glad/glad.h>
 #include <iostream>
@@ -585,8 +586,7 @@ RendererAPI getRendererAPI() { return g_currentAPI; }
 // =====================================================
 std::string openFileDialogNative() {
 #ifdef _WIN32
-    // Use existing Windows dialog from stl_loader.cpp
-    extern std::string openFileDialog();
+    // Общий диалог из stl_loader.cpp (объявление — в stl_loader.h)
     return openFileDialog();
 #else
     // Linux: try zenity, kdialog, or fallback to console

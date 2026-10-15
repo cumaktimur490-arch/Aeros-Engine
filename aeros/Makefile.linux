@@ -21,7 +21,10 @@ BINDIR = bin
 OBJDIR = obj
 
 # Флаги
-CXXFLAGS = -std=c++17 -O3 -march=native -ffast-math -fopenmp -fPIC
+# -march=native делает бинарь непригодным для других CPU (и ломает запуск на
+# железе без AVX2). Для сборки под свою машину: make ARCHFLAGS="-march=native"
+ARCHFLAGS ?=
+CXXFLAGS = -std=c++17 -O3 $(ARCHFLAGS) -ffast-math -fopenmp -fPIC
 CXXFLAGS += -I$(LIBDIR)/glad/include -I$(LIBDIR)/glfw/include -I$(LIBDIR)/glm -I$(SRCDIR) -I$(SRCDIR)/imgui
 CXXFLAGS += -DVERSION=\"$(VERSION)\" -DLINUX -DGLFW_INCLUDE_NONE
 CXXFLAGS += $(shell pkg-config --cflags glfw3 2>/dev/null || echo "")

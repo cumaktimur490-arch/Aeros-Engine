@@ -107,8 +107,19 @@ echo [Aeros CPU] Compiling C++ files...
 
 set "INCLUDES=/I "!LIBDIR!\glfw\include" /I "!LIBDIR!\glad\include" /I "!LIBDIR!\glm" /I src /I src\imgui"
 set "DEFINES=/DCPU_ONLY /DVERSION_STRING=\"!APP_VERSION!\""
-rem v1.6.0 Optimized: O2, Ot, GL, arch:AVX2, openmp:llvm, fp:fast
-set "CXXFLAGS=/std:c++17 /EHsc /MD /W1 /O2 /Ot /GL /arch:AVX2 /openmp:llvm /fp:fast !DEFINES! !INCLUDES!"
+rem --- Набор инструкций CPU ---
+rem Релизный бинарь ставится на любые ПК, поэтому базовый уровень:
+rem   x64 и x86 -> /arch:SSE2 (SSE2 есть во всех x64 CPU и в x86 начиная с Pentium 4)
+rem   arm64     -> /arch не задаётся (это x86-опция, на ARM64 она бессмысленна)
+rem /arch:AVX2 делает exe непригодным для CPU до Haswell (2013): процесс падает
+rem с STATUS_ILLEGAL_INSTRUCTION без внятного сообщения об ошибке.
+rem Опционально для локальной сборки под современный CPU: set AEROS_AVX2=1
+set "CPUARCHFLAGS=/arch:SSE2"
+if /I "!OUT_ARCH!"=="arm64" set "CPUARCHFLAGS="
+if defined AEROS_AVX2 if /I not "!OUT_ARCH!"=="arm64" set "CPUARCHFLAGS=/arch:AVX2"
+echo [Aeros CPU] Arch flags: !CPUARCHFLAGS!
+
+set "CXXFLAGS=/std:c++17 /EHsc /MD /W1 /O2 /Ot /GL !CPUARCHFLAGS! /openmp:llvm /fp:fast !DEFINES! !INCLUDES!"
 
 cl /c !CXXFLAGS! src\main.cpp /Fo:bin\main.obj
 if !errorlevel! neq 0 exit /b 1

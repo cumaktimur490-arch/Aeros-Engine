@@ -18,6 +18,7 @@
 #include <glm/glm.hpp>
 
 #include "stl_loader.h"
+#include "version.h"
 
 // =====================================================
 // STL loader v1.8.0 — исправлено + улучшения
@@ -135,7 +136,7 @@ bool loadSTL(const std::string& filename, std::vector<float>& vertices, std::vec
 // =====================================================
 // Диалог выбора файла v1.19.0 — Windows + Linux (zenity/kdialog/console)
 // =====================================================
-std::string openFileDialog() {
+std::string openFileDialog(void* ownerWindow) {
 #ifdef _WIN32
     OPENFILENAMEA ofn;
     char fileName[MAX_PATH] = "";
@@ -143,12 +144,12 @@ std::string openFileDialog() {
     GetCurrentDirectoryA(MAX_PATH, initialDir);
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = nullptr;
+    ofn.hwndOwner = (HWND)ownerWindow;
     ofn.lpstrFilter = "STL Files (*.stl)\0*.stl\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile = fileName;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrInitialDir = initialDir;
-    ofn.lpstrTitle = "Select STL Model - Aeros Engine v1.19.0 Vulkan+OpenGL";
+    ofn.lpstrTitle = "Select STL Model - Aeros Engine v" AEROS_VERSION_STRING;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     ofn.lpstrDefExt = "stl";
     if (GetOpenFileNameA(&ofn)) return std::string(fileName);
@@ -156,7 +157,7 @@ std::string openFileDialog() {
 #else
     // Linux — try zenity, kdialog, or fallback
     // Try zenity
-    FILE* fp = popen("zenity --file-selection --file-filter='STL files | *.stl *.STL' --title='Open STL Model - Aeros Engine v1.19.0' 2>/dev/null", "r");
+    FILE* fp = popen("zenity --file-selection --file-filter='STL files | *.stl *.STL' --title='Open STL Model - Aeros Engine v" AEROS_VERSION_STRING "' 2>/dev/null", "r");
     if (fp) {
         char path[1024] = {0};
         if (fgets(path, sizeof(path), fp)) {
