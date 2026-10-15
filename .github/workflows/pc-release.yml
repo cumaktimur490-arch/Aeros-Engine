@@ -58,8 +58,7 @@ jobs:
           $i = 0
           $blocks = 0
           while ($i -lt $lines.Count) {
-            if ($lines[$i] -match '^(\s+)run:\s*\|\s*$') {
-              $indent = $Matches[1].Length
+            if ($lines[$i] -match '^\s*run:\s*\|\s*$') {
               # bash/cmd-блоки парсером PowerShell проверять нельзя - смотрим shell: шага
               $shell = "pwsh"
               for ($k = $i - 1; $k -ge 0 -and $k -ge $i - 4; $k--) {
@@ -67,13 +66,21 @@ jobs:
               }
               if ($shell -ne "pwsh" -and $shell -ne "powershell") { $i++; continue }
               $from = $i + 1
+              # Снимать нужно отступ СОДЕРЖИМОГО блока, а не самой строки run: (они
+              # отличаются на два пробела). Here-string в PowerShell требует, чтобы
+              # закрывающий кавычка-собака стоял в первой колонке, - иначе парсер
+              # сообщает про лишний пробел перед завершителем строки.
+              $first = $from
+              while ($first -lt $lines.Count -and $lines[$first].Trim() -eq "") { $first++ }
+              if ($first -ge $lines.Count) { $i = $first; continue }
+              $ci = $lines[$first].Length - $lines[$first].TrimStart().Length
               $block = @()
               $j = $from
               while ($j -lt $lines.Count) {
                 if ($lines[$j].Trim() -eq "") { $block += ""; $j++; continue }
-                if ($lines[$j].Length -le $indent) { break }
-                if ($lines[$j].Substring(0, $indent).Trim() -ne "") { break }
-                $block += $lines[$j].Substring($indent)
+                $cur = $lines[$j].Length - $lines[$j].TrimStart().Length
+                if ($cur -lt $ci) { break }
+                $block += $lines[$j].Substring($ci)
                 $j++
               }
               $blocks++
