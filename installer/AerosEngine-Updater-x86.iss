@@ -5,9 +5,10 @@
   #define AppVersion "1.8.0"
 #endif
 #define Arch "x86"
+; Имя файла апдейтера задаётся ДО common.iss (см. там OutputKind)
+#define OutputKind "Update"
 #include "common.iss"
 
-#define OutputBaseName "Aeros-Engine-Update-" + ArchSuffix + "-v" + AppVersion
 
 [Setup]
 AppId={{#AppId}

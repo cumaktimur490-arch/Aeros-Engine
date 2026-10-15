@@ -28,6 +28,14 @@
   #define ArchTitle "x86 (32-bit)"
 #endif
 
+; Setup или Update: апдейтеры задают OutputKind "Update" ДО подключения этого
+; файла. Переопределять уже заданный OutputBaseName вторым #define нельзя -
+; ISPP трактует одноимённые определения как перегрузку, и в {#OutputBaseName}
+; может попасть первое из них (тогда апдейтер соберётся с именем Setup-...exe).
+#ifndef OutputKind
+  #define OutputKind "Setup"
+#endif
+
 #ifndef OutputBaseName
-  #define OutputBaseName "Aeros-Engine-Setup-" + ArchSuffix + "-v" + AppVersion
+  #define OutputBaseName "Aeros-Engine-" + OutputKind + "-" + ArchSuffix + "-v" + AppVersion
 #endif
