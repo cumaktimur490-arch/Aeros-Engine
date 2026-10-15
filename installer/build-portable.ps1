@@ -29,41 +29,50 @@ Write-Host "[Aeros] Building portable v$Version Arch=$Arch" -ForegroundColor Cya
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
 $OutputDir = Resolve-Path $OutputDir
 
+function Get-PEMachine([string]$Path) {
+    $b = [System.IO.File]::ReadAllBytes($Path)
+    if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "????" }
+    $pe = [BitConverter]::ToInt32($b, 60)
+    if ($pe + 6 -ge $b.Length) { return "????" }
+    return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+}
+
 function Build-Portable($archSuffix) {
     if ($Lite) {
-        $exeName = "main-lite-$archSuffix.exe"
-        $exePath = Join-Path $BinDir $exeName
-        $fallbackExe = Join-Path $BinDir "main-lite.exe"
-        $fallback2 = Join-Path $BinDir "aeros-engine-lite-$archSuffix.exe"
-        if (-not (Test-Path $exePath)) {
-            if (Test-Path $fallbackExe) { $exePath = $fallbackExe }
-            elseif (Test-Path $fallback2) { $exePath = $fallback2 }
-            else {
-                Write-Host "[WARN] Lite $exeName not found, trying main-$archSuffix.exe" -ForegroundColor Yellow
-                $exeName = "main-$archSuffix.exe"
-                $exePath = Join-Path $BinDir $exeName
-                $fallbackExe = Join-Path $BinDir "main.exe"
-                if (-not (Test-Path $exePath) -and (Test-Path $fallbackExe)) { $exePath = $fallbackExe }
-                elseif (-not (Test-Path $exePath)) { Write-Host "[ERROR] No exe for Lite $archSuffix" -ForegroundColor Red; return }
-            }
+        # Только arch-specific имена: общие main-lite.exe / main.exe при сборке трёх
+        # архитектур подряд содержат ПОСЛЕДНИЙ собранный бинарь (arm64) и подменять
+        # собой x64/x86 не должны.
+        $candidates = @("main-lite-$archSuffix.exe", "aeros-engine-lite-$archSuffix.exe", "main-$archSuffix.exe")
+        $exeName = $null
+        $exePath = $null
+        foreach ($c in $candidates) {
+            $p = Join-Path $BinDir $c
+            if (Test-Path $p) { $exeName = $c; $exePath = $p; break }
+        }
+        if (-not $exePath) {
+            throw "Не найден Lite-бинарь для $archSuffix (искали: $($candidates -join ', ')) в $BinDir"
         }
         $portablePrefix = "Aeros-Engine-Portable-Lite-$archSuffix"
         $exeDestName = "AerosEngine-Lite.exe"
     } else {
         $exeName = "main-$archSuffix.exe"
         $exePath = Join-Path $BinDir $exeName
-        $fallbackExe = Join-Path $BinDir "main.exe"
+        # Никакого fallback на общий bin\main.exe: при последовательной сборке
+        # трёх архитектур в нём лежит ПОСЛЕДНИЙ собранный exe (arm64), и портативный
+        # zip для x64 молча получался с чужой архитектурой → «CreateProcess код 216».
         if (-not (Test-Path $exePath)) {
-            if (Test-Path $fallbackExe) {
-                Write-Host "[WARN] $exeName not found, using main.exe as fallback for $archSuffix" -ForegroundColor Yellow
-                $exePath = $fallbackExe
-            } else {
-                Write-Host "[ERROR] No executable found for $archSuffix : $exePath" -ForegroundColor Red
-                return
-            }
+            throw "Не найден $exePath — соберите $archSuffix (aeros\build.bat $archSuffix или aeros\build-cpu.bat $archSuffix) до упаковки портативной версии."
         }
         $portablePrefix = "Aeros-Engine-Portable-$archSuffix"
         $exeDestName = "AerosEngine.exe"
+    }
+
+    # Контроль PE-заголовка: кладём в zip бинарь ровно той архитектуры, что заявлена
+    $expected = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }[$archSuffix]
+    $mach = Get-PEMachine $exePath
+    Write-Host "[Aeros] $exeName -> PE machine $mach (ожидалось $expected)" -ForegroundColor Gray
+    if ($mach -ne $expected) {
+        throw "$(Split-Path $exePath -Leaf): PE machine $mach вместо $expected — бинарь собран не для $archSuffix, упаковывать нельзя."
     }
 
     $portableDir = Join-Path $env:TEMP "$portablePrefix"
@@ -78,13 +87,26 @@ function Build-Portable($archSuffix) {
         Copy-Item $exePath -Destination (Join-Path $portableDir "aeros-engine-lite.exe") -Force -ErrorAction SilentlyContinue
     }
 
-    # DLLs: glfw своей архитектуры (x64 лежит как glfw3.dll, остальные — с суффиксом)
+    # DLLs: glfw строго своей архитектуры (x64 лежит как glfw3.dll, остальные — с суффиксом).
+    # Общие *.dll из bin не копируем: там чужие архитектуры и неиспользуемые sl.*.dll.
     $glfwName = if ($archSuffix -eq "x64") { "glfw3.dll" } else { "glfw3-$archSuffix.dll" }
     $glfwSrc = Join-Path $BinDir $glfwName
     if (Test-Path $glfwSrc) {
         Copy-Item $glfwSrc -Destination (Join-Path $portableDir "glfw3.dll") -Force
+        $gm = Get-PEMachine $glfwSrc
+        $gw = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }[$archSuffix]
+        if ($gm -ne $gw) { throw "$glfwName: PE machine $gm вместо $gw — DLL чужой архитектуры" }
     } else {
         Write-Host "[INFO] No glfw dll for $archSuffix ($glfwName) - static link or missing" -ForegroundColor Gray
+    }
+
+    # CUDA-рантайм — только для x64 и только если он реально есть в bin
+    # (сборка идёт с -cudart static, это страховка на случай динамической линковки)
+    if ($archSuffix -eq "x64") {
+        Get-ChildItem $BinDir -Filter "cudart64*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName -Destination $portableDir -Force
+            Write-Host "[INFO] CUDA runtime: $($_.Name)" -ForegroundColor Gray
+        }
     }
 
     # Модели

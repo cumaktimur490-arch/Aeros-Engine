@@ -80,14 +80,21 @@ if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
     exit /b 1
 )
 
+rem --- Версия: VERSION, а если его нет — авторитетный aeros\src\version.h ---
 set "VERSION_FILE=%~dp0..\VERSION"
-set "APP_VERSION=1.0.0"
+set "APP_VERSION="
 if exist "!VERSION_FILE!" set /p APP_VERSION=<"!VERSION_FILE!"
+if not defined APP_VERSION for /f "tokens=3" %%v in ('findstr /C:"AEROS_VERSION_STRING" "%~dp0src\version.h" 2^>nul') do set "APP_VERSION=%%~v"
+if defined APP_VERSION set APP_VERSION=%APP_VERSION:"=%
+if not defined APP_VERSION set "APP_VERSION=0.0.0"
 
 echo [Aeros CPU] Version: !APP_VERSION! Arch: !OUT_ARCH!
 echo [Aeros CPU] LibDir: !LIBDIR! GLFW: !GLFW_LIBDIR!
 
 del /Q bin\*.obj 2>nul
+rem Устаревший exe этой архитектуры удаляем: иначе при ошибке линковки в bin
+rem останется прошлый main-!OUT_ARCH!.exe и упаковка положит его в релиз.
+if exist bin\main-!OUT_ARCH!.exe del /Q bin\main-!OUT_ARCH!.exe
 
 echo [Aeros CPU] Compiling glad.c...
 cl /c /MD /TC /I "!LIBDIR!\glad\include" src\glad.c /Fo:bin\glad.obj
@@ -147,6 +154,8 @@ cl /c !CXXFLAGS! src\lite_config.cpp /Fo:bin\lite_config.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\cuda_stub.cpp /Fo:bin\cuda_stub.obj
 if !errorlevel! neq 0 exit /b 1
+cl /c !CXXFLAGS! src\benchmark.cpp /Fo:bin\benchmark.obj
+if !errorlevel! neq 0 exit /b 1
 
 cl /c !CXXFLAGS! src\imgui\imgui.cpp /Fo:bin\imgui.obj
 if !errorlevel! neq 0 exit /b 1
@@ -180,7 +189,7 @@ echo [Aeros CPU] Linking (LTCG optimized)...
 link /LTCG /OUT:bin\main-!OUT_ARCH!.exe ^
   bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
   bin\voxel_grid.obj bin\flow_field.obj bin\particles.obj bin\streamlines.obj ^
-  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\lite_config.obj bin\cuda_stub.obj bin\glad.obj ^
+  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\lite_config.obj bin\cuda_stub.obj bin\benchmark.obj bin\glad.obj ^
   bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
   bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj !ICON_RES! ^
   /LIBPATH:"!LIBDIR!\glfw\!GLFW_LIBDIR!" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^
@@ -191,6 +200,7 @@ if !errorlevel! neq 0 (
     exit /b 1
 )
 
+rem bin\main.exe — ТОЛЬКО для локального run.bat; упаковщики берут main-<arch>.exe
 copy /Y bin\main-!OUT_ARCH!.exe bin\main.exe >nul
 
 echo [Aeros CPU] Build OK: bin\main-!OUT_ARCH!.exe

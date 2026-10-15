@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 rem =====================================================
-rem Aeros Engine — универсальный build.bat v1.19.0 Vulkan + OpenGL + Linux ready
+rem Aeros Engine — универсальный build.bat (Vulkan + OpenGL + Linux ready)
 rem Поддерживает: x64 (по умолчанию), x86, arm64, Vulkan, OpenGL
 rem Использование:
 rem   build.bat         -> x64 auto (Vulkan+OpenGL)
@@ -50,7 +50,7 @@ if /I "%ARCH%"=="x64" (
     exit /b 1
 )
 
-echo [Aeros] Building v1.19.0 for %OUT_ARCH% renderer=%RENDERER% using %VCVARS% ...
+echo [Aeros] Building for %OUT_ARCH% renderer=%RENDERER% using %VCVARS% ...
 
 taskkill /IM main.exe /F 2>nul
 taskkill /IM main-%OUT_ARCH%.exe /F 2>nul
@@ -179,12 +179,13 @@ if "%VULKAN_SDK_FOUND%"=="1" (
     echo [INFO] Install Vulkan SDK from https://vulkan.lunarg.com/
 )
 
-rem --- Версия ---
+rem --- Версия: VERSION, а если его нет — авторитетный aeros\src\version.h ---
 set "VERSION_FILE=%~dp0..\VERSION"
-set "APP_VERSION=1.19.0"
-if exist "!VERSION_FILE!" (
-    set /p APP_VERSION=<"!VERSION_FILE!"
-)
+set "APP_VERSION="
+if exist "!VERSION_FILE!" set /p APP_VERSION=<"!VERSION_FILE!"
+if not defined APP_VERSION for /f "tokens=3" %%v in ('findstr /C:"AEROS_VERSION_STRING" "%~dp0src\version.h" 2^>nul') do set "APP_VERSION=%%~v"
+if defined APP_VERSION set APP_VERSION=%APP_VERSION:"=%
+if not defined APP_VERSION set "APP_VERSION=0.0.0"
 
 echo [Aeros] Version: !APP_VERSION! Libs: !LIBDIR! GLFW: !GLFW_LIBDIR! Vulkan: !VULKAN_SDK_FOUND! Renderer: !RENDERER!
 
@@ -245,6 +246,9 @@ if !errorlevel! neq 0 (
     )
 )
 
+rem bin\main.exe — ТОЛЬКО удобство для локального run.bat/launcher.bat.
+rem Упаковщики (installer\*.iss, build-portable.ps1) обязаны брать main-<arch>.exe:
+rem при сборке трёх архитектур подряд в main.exe лежит ПОСЛЕДНИЙ бинарь (arm64).
 copy /Y bin\main-!OUT_ARCH!.exe bin\main.exe >nul
 copy /Y bin\main-!OUT_ARCH!.exe bin\aeros-engine-%OUT_ARCH%.exe >nul
 echo [Aeros] Build OK: bin\main-!OUT_ARCH%.exe and bin\aeros-engine-%OUT_ARCH%.exe

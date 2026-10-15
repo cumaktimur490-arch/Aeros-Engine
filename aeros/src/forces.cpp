@@ -363,11 +363,7 @@ void computeLiftDrag() {
     if (!std::isfinite(minAlong)) { minAlong = 0; maxAlong = maxDim; }
     float chord = maxAlong - minAlong;
     if (chord < 1e-6f) chord = maxDim;
-    glm::vec3 LEPoint = flowDir * minAlong; // точка на LE вдоль flowDir, для xAlong
-
-    // Аэродинамический центр — 25% хорды от LE
-    glm::vec3 aeroCenter = flowDir * (minAlong + chord*0.25f) + glm::vec3(flowParams.centerX, flowParams.centerY, flowParams.centerZ) * 0.0f + center;
-    // Для простоты: aeroCenter = center - flowDir*0.25*chord + vertical offset? Используем center как приближение, но сместим на 25% назад от LE
+    // Аэродинамический центр — 25% хорды от передней кромки (LE).
     // LE уже в мировых координатах, так что AC = LE + 0.25*chord*flowDir + поперечная составляющая центра
     glm::vec3 centerProjAlong = flowDir * glm::dot(center, flowDir);
     glm::vec3 centerPerp = center - centerProjAlong;

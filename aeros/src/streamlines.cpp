@@ -180,7 +180,6 @@ void computeStreamlines() {
     if (!std::isfinite(maxSpeed) || maxSpeed < 1e-3f) maxSpeed = flowSpeed * 1.6f;
     if (maxSpeed < 1e-6f) maxSpeed = 1.0f;
     float groundY = g_voxMinY + aeroGroundHeight;
-    float chord = maxDim; // для нормализации
 
     #ifdef _OPENMP
     #pragma omp parallel for schedule(dynamic)

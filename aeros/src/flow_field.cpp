@@ -196,9 +196,7 @@ static inline glm::vec3 divergenceFreeNoise(const glm::vec3& p, float t, float s
     // A = (sin(sy+sz), sin(sz+sx), sin(sx+sy))
     // curl A = (dAz/dy - dAy/dz, dAx/dz - dAz/dx, dAy/dx - dAx/dy)
     // Приближенно через производные sin -> cos
-    float Ax = sinf(sy + sz*0.7f);
-    float Ay = sinf(sz + sx*0.9f);
-    float Az = sinf(sx + sy*1.1f);
+    // Значения самого потенциала A не нужны — curl считается через производные
     // Производные
     float dAzdx = cosf(sx + sy*1.1f) * scale * 1.1f;
     float dAzdy = cosf(sx + sy*1.1f) * scale * 1.0f;

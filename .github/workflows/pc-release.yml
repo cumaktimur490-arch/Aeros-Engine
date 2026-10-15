@@ -62,6 +62,15 @@ jobs:
           "ISCC=$iscc" | Out-File -Append $env:GITHUB_ENV
           Write-Host "ISCC: $iscc"
 
+      - name: Clean stale binaries (никаких прошлых exe в bin)
+        shell: pwsh
+        run: |
+          # Если в bin останется exe прошлой/чужой сборки, упаковка может положить его в релиз.
+          Get-ChildItem aeros\bin -Filter "main*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force -Verbose
+          Get-ChildItem aeros\bin -Filter "aeros-engine*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force -Verbose
+          Get-ChildItem aeros\bin -Filter "cudart*.dll" -ErrorAction SilentlyContinue | Remove-Item -Force -Verbose
+          Get-ChildItem aeros\bin | Format-Table Name, Length
+
       - name: GLFW for x86 (prebuilt)
         shell: pwsh
         run: .\tools\get-glfw-x86.ps1
@@ -157,6 +166,41 @@ jobs:
           if ($missing) { throw "portable zips missing: $($missing -join ', ')" }
           Write-Host "[ci] all 3 portable zips present"
 
+      - name: Verify portable zips (PE machine внутри архива)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "????" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $expect = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }
+          foreach ($a in @("x64","x86","arm64")) {
+            $zip = "release\Aeros-Engine-Portable-$a-v$v.zip"
+            if (-not (Test-Path $zip)) { throw "нет $zip" }
+            $tmp = Join-Path $env:RUNNER_TEMP "zipcheck-$a"
+            if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+            Expand-Archive -Path $zip -DestinationPath $tmp -Force
+            foreach ($n in @("AerosEngine.exe","main.exe")) {
+              $exe = Join-Path $tmp $n
+              if (-not (Test-Path $exe)) { throw "$zip : внутри нет $n" }
+              $m = PE-Machine $exe
+              Write-Host "[ci] $zip / $n = $m (ожидалось $($expect[$a]))"
+              if ($m -ne $expect[$a]) { throw "$zip : $n имеет PE machine $m вместо $($expect[$a])" }
+            }
+            # Ни одной DLL чужой архитектуры внутри быть не должно
+            $dlls = @(Get-ChildItem $tmp -Filter *.dll -File)
+            foreach ($d in $dlls) {
+              $m = PE-Machine $d.FullName
+              Write-Host "[ci] $zip / $($d.Name) = $m"
+              if ($m -ne $expect[$a]) { throw "$zip : $($d.Name) чужой архитектуры ($m вместо $($expect[$a]))" }
+            }
+            Remove-Item -Recurse -Force $tmp
+          }
+          Write-Host "[ci] портативные zip: архитектуры совпали"
+
       - name: Build installers and updaters (iscc)
         shell: pwsh
         run: |
@@ -178,6 +222,84 @@ jobs:
           }
           Write-Host "[ci] all 6 installers present"
           Get-ChildItem release | Format-Table Name, Length
+
+      - name: Verify installers (тихая установка и PE-контроль установленного exe)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "????" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $expect = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }
+
+          # 1. Каждый установщик реально ставим и смотрим, ЧТО легло на диск.
+          #    Это и есть та проверка, отсутствие которой пропустило bug с
+          #    Check: FileExists(...) — тогда на диск ложился arm64 exe (код 216).
+          foreach ($a in @("x64","x86","arm64")) {
+            $setupFile = "release\Aeros-Engine-Setup-$a-v$v.exe"
+            if (-not (Test-Path $setupFile)) { throw "нет $setupFile" }
+            $setup = (Resolve-Path $setupFile).Path
+            $dir = Join-Path $env:RUNNER_TEMP "install-test-$a"
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            Write-Host "[ci] тихая установка: $setup -> $dir"
+            $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR=`"$dir`"" -Wait -PassThru
+            Write-Host "[ci] exit code = $($p.ExitCode)"
+            if ($p.ExitCode -ne 0) { throw "$setup : установка завершилась с кодом $($p.ExitCode)" }
+
+            $exe = Join-Path $dir "main.exe"
+            if (-not (Test-Path $exe)) { throw "$setup : после установки нет main.exe в $dir" }
+            $m = PE-Machine $exe
+            Write-Host "[ci] установленный main.exe ($a): PE machine = $m (ожидалось $($expect[$a]))"
+            if ($m -ne $expect[$a]) {
+              throw "$setup : установил main.exe с PE machine $m вместо $($expect[$a]) - пользователь получил бы CreateProcess код 216"
+            }
+            $dlls = @(Get-ChildItem $dir -Filter *.dll -File)
+            foreach ($d in $dlls) {
+              $dm = PE-Machine $d.FullName
+              Write-Host "[ci] установленный $($d.Name): PE machine = $dm"
+              if ($dm -ne $expect[$a]) { throw "$setup : $($d.Name) чужой архитектуры ($dm вместо $($expect[$a]))" }
+            }
+            if (Test-Path (Join-Path $dir "ARCH-MISMATCH.txt")) {
+              throw "$setup : собственный контроль установщика сообщил о несовпадении архитектуры"
+            }
+
+            $unins = Join-Path $dir "unins000.exe"
+            if (Test-Path $unins) {
+              $u = Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
+              Write-Host "[ci] деинсталляция exit = $($u.ExitCode)"
+            }
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          }
+          Write-Host "[ci] все 3 установщика кладут на диск exe своей архитектуры"
+
+          # 2. Апдейтер обязан обновить НАЙДЕННУЮ папку установки, а не папку по умолчанию
+          $dir = Join-Path $env:RUNNER_TEMP "update-test"
+          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+          $setup = (Resolve-Path "release\Aeros-Engine-Setup-x64-v$v.exe").Path
+          $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR=`"$dir`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Setup-x64 (подготовка теста апдейтера) завершился с кодом $($p.ExitCode)" }
+          $upd = (Resolve-Path "release\Aeros-Engine-Update-x64-v$v.exe").Path
+          $q = Start-Process -FilePath $upd -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-" -Wait -PassThru
+          Write-Host "[ci] Update-x64 exit = $($q.ExitCode)"
+          if ($q.ExitCode -ne 0) { throw "Update-x64 завершился с кодом $($q.ExitCode)" }
+          if (-not (Test-Path (Join-Path $dir "update-info.txt"))) {
+            throw "Update-x64 не обновил найденную папку $dir - апдейтер ушёл в другую директорию"
+          }
+          $m = PE-Machine (Join-Path $dir "main.exe")
+          Write-Host "[ci] main.exe после апдейта: PE machine = $m"
+          if ($m -ne "8664") { throw "Update-x64 положил main.exe с PE machine $m вместо 8664" }
+          $defaultDir = Join-Path $env:LOCALAPPDATA "Programs\Aeros Engine"
+          if (Test-Path $defaultDir) { throw "Update-x64 создал копию в папке по умолчанию: $defaultDir" }
+          $unins = Join-Path $dir "unins000.exe"
+          if (Test-Path $unins) {
+            Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru | Out-Null
+          }
+          Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          Write-Host "[ci] апдейтер обновляет найденную папку установки"
 
       - name: Checksums and release README
         shell: pwsh
@@ -205,6 +327,13 @@ jobs:
           Запуск: после старта в диалоге выберите STL-модель (примеры — в папке models).
           Управление: WASD — камера, Space/Shift — вверх/вниз, Ctrl — ускорение,
           средняя кнопка мыши — вращение, колесо — зум, Esc — выход.
+
+          Если не запускается. Сообщения «Это приложение не удалось запустить на вашем ПК»
+          и «CreateProcess сбой; код 216» означают, что файл не подходит к архитектуре
+          вашей Windows. Проверьте: Параметры → Система → О программе → «Тип системы».
+          64-бит на Intel/AMD — Setup-x64; 32-бит — Setup-x86; ARM — Setup-arm64.
+          Установщик сам сверяет архитектуру установленного файла и при несовпадении
+          показывает понятное сообщение и создаёт ARCH-MISMATCH.txt в папке установки.
 
           CUDA-ускорение работает на NVIDIA GPU (Turing и новее); без NVIDIA GPU
           автоматически включается CPU-бэкенд. Контрольные суммы — в SHA256SUMS.txt.
@@ -243,6 +372,10 @@ jobs:
           Управление: WASD — полёт камеры, Space/Shift — вверх/вниз, Ctrl — ускорение, средняя кнопка мыши — вращение, колесо — зум, Esc — выход.
 
           ## Что нового в v$v
+          - **Исправлена ошибка запуска «CreateProcess сбой; код 216» / «Это приложение не удалось запустить на вашем ПК».** Установщики выбирали бинарь во время установки и в итоге клали на диск exe чужой архитектуры (arm64 вместо x64). Теперь каждый установщик, апдейтер и портативный zip несёт бинарь строго своей архитектуры, а в CI каждый пакет реально устанавливается и проверяется PE-заголовок установленного ``main.exe``.
+          - Установщик сам контролирует архитектуру установленного файла: при несовпадении выводится понятное сообщение и создаётся ``ARCH-MISMATCH.txt``, автозапуск отключается.
+          - Апдейтер теперь обновляет именно ту папку, где программа уже стоит (путь берётся из реестра), а не папку по умолчанию.
+          - Из установщиков убраны DLL чужих архитектур и неиспользуемые NVIDIA Streamline ``sl.*.dll``; setup.exe получил иконку.
           - Автоопределение CUDA: на ПК без NVIDIA GPU движок сам переключается на CPU-бэкенд; в панели Compute — имя GPU или сообщение о фолбэке.
           - Полный набор PC-артефактов, как в прежних PC-версиях: Setup / Update / Portable для x64, x86 и arm64.
           - Установщики на русском и английском, ярлыки, деинсталлятор; exe с иконкой и сведениями о версии.

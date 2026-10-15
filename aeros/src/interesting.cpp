@@ -163,7 +163,6 @@ float solveObliqueShockAngle(float mach, float deflectionDeg) {
 
     // Бисекция для слабого скачка (обычно используется)
     float fLow = f(betaLow);
-    float fHigh = f(betaHigh);
     // Ищем первый корень от mu вверх
     float bestBeta = mu;
     bool found = false;
@@ -341,7 +340,8 @@ void updateSmokeTunnel(float dt) {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     float diss = aeroSmokeDissipation;
-    if (diss < 0.8f) diss = 0.8f; if (diss > 0.999f) diss = 0.999f;
+    if (diss < 0.8f) diss = 0.8f;
+    if (diss > 0.999f) diss = 0.999f;
     float turb = aeroSmokeTurbulence;
 
     // Обновление частиц

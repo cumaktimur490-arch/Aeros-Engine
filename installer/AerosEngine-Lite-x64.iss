@@ -9,7 +9,8 @@
 #include "common.iss"
 
 #define LiteAppName "Aeros Engine Lite"
-#define LiteAppId "{A7B8C9D0-E1F2-4A5B-8C9D-0E1F2A3B4C5D-LITE}"
+; AppId должен быть корректным GUID: суффикс «-LITE» делал его невалидным
+#define LiteAppId "{A7B8C9D0-E1F2-4A5B-8C9D-0E1F2A3B4C60}"
 #define LiteExeName "aeros-engine-lite.exe"
 #define LiteOutputBaseName "Aeros-Engine-Setup-Lite-" + ArchSuffix + "-v" + AppVersion
 
@@ -30,11 +31,9 @@ OutputBaseFilename={#LiteOutputBaseName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-#if FileExists("..\aeros\bin\icon.ico")
-SetupIconFile=..\aeros\bin\icon.ico
-#elif FileExists("..\aeros\icon.ico")
-SetupIconFile=..\aeros\icon.ico
-#endif
+; Иконка установщика. ..\aeros\bin\icon.ico в репозитории нет (bin/ в .gitignore),
+; настоящий icon.ico лежит в aeros\src — иначе setup.exe собирался без иконки.
+SetupIconFile=..\aeros\src\icon.ico
 UninstallDisplayIcon={app}\{#LiteExeName}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -64,15 +63,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "install_deps"; Description: "Download all required dependencies (GLFW, GLM, GLAD, ImGui, models) — Lite minimal"; GroupDescription: "Dependencies"; Flags: checkedonce
 
 [Files]
-; Lite бинарь
-Source: "..\aeros\bin\main-lite-x64.exe"; DestDir: "{app}"; DestName: "{#LiteExeName}"; Flags: ignoreversion; Check: FileExists(ExpandConstant('..\aeros\bin\main-lite-x64.exe'))
-Source: "..\aeros\bin\main-lite.exe"; DestDir: "{app}"; DestName: "{#LiteExeName}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('..\aeros\bin\main-lite-x64.exe')) and FileExists(ExpandConstant('..\aeros\bin\main-lite.exe'))
+; Lite-бинарь СТРОГО своей архитектуры. Никаких fallback'ов: Check: FileExists(...)
+; в Inno выполняется во время установки на ПК пользователя, где относительного пути
+; ..\aeros\bin\... не существует, — из-за этого правильный exe пропускался, а на диск
+; ложился общий bin\main.exe (архитектуры последней сборки) → «CreateProcess код 216».
+; Если main-lite-x64.exe не собран, ISCC упадёт при компиляции — это и нужно.
+Source: "..\aeros\bin\main-lite-x64.exe"; DestDir: "{app}"; DestName: "{#LiteExeName}"; Flags: ignoreversion
 Source: "..\aeros\bin\aeros-engine-lite-x64.exe"; DestDir: "{app}"; DestName: "aeros-engine-lite-x64.exe"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "..\aeros\bin\aeros-engine-lite.exe"; DestDir: "{app}"; DestName: "aeros-engine-lite.exe"; Flags: ignoreversion skipifsourcedoesntexist
-; Fallback to full if lite not built
-Source: "..\aeros\bin\main-x64.exe"; DestDir: "{app}"; DestName: "{#LiteExeName}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('..\aeros\bin\main-lite-x64.exe')) and not FileExists(ExpandConstant('..\aeros\bin\main-lite.exe')) and FileExists(ExpandConstant('..\aeros\bin\main-x64.exe'))
-; DLL
-Source: "..\aeros\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; DLL — только x64 (шаблон *.dll тащил бы glfw3-x86.dll/glfw3-arm64.dll и неиспользуемые sl.*.dll)
+Source: "..\aeros\bin\glfw3.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Models
 Source: "..\aeros\bin\*.stl"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\models\*.stl"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist
@@ -106,6 +105,8 @@ Type: files; Name: "{app}\imgui.ini"
 Type: files; Name: "{app}\aeros_settings.ini"
 
 [Code]
+#include "archcheck.inc"
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;
@@ -116,6 +117,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    AerosArchOK := AerosVerifyInstalledExe('{#LiteExeName}');
     SaveStringToFile(ExpandConstant('{app}\install-info.txt'),
       'Aeros Engine Lite ' + ExpandConstant('{#AppVersion}') + ' {#ArchTitle}' + #13#10 +
       'Installed: ' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + #13#10 +

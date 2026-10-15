@@ -16,7 +16,8 @@ AppName={#AppName} Update {#ArchTitle}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
-DefaultDirName={autopf}\{#AppName} {#ArchTitle}
+; Папка по умолчанию вычисляется кодом: берётся путь уже установленной программы
+DefaultDirName={code:GetDefaultDirName}
 DefaultGroupName={#AppName} {#ArchTitle}
 AllowNoIcons=yes
 LicenseFile=..\LICENSE
@@ -25,9 +26,9 @@ OutputBaseFilename={#OutputBaseName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-#if FileExists("..\aeros\bin\icon.ico")
-SetupIconFile=..\aeros\bin\icon.ico
-#endif
+; Иконка установщика. ..\aeros\bin\icon.ico в репозитории нет (bin/ в .gitignore),
+; настоящий icon.ico лежит в aeros\src — иначе setup.exe собирался без иконки.
+SetupIconFile=..\aeros\src\icon.ico
 ArchitecturesAllowed=arm64 x64compatible
 ArchitecturesInstallIn64BitMode=arm64 x64compatible
 MinVersion=10.0
@@ -45,15 +46,20 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Files]
-Source: "..\aeros\bin\main-arm64.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion; Check: FileExists(ExpandConstant('..\aeros\bin\main-arm64.exe'))
-Source: "..\aeros\bin\main.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('..\aeros\bin\main-arm64.exe'))
-Source: "..\aeros\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; Бинарь СТРОГО своей архитектуры и без fallback на общий bin\main.exe:
+; если файла нет, ISCC упадёт при компиляции, а не положит чужую архитектуру
+; (fallback и давал «CreateProcess сбой; код 216» на ПК пользователя).
+Source: "..\aeros\bin\main-arm64.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
+; DLL — только arm64: glfw3.dll из bin является 64-битным и сюда попадать не должен
+Source: "..\aeros\bin\glfw3-arm64.dll"; DestDir: "{app}"; DestName: "glfw3.dll"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Code]
 var
   InstallPath: String;
+
+#include "archcheck.inc"
 
 function GetExistingInstallPath(): String;
 var
@@ -74,6 +80,20 @@ begin
     else if RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1', 'Inno Setup: App Path', Path) then
       Result := Path;
   end;
+end;
+
+{ Куда ставить обновление: сначала ищем существующую установку по AppId в реестре.
+  Раньше найденный путь подставлялся только в DirEdit на странице выбора папки, а
+  DefaultDirName оставался «по умолчанию» — в тихом режиме (и если страница папки
+  пропущена) обновление уезжало не в ту папку, где реально стоит программа. }
+function GetDefaultDirName(Param: String): String;
+begin
+  if InstallPath = '' then
+    InstallPath := GetExistingInstallPath();
+  if InstallPath <> '' then
+    Result := InstallPath
+  else
+    Result := ExpandConstant('{autopf}\{#AppName} {#ArchTitle}');
 end;
 
 function InitializeSetup(): Boolean;
@@ -104,6 +124,9 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
+    AerosArchOK := AerosVerifyInstalledExe('{#AppExeName}');
     SaveStringToFile(ExpandConstant('{app}\update-info.txt'),
       'Updated to {#AppVersion} {#ArchTitle} ' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + #13#10, False);
+  end;
 end;

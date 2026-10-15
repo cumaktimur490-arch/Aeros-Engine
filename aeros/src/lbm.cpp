@@ -395,9 +395,7 @@ void initLBM() {
             int z = cell / (lbmNx*lbmNy);
             float fx = (float)x / lbmNx * 6.28f, fy = (float)y / lbmNy * 6.28f, fz = (float)z / lbmNz * 6.28f;
             // Векторный потенциал A = (sin(fy+fz), sin(fz+fx), sin(fx+fy))
-            float Ax = sinf(fy*1.3f + fz*0.7f);
-            float Ay = sinf(fz*1.1f + fx*0.9f);
-            float Az = sinf(fx*1.2f + fy*0.8f);
+            // Значения самого потенциала A не нужны — curl считается через производные
             // curl A — дивергенция-free: (dAz/dy - dAy/dz, dAx/dz - dAz/dx, dAy/dx - dAx/dy)
             // Производные через cos
             float dAzdy = cosf(fx*1.2f + fy*0.8f) * 0.8f;
@@ -649,7 +647,6 @@ void stepLBMCPU(int steps) {
                                 float dx = lbmCellSizeX; // характерный размер ячейки
                                 // Van Driest damping у стенок: Cs_eff = Cs * (1 - exp(-y+/26))
                                 // y+ оцениваем как расстояние до ближайшей твердой ячейки
-                                float yPlus = 1.0f;
                                 // Поиск ближайшей твердой ячейки в радиусе 5
                                 int wallDist = 5;
                                 bool nearWall = false;
