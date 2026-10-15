@@ -26,12 +26,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Lint PowerShell (разбор всех .ps1 до начала долгих сборок)
+      - name: Lint PowerShell (все .ps1 и все inline-блоки этого воркфлоу)
         shell: pwsh
         run: |
-          # Ошибка разбора в .ps1 ломает шаг молча и только в самом конце long build.
-          # Проверяем синтаксис сразу: Parser возвращает ошибки с номерами строк,
-          # а мы дублируем их в аннотации (логи шагов наружу не отдаются).
+          # Ошибка разбора PowerShell ломает шаг молча и лишь в самом конце долгой сборки,
+          # а логи шагов наружу не отдаются. Поэтому синтаксис проверяем сразу: Parser
+          # возвращает ошибки с номерами строк, мы дублируем их в аннотации ::error::.
           $bad = 0
           $files = @(Get-ChildItem -Path installer, tools -Filter *.ps1 -File -Recurse)
           foreach ($file in $files) {
@@ -46,8 +46,49 @@ jobs:
               Write-Host "[lint] OK $($file.Name)"
             }
           }
-          if ($bad -gt 0) { throw "PowerShell syntax errors in $bad file(s)" }
-          Write-Host "::notice::ps-lint: синтаксис $($files.Count) скриптов в порядке"
+
+          # Inline-блоки run: | из этого же файла: вырезаем по отступу, гасим выражения
+          # GitHub ${{ ... }} (иначе они парсятся как имя переменной в ${}) и разбираем.
+          $wf = ".github/workflows/pc-release.yml"
+          $lines = @(Get-Content $wf)
+          $i = 0
+          $blocks = 0
+          while ($i -lt $lines.Count) {
+            if ($lines[$i] -match '^(\s+)run:\s*\|\s*$') {
+              $indent = $Matches[1].Length
+              # bash/cmd-блоки парсером PowerShell проверять нельзя - смотрим shell: шага
+              $shell = "pwsh"
+              for ($k = $i - 1; $k -ge 0 -and $k -ge $i - 4; $k--) {
+                if ($lines[$k] -match '^\s*shell:\s*(\S+)') { $shell = $Matches[1]; break }
+              }
+              if ($shell -ne "pwsh" -and $shell -ne "powershell") { $i++; continue }
+              $from = $i + 1
+              $block = @()
+              $j = $from
+              while ($j -lt $lines.Count) {
+                if ($lines[$j].Trim() -eq "") { $block += ""; $j++; continue }
+                if ($lines[$j].Length -le $indent) { break }
+                if ($lines[$j].Substring(0, $indent).Trim() -ne "") { break }
+                $block += $lines[$j].Substring($indent)
+                $j++
+              }
+              $blocks++
+              $text = [regex]::Replace(($block -join "`n"), '\$\{\{[^}]*\}\}', 'CIEXPR')
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errors)
+              if ($errors -and $errors.Count -gt 0) {
+                $bad++
+                foreach ($e in $errors) {
+                  $ln = $from + $e.Extent.StartLineNumber
+                  Write-Host "::error::pc-release.yml:$ln : inline pwsh: $($e.Message)"
+                }
+              }
+              $i = $j
+            } else { $i++ }
+          }
+          Write-Host "[lint] inline-блоков проверено: $blocks"
+          if ($bad -gt 0) { throw "PowerShell syntax errors in $bad source(s)" }
+          Write-Host "::notice::ps-lint: синтаксис $($files.Count) скриптов и $blocks inline-блоков в порядке"
 
       - name: Read version from aeros/src/version.h
         id: ver

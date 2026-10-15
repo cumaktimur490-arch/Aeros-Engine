@@ -105,7 +105,7 @@ function Build-Portable($archSuffix) {
         Copy-Item $glfwSrc -Destination (Join-Path $portableDir "glfw3.dll") -Force
         $gm = Get-PEMachine $glfwSrc
         $gw = $script:PEMachineByArch[$archSuffix]
-        if ($gm -ne $gw) { Fail "$glfwName: PE machine $gm вместо $gw - DLL чужой архитектуры" }
+        if ($gm -ne $gw) { Fail "${glfwName}: PE machine $gm вместо $gw - DLL чужой архитектуры" }
     } else {
         Write-Host "[INFO] No glfw dll for $archSuffix ($glfwName) - static link or missing" -ForegroundColor Gray
     }
