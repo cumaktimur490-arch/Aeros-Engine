@@ -102,8 +102,10 @@ begin
   Want := AerosExpectedPEMachine;
   Mach := AerosReadPEMachine(ExePath);
   Result := (Mach <> 0) and (Mach = Want);
-  Log(Format('[Aeros] arch check: file=%s machine=%s expected=%s',
-    [ExePath, AerosHex4(Mach), AerosHex4(Want)]));
+  { Строку с массивом аргументов Format нельзя переносить так, чтобы '[' оказался
+    первым символом строки: ISCC принимает её за заголовок секции
+    ("Invalid section tag"). Поэтому всё в одну строку. }
+  Log(Format('[Aeros] arch check: file=%s machine=%s expected=%s', [ExePath, AerosHex4(Mach), AerosHex4(Want)]));
 
   if not Result then
   begin

@@ -575,6 +575,13 @@ jobs:
             if ($f) { $files += $f.FullName }
           }
           Write-Host "Assets (по порядку):"; $files | ForEach-Object { Write-Host "  $_" }
+          # Форма релиза фиксирована: Setup/Update/Portable x (x64/x86/arm64) + SHA256SUMS + README
+          if ($files.Count -ne 11) {
+            $flat = ($files | ForEach-Object { Split-Path $_ -Leaf }) -join ", "
+            Write-Host "::error::publish: найдено $($files.Count) ассетов вместо 11: $flat"
+            throw "в release/ не хватает артефактов: $($files.Count) из 11"
+          }
+          Write-Host "::notice::publish: 11 ассетов на месте, публикуем v$v"
           $title = "AeroS Engine v$v — PC-релиз (Windows x64/x86/arm64: установщики, апдейтеры, портативные)"
           $exists = gh release view "v$v" --json tagName --jq .tagName 2>$null
           if ($LASTEXITCODE -eq 0 -and $exists) {
