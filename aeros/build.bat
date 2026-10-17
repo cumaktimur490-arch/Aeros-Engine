@@ -203,7 +203,12 @@ if exist src\app_icon.rc (
 )
 
 rem --- Флаги ---
-set "NVCC_ARCH=-arch=sm_75"
+rem v1.25.0 — CUDA-архитектуры. Раньше было -arch=sm_75, что эквивалентно
+rem -gencode arch=compute_75,code=sm_75: в бинарь попадал только SASS для Turing,
+rem а более новым GPU (Ampere/Ada/Blackwell) нечего было JIT-компилировать.
+rem Вариант code=[sm_75,compute_75] кладёт и SASS для Turing, и PTX для остальных.
+rem Смешивать -arch= и -gencode нельзя: nvcc отвергает такую комбинацию.
+set "NVCC_ARCH=-gencode arch=compute_75,code=[sm_75,compute_75]"
 rem Набор инструкций CPU: базовый SSE2, чтобы exe запускался на любом x64/x86 процессоре.
 rem /arch:AVX2 ломает запуск на CPU до Haswell (2013) — STATUS_ILLEGAL_INSTRUCTION.
 rem Для локальной сборки под современный CPU: set AEROS_AVX2=1
@@ -233,7 +238,7 @@ nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -I src\imgui ^
   src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
   src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^
-  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp src\framegen.cpp src\interesting.cpp src\vulkan_renderer.cpp src\lite_config.cpp src\benchmark.cpp ^
+  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp src\framegen.cpp src\interesting.cpp src\vulkan_renderer.cpp src\lite_config.cpp src\benchmark.cpp src\debug_log.cpp ^
   src\glad.c src\kernel.cu ^
   src\imgui\imgui.cpp src\imgui\imgui_draw.cpp src\imgui\imgui_tables.cpp src\imgui\imgui_widgets.cpp ^
   src\imgui\imgui_impl_glfw.cpp src\imgui\imgui_impl_opengl3.cpp ^
@@ -253,6 +258,12 @@ if !errorlevel! neq 0 (
         goto :done
     )
 )
+
+rem v1.25.0 — маркер бэкенда: CI по нему проверяет, что x64 действительно собран
+rem через nvcc. Раньше при сбое nvcc скрипт молча уходил в CPU-only fallback,
+rem и в релизе CUDA просто не работала, а выяснить это можно было только у пользователя.
+>bin\BUILD-BACKEND-!OUT_ARCH!.txt echo CUDA
+echo [Aeros] Backend marker: bin\BUILD-BACKEND-!OUT_ARCH!.txt = CUDA
 
 rem bin\main.exe — ТОЛЬКО удобство для локального run.bat/launcher.bat.
 rem Упаковщики (installer\*.iss, build-portable.ps1) обязаны брать main-<arch>.exe:

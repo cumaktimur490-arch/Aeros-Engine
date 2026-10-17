@@ -8,6 +8,7 @@
 #include <chrono>
 
 #include "globals.h"
+#include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "stl_loader.h"
 #include "gl_utils.h"
 #include "voxel_grid.h"
@@ -25,14 +26,18 @@ bool loadModel(const std::string& path) {
     std::vector<float> vertices, normals;
     if (!loadSTL(path, vertices, normals)) {
         std::cerr << "[Model] Failed to load STL: " << path << std::endl;
+        DBG_ERROR("не удалось прочитать STL-файл: %s", path.c_str());
         return false;
     }
     if (vertices.empty() || normals.empty()) {
         std::cerr << "[Model] Empty model" << std::endl;
+        DBG_ERROR("модель пуста: %s (в файле нет треугольников)", path.c_str());
         return false;
     }
     if (vertices.size() != normals.size()) {
         std::cerr << "[Model] Vertex/normal size mismatch" << std::endl;
+        DBG_ERROR("несовпадение размеров вершин (%zu) и нормалей (%zu) в %s",
+                  vertices.size(), normals.size(), path.c_str());
         return false;
     }
     if (vertices.size() % 9 != 0) {
@@ -53,6 +58,7 @@ bool loadModel(const std::string& path) {
     }
     if (!hasValid) {
         std::cerr << "[Model] No valid vertices" << std::endl;
+        DBG_ERROR("в модели %s нет ни одной конечной вершины (все NaN/Inf)", path.c_str());
         return false;
     }
     center = (minBB + maxBB) * 0.5f;
@@ -143,6 +149,8 @@ bool loadModel(const std::string& path) {
               << " BB=[" << minBB.x << "," << minBB.y << "," << minBB.z << "]-["
               << maxBB.x << "," << maxBB.y << "," << maxBB.z << "]"
               << " maxDim=" << maxDim << std::endl;
+    DBG_INFO("модель прочитана: %s, вершин %d, треугольников %d, габарит %.4f",
+             path.c_str(), modelVertexCount, modelVertexCount / 3, maxDim);
 
     createBoundingBoxVAO();
     createAxesVAO(maxDim * 0.6f);
@@ -185,5 +193,10 @@ bool loadModel(const std::string& path) {
     updateVertexColors();
     computeLiftDrag();
     updateLiftDragArrows();
+    // v1.25.0 — итог загрузки модели в журнал (полезно при поиске причин
+    // «странных» результатов: сразу видно размеры, площадь и число Рейнольдса)
+    DBG_PHYS("модель готова: вершин %d, SDF-сетка %d, площадь %.4f м2, Re %.1f, вокселизация %.1f мс, бэкенд %s",
+             modelVertexCount, voxelResolution, aeroRefArea, aeroReNumber, perfVoxelMs,
+             useCUDA ? "CUDA" : "CPU");
     return true;
 }

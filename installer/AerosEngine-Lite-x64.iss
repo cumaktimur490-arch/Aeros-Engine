@@ -86,9 +86,12 @@ Source: "download_deps.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
+; v1.25.0 — отладочный отчёт для разработчика (то же, что F10 в программе)
+Source: "debug-report.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
+Name: "{group}\Отладочный отчёт (Debug Report)"; Filename: "{app}\debug-report.bat"; WorkingDir: "{app}"; Comment: "Сохранить Aeros-Debug-Report и показать путь к файлу"
 Name: "{group}\{#LiteAppName}"; Filename: "{app}\{#LiteExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#LiteExeName}"; Comment: "{#LiteAppName} {#ArchTitle} Lite i3-3xxx HD4000"
 Name: "{group}\{#LiteAppName} (Lite Low Power)"; Filename: "{app}\{#LiteExeName}"; Parameters: "--lite"; WorkingDir: "{app}"; IconFilename: "{app}\{#LiteExeName}"; Comment: "Low power mode"
 Name: "{group}\Download Lite Dependencies"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\download_deps.ps1"" -InstallDir ""{app}"" -Arch x64"; WorkingDir: "{app}"; Comment: "Download Lite dependencies"

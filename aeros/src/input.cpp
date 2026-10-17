@@ -7,6 +7,7 @@
 
 #include "globals.h"
 #include "input.h"
+#include "debug_log.h"
 #include "forces.h"
 #include "streamlines.h"
 #include "fsr.h"
@@ -169,6 +170,27 @@ void processInput(GLFWwindow* window) {
         aeroCSVExportRequested = true;
     }
     f6WasPressed = f6Pressed;
+
+    // F9 — режим отладки: включить/выключить журнал событий, действий и физики
+    static bool f9WasPressed = false;
+    bool f9Pressed = glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS;
+    if (f9Pressed && !f9WasPressed) {
+        bool on = !debugLogEnabled();
+        debugLogSetEnabled(on);
+        debugLogSetPhysics(on);
+        debugLogSetOverlay(on);
+    }
+    f9WasPressed = f9Pressed;
+
+    // F10 — сохранить отладочный отчёт (файл, который можно прислать разработчику)
+    static bool f10WasPressed = false;
+    bool f10Pressed = glfwGetKey(window, GLFW_KEY_F10) == GLFW_PRESS;
+    if (f10Pressed && !f10WasPressed) {
+        g_lastDebugReportPath = debugLogSaveReport();
+        if (g_lastDebugReportPath.empty())
+            DBG_ERROR("не удалось сохранить отладочный отчёт");
+    }
+    f10WasPressed = f10Pressed;
 
     // Reset camera with R
     static bool rWasPressed = false;

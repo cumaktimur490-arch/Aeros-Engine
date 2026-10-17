@@ -79,6 +79,7 @@ SOURCES=(
     "$SRCDIR/interesting.cpp"
     "$SRCDIR/vulkan_renderer.cpp"
     "$SRCDIR/lite_config.cpp"
+    "$SRCDIR/debug_log.cpp"
     "$SRCDIR/benchmark.cpp"
     "$SRCDIR/cuda_stub.cpp"
     "$SRCDIR/glad.c"

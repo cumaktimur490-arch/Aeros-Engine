@@ -140,6 +140,11 @@ pause
 "@ | Set-Content -Path (Join-Path $portableDir "run.bat") -Encoding ASCII
     }
 
+    # v1.25.0 — помощник отладочного отчёта: то же, что F10 в программе,
+    # но работает и тогда, когда сам Aeros Engine не запускается.
+    $dbgBat = Join-Path (Join-Path $RootDir "installer") "debug-report.bat"
+    if (Test-Path $dbgBat) { Copy-Item $dbgBat -Destination $portableDir -Force }
+
     # README и LICENSE и иконка
     Copy-Item (Join-Path $RootDir "LICENSE") -Destination (Join-Path $portableDir "LICENSE.txt") -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $RootDir "README.md") -Destination (Join-Path $portableDir "README.txt") -Force -ErrorAction SilentlyContinue

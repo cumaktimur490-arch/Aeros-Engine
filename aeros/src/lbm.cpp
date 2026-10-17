@@ -1,5 +1,6 @@
 #include "lbm.h"
 #include "globals.h"
+#include "debug_log.h"   // v1.25.0 — журнал физики
 #include "flow_field.h"
 #include "voxel_grid.h"
 #include "forces.h"
@@ -294,6 +295,8 @@ void initLBM() {
     int total = lbmNx * lbmNy * lbmNz;
     if (total <= 0 || total > 20*1024*1024) {
         std::cout << "[LBM] Invalid total cells: " << total << std::endl;
+        DBG_ERROR("LBM: недопустимое число ячеек %d (сетка %dx%dx%d) — решатель не запущен",
+                  total, lbmNx, lbmNy, lbmNz);
         lbmInitialized = false;
         return;
     }
@@ -317,6 +320,8 @@ void initLBM() {
         fNext.assign(total*Q, 0.0f);
     } catch (const std::bad_alloc& e) {
         std::cout << "[LBM] Allocation failed: " << e.what() << " total=" << total << std::endl;
+        DBG_ERROR("LBM: не хватило памяти на сетку %d ячеек (%s) — уменьшите разрешение сетки",
+                  total, e.what());
         lbmInitialized = false;
         return;
     }
@@ -491,15 +496,20 @@ void initLBM() {
               << " [OpenMP " << omp_get_max_threads() << " threads]"
 #endif
               << std::endl;
+    DBG_PHYS("LBM инициализирован: сетка %dx%dx%d (%d ячеек), tau %.4f, nu %.6f, Re %.1f, время %.1f мс",
+             lbmNx, lbmNy, lbmNz, total, lbmParams.tau, lbmParams.viscosity, lbmReynolds, lbmTimeMs);
 }
 
 void resetLBM() {
     std::cout << "[LBM] Reset..." << std::endl;
+    DBG_PHYS("LBM: сброс решателя");
+    debugLogAction("сброс LBM", "сетка %dx%dx%d", lbmNx, lbmNy, lbmNz);
     shutdownLBM();
     initLBM();
 }
 
 void shutdownLBM() {
+    if (lbmInitialized) DBG_PHYS("LBM: остановлен на шаге %d", lbmCurrentStep);
     lbmInitialized = false;
     lbmCurrentStep = 0;
     lbmConverged = false;
@@ -715,6 +725,8 @@ void stepLBMCPU(int steps) {
 
         if (nanCount > total/10) {
             std::cout << "[LBM] Warning: many NaN/invalid (" << nanCount << ") — possible instability, resetting" << std::endl;
+            DBG_ERROR("LBM неустойчив: %d из %d ячеек стали NaN/Inf на шаге %d — решатель будет перезапущен",
+                      nanCount, total, lbmCurrentStep);
             hasDiverged = true;
             break;
         }
@@ -913,6 +925,8 @@ void stepLBMCPU(int steps) {
 
         if (!std::isfinite(lbmAvgRho) || lbmAvgRho > 1.2f || lbmAvgRho < 0.8f) {
             std::cout << "[LBM] Divergence detected rho=" << lbmAvgRho << " — resetting" << std::endl;
+            DBG_ERROR("LBM разошёлся: rho=%.6f вне диапазона 0.8..1.2 на шаге %d (скорость потока %.3f м/с) — перезапуск",
+                      lbmAvgRho, lbmCurrentStep, flowSpeed);
             hasDiverged = true;
             break;
         }
@@ -989,6 +1003,8 @@ void updateLBM(float deltaTime) {
     if (lbmNx != g_voxNx || lbmNy != g_voxNy || lbmNz != g_voxNz) {
         if (abs(lbmNx - g_voxNx) > 2 || abs(lbmNy - g_voxNy) > 2 || abs(lbmNz - g_voxNz) > 2) {
             std::cout << "[LBM] Voxel grid changed, reinit" << std::endl;
+            DBG_PHYS("LBM: воксельная сетка изменилась (%dx%dx%d -> %dx%dx%d), переустановка решателя",
+                     lbmNx, lbmNy, lbmNz, g_voxNx, g_voxNy, g_voxNz);
             initLBM();
         }
         return;

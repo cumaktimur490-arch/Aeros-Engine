@@ -8,6 +8,7 @@
 
 #include "globals.h"
 #include "cuda_api.h"
+#include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "flow_field.h"
 #include "voxel_grid.h"
 #include "atmosphere.h"
@@ -205,7 +206,19 @@ void updateVertexColors() {
 
     if (useCUDA == 1) {
         try { computeVertexPressureCUDA(g_vertices, g_normals, g_vertexColors, numVerts, flowParams); }
-        catch (...) { useCUDA = 0; }
+        catch (...) {
+            useCUDA = 0;
+            DBG_ERROR("исключение при расчёте давления на CUDA — переключаюсь на CPU");
+        }
+        // v1.25.0 — ошибка GPU пишется в журнал, цвета вершин считаются на CPU
+        char cudaErr[900]; cudaErr[0] = '\0';
+        int code = cudaConsumeError(cudaErr, sizeof(cudaErr));
+        if (code != 0) {
+            g_debugCudaFallbacks++;
+            g_cudaStatusText = cudaErr;
+            DBG_ERROR("расчёт давления вершин на CUDA не удался (код %d): %s", code, cudaErr);
+            useCUDA = 0;
+        }
     }
     if (useCUDA == 0) {
         try { g_vertexColors.resize(numVerts*3); } catch (...) { return; }

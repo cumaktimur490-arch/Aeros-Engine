@@ -63,11 +63,14 @@ Source: "..\aeros\bin\glfw3-x86.dll"; DestDir: "{app}"; DestName: "glfw3.dll"; F
 Source: "..\aeros\bin\*.stl"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\aeros\2.stl"; DestDir: "{app}\models"; DestName: "2.stl"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; v1.25.0 — отладочный отчёт для разработчика (то же, что F10 в программе)
+Source: "debug-report.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
+Name: "{group}\Отладочный отчёт (Debug Report)"; Filename: "{app}\debug-report.bat"; WorkingDir: "{app}"; Comment: "Сохранить Aeros-Debug-Report и показать путь к файлу"
 Name: "{group}\{#AppName} {#ArchTitle}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName} {#ArchTitle}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; WorkingDir: "{app}"

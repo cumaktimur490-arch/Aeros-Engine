@@ -11,7 +11,30 @@
 #include "globals.h"
 #include <glm/glm.hpp>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <vector>
+
+// v1.25.0 — диагностика: в сборке без nvcc CUDA-бэкенда нет физически,
+// поэтому честно сообщаем об этом вместо молчаливого "не работает".
+extern "C" void cudaProbeBackend(CudaBackendInfo* out) {
+    if (!out) return;
+    std::memset(out, 0, sizeof(*out));
+    out->compiledWithCuda = 0;
+    out->deviceCount = 0;
+    out->usable = 0;
+    out->lastError = 0;
+    std::snprintf(out->deviceName, sizeof(out->deviceName), "нет (CPU-сборка)");
+    std::snprintf(out->status, sizeof(out->status),
+                  "Этот бинарь собран БЕЗ CUDA (CPU_ONLY): nvcc не найден при сборке "
+                  "или сборка предназначена для x86/arm64. Расчёт идёт на CPU — "
+                  "это нормальный режим, видеокарта NVIDIA здесь не задействуется.");
+}
+
+extern "C" int cudaConsumeError(char* buf, int bufSize) {
+    if (buf && bufSize > 0) buf[0] = '\0';
+    return 0;
+}
 
 extern "C" void initParticlesCUDA(std::vector<float>& positions, std::vector<float>& colors,
                                   int numParticles, const FlowParams& params) {

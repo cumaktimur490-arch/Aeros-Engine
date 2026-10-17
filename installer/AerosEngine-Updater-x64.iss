@@ -59,6 +59,8 @@ Source: "..\aeros\bin\cudart64*.dll"; DestDir: "{app}"; Flags: ignoreversion ski
 Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
 ; run.bat обновляем
 Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; v1.25.0 — отладочный отчёт для разработчика (то же, что F10 в программе)
+Source: "debug-report.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Code]
 var

@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "globals.h"
+#include "debug_log.h"   // v1.25.0 — панель «Отладка и журнал»
 #include "vulkan_renderer.h"
 #include "stl_loader.h"
 #include "model.h"
@@ -893,8 +894,14 @@ if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.19.0 Realistic+", "Дав�
         ImGui::Text("LBM %s: [%.2f, %.2f] | TKE avg %.4f", _TR("Pressure", "Давление"), minP, maxP, lbmTKE);
     }
     ImGui::Separator();
-    if (ImGui::Button(_TR("Export Forces CSV (F6)", "Экспорт сил в CSV (F6)"))) aeroCSVExportRequested = true;
-    if (ImGui::Button(_TR("Screenshot BMP (F5)", "Скриншот BMP (F5)"))) aeroScreenshotRequested = true;
+    if (ImGui::Button(_TR("Export Forces CSV (F6)", "Экспорт сил в CSV (F6)"))) {
+        aeroCSVExportRequested = true;
+        debugLogAction("кнопка", "экспорт сил в CSV (панель LBM)");
+    }
+    if (ImGui::Button(_TR("Screenshot BMP (F5)", "Скриншот BMP (F5)"))) {
+        aeroScreenshotRequested = true;
+        debugLogAction("кнопка", "скриншот BMP (панель LBM)");
+    }
     if (!aeroLastCSVPath.empty()) ImGui::Text("CSV: %s", aeroLastCSVPath.c_str());
     if (!aeroLastScreenshotPath.empty()) ImGui::Text("BMP: %s", aeroLastScreenshotPath.c_str());
     if (showColorLegend && showPressure) {
@@ -983,9 +990,18 @@ if (ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.19.0 Ultra+", "LBM -
     ImGui::Text("Avg Rho: %.4f | Kinetic: %.6f | MaxVel LB %.3f", lbmAvgRho, lbmAvgKineticEnergy, lbmMaxVelocityLB);
     ImGui::Text("Max Vel World: %.2f m/s | Reynolds: %.1f | Conv: %.2e", lbmMaxVelocityWorld, lbmReynolds, lbmConvergence);
     ImGui::Text("%s: (%.4f, %.4f, %.4f) | Time: %.1f ms", _TR("Cell Size", "Размер ячейки"), lbmCellSizeX, lbmCellSizeY, lbmCellSizeZ, lbmTimeMs);
-    if (ImGui::Button(_TR("Init / Reset LBM", "Инициализация / Сброс LBM"))) { initLBM(); }
-    ImGui::SameLine(); if (ImGui::Button(_TR("Reset Only", "Только сброс"))) { resetLBM(); }
-    ImGui::SameLine(); if (ImGui::Button(_TR("Shutdown", "Отключить"))) { shutdownLBM(); }
+    if (ImGui::Button(_TR("Init / Reset LBM", "Инициализация / Сброс LBM"))) {
+        debugLogAction("кнопка LBM", "инициализация/сброс, сетка %dx%dx%d", lbmNx, lbmNy, lbmNz);
+        initLBM();
+    }
+    ImGui::SameLine(); if (ImGui::Button(_TR("Reset Only", "Только сброс"))) {
+        debugLogAction("кнопка LBM", "только сброс (шаг был %d)", lbmCurrentStep);
+        resetLBM();
+    }
+    ImGui::SameLine(); if (ImGui::Button(_TR("Shutdown", "Отключить"))) {
+        debugLogAction("кнопка LBM", "останов решателя (шаг %d)", lbmCurrentStep);
+        shutdownLBM();
+    }
     if (ImGui::Button("Step 10")) { stepLBMCPU(10); }
     ImGui::SameLine(); if (ImGui::Button("Step 100")) { stepLBMCPU(100); }
     ImGui::SameLine(); if (ImGui::Button("Step 500")) { stepLBMCPU(500); }
@@ -999,29 +1015,61 @@ if (ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.19.0 Ultra+", "LBM -
 }
 
 if (ImGui::CollapsingHeader(_TR("Compute & Export v1.19.0", "Вычисления и Экспорт v1.19.0"))) {
-    ImGui::RadioButton("CUDA", &useCUDA, 1);
-    ImGui::SameLine();
-    ImGui::RadioButton("CPU", &useCUDA, 0);
-    if (ImGui::Button(_TR("Open Model", "Открыть модель"))) {
-        std::string p = openFileDialog();
-        if (!p.empty()) loadModel(p);
+    // v1.25.0 — выбор бэкенда пишется в журнал действий, а причина недоступности
+    // CUDA показывается прямо здесь: раньше пользователь просто не понимал,
+    // почему переключение на CUDA ничего не меняет.
+    if (ImGui::RadioButton("CUDA", &useCUDA, 1)) {
+        debugLogAction("выбран бэкенд вычислений", "CUDA");
+        if (!g_cudaProbeDone) {
+            cudaProbeBackend(&g_cudaInfo);
+            g_cudaProbeDone = true;
+            g_cudaStatusText = g_cudaInfo.status;
+            DBG_INFO("проба CUDA по запросу пользователя: %s", g_cudaStatusText.c_str());
+        }
+        if (!g_cudaInfo.usable)
+            DBG_WARN("пользователь выбрал CUDA, но бэкенд недоступен: %s", g_cudaStatusText.c_str());
     }
     ImGui::SameLine();
-    if (ImGui::Button(_TR("Screenshot BMP (F5)", "Скриншот BMP (F5)"))) aeroScreenshotRequested = true;
+    if (ImGui::RadioButton("CPU", &useCUDA, 0)) debugLogAction("выбран бэкенд вычислений", "CPU");
+    if (g_cudaProbeDone && !g_cudaInfo.usable)
+        ImGui::TextWrapped("CUDA недоступна: %s", g_cudaStatusText.c_str());
+    if (ImGui::Button(_TR("Open Model", "Открыть модель"))) {
+        debugLogAction("кнопка", "открыть модель — вызван диалог выбора файла");
+        std::string p = openFileDialog();
+        if (!p.empty()) {
+            debugLogAction("выбрана модель", "%s", p.c_str());
+            if (loadModel(p)) DBG_INFO("модель загружена из UI: %s (вершин %d)", p.c_str(), modelVertexCount);
+            else DBG_ERROR("не удалось загрузить модель из UI: %s", p.c_str());
+        } else {
+            debugLogAction("диалог выбора модели", "файл не выбран");
+        }
+    }
     ImGui::SameLine();
-    if (ImGui::Button(_TR("Export CSV (F6)", "Экспорт CSV (F6)"))) aeroCSVExportRequested = true;
+    if (ImGui::Button(_TR("Screenshot BMP (F5)", "Скриншот BMP (F5)"))) {
+        aeroScreenshotRequested = true;
+        debugLogAction("кнопка", "скриншот BMP (запрошен)");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Export CSV (F6)", "Экспорт CSV (F6)"))) {
+        aeroCSVExportRequested = true;
+        debugLogAction("кнопка", "экспорт сил в CSV (запрошен)");
+    }
     if (ImGui::Button(_TR("Save Settings", "Сохранить настройки"))) {
-        if (saveSettings("aeros_settings.ini")) ImGui::Text("%s aeros_settings.ini", _TR("Saved", "Сохранено"));
+        bool settingsSaved = saveSettings("aeros_settings.ini");
+        debugLogAction("кнопка", "сохранение aeros_settings.ini: %s", settingsSaved ? "успешно" : "ОШИБКА");
+        if (!settingsSaved) DBG_ERROR("не удалось сохранить aeros_settings.ini");
+        if (settingsSaved) ImGui::Text("%s aeros_settings.ini", _TR("Saved", "Сохранено"));
     }
     ImGui::SameLine();
     if (ImGui::Button(_TR("Load Settings", "Загрузить настройки"))) {
+        debugLogAction("кнопка", "загрузка aeros_settings.ini");
         if (loadSettings("aeros_settings.ini")) {
             updateVertexColors(); computeStreamlines();
             ImGui::Text("%s", _TR("Loaded settings", "Настройки загружены"));
         }
     }
     ImGui::Separator();
-    ImGui::Text("%s: F1 model, F2 pressure, F3 streamlines, F4 particles, F5 screenshot, F6 CSV, Ctrl+R reset camera",
+    ImGui::Text("%s: F1 model, F2 pressure, F3 streamlines, F4 particles, F5 screenshot, F6 CSV, F9 debug, F10 report, Ctrl+R reset camera",
         _TR("Shortcuts", "Горячие клавиши"));
 }
 
@@ -1043,7 +1091,11 @@ if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+R
         _TR("ERRORS", "ОШИБКИ"), testsFailed - codeTestsFailed - lbmTestsFailed - realisticFailed - optFailed, codeTestsFailed, lbmTestsFailed, realisticFailed);
     else if (testsPassed > 0) ImGui::TextColored(ImVec4(0.2f,1,0.2f,1), "%s", _TR("All tests passed — physics, code, LBM, opt, realistic, lang OK", "Все тесты пройдены — физика, код, LBM, оптимизация, реалистичность, язык ОК"));
 
-    if (ImGui::Button(_TR("Run All Tests", "Запустить все тесты"))) runAllTests();
+    if (ImGui::Button(_TR("Run All Tests", "Запустить все тесты"))) {
+        debugLogAction("кнопка", "запуск всех тестов");
+        runAllTests();
+        DBG_INFO("тесты выполнены: пройдено %d, провалено %d", testsPassed, testsFailed);
+    }
     ImGui::SameLine(); if (ImGui::Button(_TR("Physics Only", "Только физика"))) { lastTestResults.clear(); testLog.clear(); testsPassed=0; testsFailed=0; codeTestsPassed=0; codeTestsFailed=0; runPhysicsTests(); }
     ImGui::SameLine(); if (ImGui::Button(_TR("Code Only", "Только код"))) { lastTestResults.clear(); testLog.clear(); testsPassed=0; testsFailed=0; codeTestsPassed=0; codeTestsFailed=0; runCodeTests(); }
     if (ImGui::Button(_TR("LBM Only", "Только LBM"))) { lastTestResults.clear(); testLog.clear(); testsPassed=0; testsFailed=0; runLBMTests(); }
@@ -1120,5 +1172,111 @@ if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+R
         particleDrawCount, numParticles, streamlineVertexCount,
         modelVAO!=0, particleVAO!=0, streamlineVAO!=0, bboxVAO!=0, groundVAO!=0);
 }
+
+    // ============================================================
+    // v1.25.0 — Отладка и журнал: всё, что нужно, чтобы прислать
+    // разработчику диагностику и понять, почему не работает CUDA.
+    // ============================================================
+    if (ImGui::CollapsingHeader(_TR("Debug & Journal v1.25.0", "Отладка и журнал v1.25.0"))) {
+        ImGui::Text("%s", _TR("F9 — debug mode on/off, F10 — save report",
+                              "F9 — включить/выключить отладку, F10 — сохранить отчёт"));
+
+        bool dbgOn = debugLogEnabled();
+        if (ImGui::Checkbox(_TR("Debug mode (event journal)", "Режим отладки (журнал событий)"), &dbgOn))
+            debugLogSetEnabled(dbgOn);
+
+        bool actOn = debugLogActionsEnabled();
+        if (ImGui::Checkbox(_TR("Journal of all actions", "Журнал всех действий"), &actOn)) {
+            debugLogSetActions(actOn);
+            DBG_INFO("журнал действий %s", actOn ? "включён" : "выключен");
+        }
+
+        bool physOn = debugLogPhysicsEnabled();
+        if (ImGui::Checkbox(_TR("Physics journal (physics.csv)", "Журнал физики (physics.csv)"), &physOn))
+            debugLogSetPhysics(physOn);
+
+        bool ovlOn = debugLogOverlayEnabled();
+        if (ImGui::Checkbox(_TR("Show journal on screen", "Показывать журнал поверх сцены"), &ovlOn))
+            debugLogSetOverlay(ovlOn);
+
+        if (ImGui::SliderInt(_TR("Physics row every N frames", "Строка физики каждый N-й кадр"),
+                             &g_debugPhysicsEveryNFrames, 1, 60))
+            debugLogAction("изменён шаг журнала физики", "каждый %d кадр", g_debugPhysicsEveryNFrames);
+
+        ImGui::Separator();
+        ImGui::Text("%s", _TR("Compute backend (CUDA)", "Бэкенд вычислений (CUDA)"));
+        if (g_cudaProbeDone) {
+            ImVec4 col = g_cudaInfo.usable ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f) : ImVec4(1.0f, 0.7f, 0.2f, 1.0f);
+            ImGui::TextColored(col, "%s", g_cudaStatusText.empty() ? "(нет данных)" : g_cudaStatusText.c_str());
+            ImGui::Text("%s: %d | %s: %s | compute %d.%d",
+                        _TR("Devices", "Устройств"), g_cudaInfo.deviceCount,
+                        _TR("GPU", "GPU"), g_cudaInfo.deviceName[0] ? g_cudaInfo.deviceName : "?",
+                        g_cudaInfo.ccMajor, g_cudaInfo.ccMinor);
+            ImGui::Text("%s: %s | %s: %s",
+                        _TR("Build", "Сборка"), g_cudaInfo.compiledWithCuda ? "nvcc (CUDA)" : "CPU_ONLY",
+                        _TR("Selected", "Выбран"), useCUDA ? "CUDA" : "CPU");
+            if (g_debugCudaFallbacks > 0)
+                ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1), "%s: %d",
+                                   _TR("GPU->CPU fallbacks", "Откатов GPU на CPU"), g_debugCudaFallbacks);
+        } else {
+            ImGui::Text("%s", _TR("CUDA not probed yet", "Проба CUDA ещё не выполнялась"));
+        }
+        if (ImGui::Button(_TR("Re-check CUDA", "Перепроверить CUDA"))) {
+            cudaProbeBackend(&g_cudaInfo);
+            g_cudaProbeDone = true;
+            g_cudaStatusText = g_cudaInfo.status;
+            debugLogAction("перепроверка CUDA", "%s", g_cudaStatusText.c_str());
+            DBG_INFO("перепроверка CUDA: %s", g_cudaStatusText.c_str());
+            if (!g_cudaInfo.usable && useCUDA) {
+                useCUDA = 0;
+                DBG_WARN("CUDA недоступна — переключено на CPU-бэкенд");
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(_TR("Save debug report (F10)", "Сохранить отчёт (F10)"))) {
+            g_lastDebugReportPath = debugLogSaveReport();
+            debugLogAction("сохранён отладочный отчёт", "%s",
+                           g_lastDebugReportPath.empty() ? "ОШИБКА записи" : g_lastDebugReportPath.c_str());
+        }
+        if (!g_lastDebugReportPath.empty()) {
+            ImGui::TextWrapped("%s: %s", _TR("Report saved to", "Отчёт сохранён"), g_lastDebugReportPath.c_str());
+            ImGui::TextWrapped("%s", _TR("Send this file to the developer with a description of the problem.",
+                                         "Пришлите этот файл разработчику вместе с описанием проблемы."));
+        }
+        ImGui::TextWrapped("%s: %s", _TR("Journal file", "Файл журнала"),
+                           debugLogFilePath().empty() ? "(не открыт)" : debugLogFilePath().c_str());
+        if (debugLogPhysicsEnabled())
+            ImGui::TextWrapped("%s: %s", _TR("Physics journal", "Журнал физики"), debugLogPhysicsFilePath().c_str());
+        ImGui::Text("%s: %lld | %s: %d", _TR("Records", "Записей"), debugLogTotalCount(),
+                    _TR("Errors", "Ошибок"), debugLogErrorCount());
+
+        ImGui::Separator();
+        ImGui::Text("%s", _TR("Last journal entries", "Последние записи журнала"));
+        int shown = debugLogRecentCount();
+        if (shown > 12) shown = 12;
+        for (int i = shown - 1; i >= 0; --i)
+            ImGui::TextUnformatted(debugLogRecent(i).c_str());
+    }
     ImGui::End();
+
+    // Экранный оверлей журнала (включается галочкой или F9) — виден, даже когда
+    // панель свёрнута: удобно снимать видео проблемы.
+    if (debugLogOverlayEnabled()) {
+        ImGui::SetNextWindowSize(ImVec2(760, 220), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(12, (float)(display_h > 260 ? display_h - 260 : 12)), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin(_TR("Journal (F9)", "Журнал (F9)"), nullptr, ImGuiWindowFlags_NoCollapse)) {
+            int n = debugLogRecentCount();
+            if (n > 14) n = 14;
+            for (int i = n - 1; i >= 0; --i) {
+                std::string line = debugLogRecent(i);
+                ImVec4 col = ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
+                if (line.find("[ERROR]") != std::string::npos) col = ImVec4(1.0f, 0.35f, 0.25f, 1.0f);
+                else if (line.find("[WARN ") != std::string::npos) col = ImVec4(1.0f, 0.75f, 0.25f, 1.0f);
+                else if (line.find("[ACTION]") != std::string::npos) col = ImVec4(0.55f, 0.85f, 1.0f, 1.0f);
+                ImGui::TextColored(col, "%s", line.c_str());
+            }
+            if (n == 0) ImGui::Text("%s", _TR("Journal is empty", "Журнал пуст"));
+        }
+        ImGui::End();
+    }
 }

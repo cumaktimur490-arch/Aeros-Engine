@@ -3,13 +3,73 @@
 #include <vector>
 #include <iostream>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include "flow_params.h"
+#include "cuda_api.h"
+
+// =====================================================
+// v1.25.0 — диагностика CUDA. Любая ошибка теперь запоминается и отдаётся
+// наружу через cudaConsumeError(), чтобы main.cpp/particles.cpp могли
+// переключиться на CPU и записать причину в отладочный журнал.
+// =====================================================
+static char g_cudaErrMsg[768] = {0};
+static int  g_cudaErrCode = 0;
+
+// Подсказка по-русски для типовых кодов ошибок CUDA
+static const char* cudaHintRu(cudaError_t e) {
+    switch (e) {
+        case cudaErrorNoDevice:
+            return "Система не видит GPU NVIDIA. Проверьте, что карта установлена и стоит драйвер с nvidia.com (а не базовый драйвер Microsoft).";
+        case cudaErrorInsufficientDriver:
+            return "Драйвер NVIDIA слишком старый для этой сборки CUDA. Обновите драйвер (для CUDA 13.x нужна ветка 580.xx и новее).";
+        case cudaErrorCallRequiresNewerDriver:
+            return "Этот вызов CUDA требует более нового драйвера NVIDIA. Обновите драйвер с сайта nvidia.com.";
+        case cudaErrorStubLibrary:
+            return "Загружена библиотека-заглушка CUDA, а не настоящий драйвер. Переустановите драйвер NVIDIA (чистая установка).";
+        case cudaErrorNoKernelImageForDevice:
+            return "GPU старше Turing (compute capability ниже 7.5): в этой сборке нет машинного кода для такой архитектуры, только PTX для 7.5+. Работает CPU-бэкенд.";
+        case cudaErrorDevicesUnavailable:
+            return "GPU занят другим процессом или переведён в режим Exclusive. Закройте программы, использующие видеокарту.";
+        case cudaErrorMemoryAllocation:
+            return "Не хватило памяти GPU для выделения буфера.";
+        case cudaErrorInitializationError:
+            return "Инициализация CUDA не удалась. Помогает чистая переустановка драйвера NVIDIA (галочка Perform clean installation).";
+        case cudaErrorLaunchFailure:
+            return "Сбой ядра GPU при выполнении (некорректный адрес или перегрев).";
+        case cudaErrorInvalidValue:
+            return "Передан неверный параметр в вызов CUDA (обычно нулевой размер буфера).";
+        default:
+            return "";
+    }
+}
+
+static void cudaRecordErrorAt(cudaError_t e, const char* file, int line) {
+    g_cudaErrCode = (int)e;
+    const char* hint = cudaHintRu(e);
+    if (hint && hint[0])
+        std::snprintf(g_cudaErrMsg, sizeof(g_cudaErrMsg), "%s:%d — %s (код %d). %s",
+                      file ? file : "?", line, cudaGetErrorString(e), (int)e, hint);
+    else
+        std::snprintf(g_cudaErrMsg, sizeof(g_cudaErrMsg), "%s:%d — %s (код %d)",
+                      file ? file : "?", line, cudaGetErrorString(e), (int)e);
+    std::cerr << "CUDA " << g_cudaErrMsg << std::endl;
+}
+
+extern "C" int cudaConsumeError(char* buf, int bufSize) {
+    if (g_cudaErrCode == 0) return 0;
+    if (buf && bufSize > 0) std::snprintf(buf, (size_t)bufSize, "%s", g_cudaErrMsg);
+    int code = g_cudaErrCode;
+    g_cudaErrCode = 0;
+    g_cudaErrMsg[0] = '\0';
+    return code;
+}
 
 #define CUDA_CHECK(err) do { cudaError_t e=(err); if(e!=cudaSuccess){ \
-    std::cerr<<"CUDA "<<__FILE__<<":"<<__LINE__<<": "<<cudaGetErrorString(e)<<std::endl; return; } } while(0)
+    cudaRecordErrorAt(e, __FILE__, __LINE__); return; } } while(0)
 
 #define CUDA_CHECK_RET0(err) do { cudaError_t e=(err); if(e!=cudaSuccess){ \
-    std::cerr<<"CUDA "<<__FILE__<<":"<<__LINE__<<": "<<cudaGetErrorString(e)<<std::endl; return 0.0f; } } while(0)
+    cudaRecordErrorAt(e, __FILE__, __LINE__); return 0.0f; } } while(0)
 
 __global__ void addOneKernel(float* d, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -32,6 +92,77 @@ extern "C" float runCudaTest(const std::vector<float>& in) {
     float s = 0.0f;
     for (float v : r) s += v;
     return s;
+}
+
+// ============ Проба бэкенда (v1.25.0) ============
+// Отвечает на вопрос "почему CUDA не работает" честно: перечисляет устройства,
+// читает их свойства и выполняет реальное ядро. Без запуска ядра ошибка 209
+// (нет кода для этой архитектуры GPU) проявилась бы только внутри физики.
+extern "C" void cudaProbeBackend(CudaBackendInfo* out) {
+    if (!out) return;
+    std::memset(out, 0, sizeof(*out));
+    out->compiledWithCuda = 1;
+    out->lastError = 0;
+
+    int drv = 0, rt = 0;
+    cudaDriverGetVersion(&drv);
+    cudaRuntimeGetVersion(&rt);
+    out->driverVersion = drv;
+    out->runtimeVersion = rt;
+
+    cudaError_t e = cudaGetDeviceCount(&out->deviceCount);
+    out->lastError = (int)e;
+    if (e != cudaSuccess) {
+        const char* hint = cudaHintRu(e);
+        std::snprintf(out->status, sizeof(out->status),
+                      "CUDA недоступна: cudaGetDeviceCount вернула %s (код %d). %s",
+                      cudaGetErrorString(e), (int)e, hint);
+        return;
+    }
+    if (out->deviceCount <= 0) {
+        std::snprintf(out->status, sizeof(out->status),
+                      "Устройств NVIDIA не найдено (deviceCount = 0). Драйвер установлен, но GPU не виден: "
+                      "проверьте подключение карты и версию драйвера.");
+        return;
+    }
+
+    cudaDeviceProp prop;
+    std::memset(&prop, 0, sizeof(prop));
+    e = cudaGetDeviceProperties(&prop, 0);
+    if (e == cudaSuccess) {
+        out->ccMajor = prop.major;
+        out->ccMinor = prop.minor;
+        out->totalMemoryMB = (long long)(prop.totalGlobalMem / (1024 * 1024));
+        std::snprintf(out->deviceName, sizeof(out->deviceName), "%s", prop.name);
+    }
+
+    // Контрольный запуск ядра
+    const int n = 4;
+    float h[n] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float* d = nullptr;
+    e = cudaMalloc(&d, n * sizeof(float));
+    if (e == cudaSuccess) e = cudaMemcpy(d, h, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e == cudaSuccess) { addOneKernel<<<1, n>>>(d, n); e = cudaGetLastError(); }
+    if (e == cudaSuccess) e = cudaDeviceSynchronize();
+    if (e == cudaSuccess) e = cudaMemcpy(h, d, n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (d) cudaFree(d);
+    out->lastError = (int)e;
+
+    if (e == cudaSuccess && h[0] == 2.0f && h[3] == 5.0f) {
+        out->usable = 1;
+        std::snprintf(out->status, sizeof(out->status),
+                      "CUDA работает: %s, compute %d.%d, %lld МБ, GPU в системе: %d, "
+                      "драйвер CUDA %d.%d, среда выполнения %d.%d.",
+                      out->deviceName, out->ccMajor, out->ccMinor, out->totalMemoryMB,
+                      out->deviceCount, drv / 1000, (drv % 1000) / 10, rt / 1000, (rt % 1000) / 10);
+    } else {
+        out->usable = 0;
+        const char* hint = cudaHintRu(e);
+        std::snprintf(out->status, sizeof(out->status),
+                      "GPU найден (%s, compute %d.%d), но тестовое ядро не выполнилось: %s (код %d). %s",
+                      out->deviceName[0] ? out->deviceName : "имя неизвестно",
+                      out->ccMajor, out->ccMinor, cudaGetErrorString(e), (int)e, hint);
+    }
 }
 
 // ============ SDF на GPU ============

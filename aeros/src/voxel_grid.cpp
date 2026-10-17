@@ -11,6 +11,7 @@
 
 #include "globals.h"
 #include "cuda_api.h"
+#include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "voxel_grid.h"
 
 #ifdef _OPENMP
@@ -431,6 +432,22 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                  g_voxMinX, g_voxMinY, g_voxMinZ,
                  csx, csy, csz);
 
+    // v1.25.0 — если передача SDF на GPU не удалась, физика на CUDA считает
+    // по пустому полю. Пишем причину и уходим на CPU.
+    {
+        char cudaErr[900]; cudaErr[0] = '\0';
+        int code = cudaConsumeError(cudaErr, sizeof(cudaErr));
+        if (code != 0) {
+            g_debugCudaFallbacks++;
+            g_cudaStatusText = cudaErr;
+            DBG_ERROR("передача воксельных данных на GPU не удалась (код %d): %s", code, cudaErr);
+            if (useCUDA) {
+                useCUDA = 0;
+                DBG_WARN("расчёт переключён на CPU-бэкенд");
+            }
+        }
+    }
+
     auto t1 = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
     std::cout << "Voxelized v1.19.0 Physics Logic Fix: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
@@ -439,4 +456,6 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
               << " [OpenMP] [26-neighbor Euclidean]"
 #endif
               << std::endl;
+    DBG_PHYS("вокселизация: сетка %dx%dx%d, ячеек %d, треугольников %zu, время %.1f мс",
+             g_voxNx, g_voxNy, g_voxNz, total, tris.size(), ms);
 }

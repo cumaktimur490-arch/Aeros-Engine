@@ -12,6 +12,7 @@
 
 #include "flow_params.h"
 #include "lang.h"
+#include "cuda_api.h"   // CudaBackendInfo — диагностика CUDA (v1.25.0)
 
 // --- Окно ---
 extern const unsigned int SCR_WIDTH;
@@ -417,5 +418,14 @@ extern bool g_isUltraLiteMode;
 extern bool g_autoQualityScaling;
 extern bool g_batterySaver;
 extern float g_currentFPSAverage;
+
+// --- v1.25.0 Режим отладки и диагностика CUDA ---
+// Результат проверки бэкенда: почему CUDA работает или не работает.
+extern CudaBackendInfo g_cudaInfo;
+extern bool            g_cudaProbeDone;
+extern std::string     g_cudaStatusText;      // одна строка для UI и отчёта
+extern std::string     g_lastDebugReportPath; // куда сохранили последний отчёт
+extern int             g_debugCudaFallbacks;  // сколько раз физика откатилась с GPU на CPU
+extern int             g_debugPhysicsEveryNFrames; // шаг записи журнала физики (1 = каждый кадр)
 
 #endif // GLOBALS_H

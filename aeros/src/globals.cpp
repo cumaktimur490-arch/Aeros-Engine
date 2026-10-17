@@ -327,3 +327,11 @@ bool g_isUltraLiteMode = false;
 bool g_autoQualityScaling = true;
 bool g_batterySaver = true;
 float g_currentFPSAverage = 30.0f;
+
+// v1.25.0 — режим отладки и диагностика CUDA
+CudaBackendInfo g_cudaInfo = CudaBackendInfo();
+bool            g_cudaProbeDone = false;
+std::string     g_cudaStatusText;
+std::string     g_lastDebugReportPath;
+int             g_debugCudaFallbacks = 0;
+int             g_debugPhysicsEveryNFrames = 4;

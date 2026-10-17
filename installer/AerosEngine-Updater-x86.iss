@@ -51,6 +51,8 @@ Source: "..\aeros\bin\main-x86.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"
 Source: "..\aeros\bin\glfw3-x86.dll"; DestDir: "{app}"; DestName: "glfw3.dll"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\aeros\bin\run.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; v1.25.0 — отладочный отчёт для разработчика (то же, что F10 в программе)
+Source: "debug-report.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Code]
 var

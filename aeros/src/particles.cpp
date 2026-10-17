@@ -7,6 +7,7 @@
 
 #include "globals.h"
 #include "cuda_api.h"
+#include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "flow_field.h"
 #include "voxel_grid.h"
 #include "particles.h"
@@ -129,6 +130,18 @@ void initParticles() {
             initParticlesCUDA(particlePositions, particleColors, numParticles, flowParams);
         } catch (...) {
             useCUDA = 0;
+            DBG_ERROR("исключение при инициализации частиц на CUDA — переключаюсь на CPU");
+        }
+        // v1.25.0 — CUDA_CHECK в kernel.cu не бросает исключение, а просто выходит
+        // из функции: буферы оставались незаполненными без единого сообщения.
+        // Теперь ошибка забирается здесь, пишется в журнал и включает CPU-путь ниже.
+        char cudaErr[900]; cudaErr[0] = '\0';
+        int code = cudaConsumeError(cudaErr, sizeof(cudaErr));
+        if (code != 0) {
+            g_debugCudaFallbacks++;
+            g_cudaStatusText = cudaErr;
+            DBG_ERROR("инициализация частиц на CUDA не удалась (код %d): %s", code, cudaErr);
+            useCUDA = 0;
         }
     }
     if (useCUDA == 0) {
@@ -185,6 +198,8 @@ void initParticles() {
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
     std::cout << "[Particles] Initialized " << numParticles << " v1.19.0 Physics Logic Fix" << std::endl;
+    DBG_PHYS("частицы инициализированы: %d штук, бэкенд %s, буфер %zu значений",
+             numParticles, useCUDA ? "CUDA" : "CPU", particlePositions.size());
 }
 
 void updateParticles(float dt) {
@@ -196,7 +211,19 @@ void updateParticles(float dt) {
     if (particlePositions.size() != particleColors.size()) return;
     if (useCUDA == 1) {
         try { updateParticlesCUDA(particlePositions, particleColors, n, flowParams, dt); }
-        catch (...) { useCUDA = 0; }
+        catch (...) {
+            useCUDA = 0;
+            DBG_ERROR("исключение при обновлении частиц на CUDA — переключаюсь на CPU");
+        }
+        // v1.25.0 — см. initParticles(): ошибка GPU больше не теряется молча
+        char cudaErr[900]; cudaErr[0] = '\0';
+        int code = cudaConsumeError(cudaErr, sizeof(cudaErr));
+        if (code != 0) {
+            g_debugCudaFallbacks++;
+            g_cudaStatusText = cudaErr;
+            DBG_ERROR("обновление частиц на CUDA не удалось (код %d): %s", code, cudaErr);
+            useCUDA = 0;
+        }
     }
     if (useCUDA == 0) {
         float csx = flowParams.cellSizeX, csy = flowParams.cellSizeY, csz = flowParams.cellSizeZ;

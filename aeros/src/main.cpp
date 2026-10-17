@@ -53,6 +53,10 @@
 #include "interesting.h"
 #include "vulkan_renderer.h"
 #include "lite_config.h"
+#include "debug_log.h"   // v1.25.0 — режим отладки: журнал событий, действий и физики
+
+#include <cstdio>
+#include <cstdlib>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -226,7 +230,222 @@ bool loadSettings(const std::string& path) {
     return true;
 }
 
+// =====================================================
+// v1.25.0 — режим отладки (F9) и отладочный отчёт (F10)
+//
+// Всё, что раньше уходило в std::cout/std::cerr, в сборке /SUBSYSTEM:WINDOWS
+// не видно никому. Поэтому состояние системы, бэкенда вычислений и физики
+// пишется в logs\aeros-debug.log и в logs\physics.csv, а по F10 сохраняется
+// единый файл Aeros-Debug-Report-<дата>.txt, который можно прислать разработчику.
+// =====================================================
+static std::string g_debugModelPath;     // путь к загруженной модели (для отчёта)
+static std::string g_debugGLInfo;        // GL_VENDOR / GL_RENDERER / GL_VERSION
+static int         g_debugMSAA = 0;
+static long long   g_debugFrameCounter = 0;
+
+// Собирает актуальные параметры перед формированием отчёта
+static void collectDebugFacts() {
+    char buf[512];
+
+    const char* buildKind = "полная (OpenGL/Vulkan + CUDA-бэкенд)";
+#ifdef CPU_ONLY
+    buildKind = "CPU_ONLY — собрано без CUDA";
+#endif
+    debugLogAddFact("Версия", "Aeros Engine", AEROS_VERSION_FULL);
+    debugLogAddFact("Версия", "Тип сборки", buildKind);
+#ifdef AEROS_LITE
+    debugLogAddFact("Версия", "Профиль", "Lite (облегчённая сборка)");
+#endif
+    debugLogAddFact("Версия", "Рендерер", getRendererName() ? getRendererName() : "не определён");
+    debugLogAddFact("Версия", "Потоков OpenMP", std::to_string(perfOpenMPThreads));
+
+    // --- Бэкенд вычислений: главный раздел для вопроса «почему не работает CUDA» ---
+    debugLogAddFact("Бэкенд", "Выбран в настройках", useCUDA ? "CUDA (GPU)" : "CPU");
+    debugLogAddFact("Бэкенд", "Бинарь собран с CUDA", g_cudaInfo.compiledWithCuda ? "да" : "нет (CPU_ONLY)");
+    debugLogAddFact("Бэкенд", "Устройств NVIDIA найдено", std::to_string(g_cudaInfo.deviceCount));
+    debugLogAddFact("Бэкенд", "Имя GPU", g_cudaInfo.deviceName[0] ? g_cudaInfo.deviceName : "не определено");
+    std::snprintf(buf, sizeof(buf), "compute %d.%d, память %lld МБ",
+                  g_cudaInfo.ccMajor, g_cudaInfo.ccMinor, g_cudaInfo.totalMemoryMB);
+    debugLogAddFact("Бэкенд", "Характеристики GPU", buf);
+    std::snprintf(buf, sizeof(buf), "драйвер CUDA %d.%d, среда выполнения CUDA %d.%d",
+                  g_cudaInfo.driverVersion / 1000, (g_cudaInfo.driverVersion % 1000) / 10,
+                  g_cudaInfo.runtimeVersion / 1000, (g_cudaInfo.runtimeVersion % 1000) / 10);
+    debugLogAddFact("Бэкенд", "Версии CUDA", buf);
+    debugLogAddFact("Бэкенд", "Тестовое ядро на GPU выполнилось", g_cudaInfo.usable ? "да" : "нет");
+    if (g_cudaInfo.lastError != 0)
+        debugLogAddFact("Бэкенд", "Код последней ошибки CUDA", std::to_string(g_cudaInfo.lastError));
+    debugLogAddFact("Бэкенд", "Вывод диагностики",
+                    g_cudaStatusText.empty() ? std::string("(проба не выполнялась)") : g_cudaStatusText);
+    debugLogAddFact("Бэкенд", "Откатов GPU на CPU за сессию", std::to_string(g_debugCudaFallbacks));
+
+    // --- Рендерер и окно ---
+    debugLogAddFact("Рендерер", "OpenGL",
+                    g_debugGLInfo.empty() ? std::string("(Vulkan или строки GL не получены)") : g_debugGLInfo);
+    std::snprintf(buf, sizeof(buf), "%d x %d, MSAA=%d, vsync=%s, лимит FPS=%s (%.0f)",
+                  display_w, display_h, g_debugMSAA, vsyncEnabled ? "да" : "нет",
+                  limitFPS ? "да" : "нет", maxFPS);
+    debugLogAddFact("Рендерер", "Окно", buf);
+    debugLogAddFact("Рендерер", "FSR", fsrEnabled ? "включён" : "выключен");
+
+    // --- Модель ---
+    debugLogAddFact("Модель", "Файл", g_debugModelPath.empty() ? std::string("(не загружена)") : g_debugModelPath);
+    debugLogAddFact("Модель", "Вершин", std::to_string(modelVertexCount));
+    debugLogAddFact("Модель", "Разрешение воксельной сетки", std::to_string(voxelResolution));
+
+    // --- Физика ---
+    std::snprintf(buf, sizeof(buf), "скорость %.3f м/с, азимут %.1f, возвышение %.1f, масштаб времени %.2f",
+                  flowSpeed, flowAzimuth, flowElevation, timeScale);
+    debugLogAddFact("Физика", "Поток", buf);
+    std::snprintf(buf, sizeof(buf), "частиц %d (рисуется %d, показ %s), линий тока %d (вершин %d, показ %s)",
+                  numParticles, particleDrawCount, showParticles ? "да" : "нет",
+                  numStreamlines, streamlineVertexCount, showStreamlines ? "да" : "нет");
+    debugLogAddFact("Физика", "Частицы и линии тока", buf);
+    std::snprintf(buf, sizeof(buf), "LBM %s, сетка %dx%dx%d, шаг %d, шагов на кадр %d",
+                  lbmParams.enabled ? "включён" : "выключен", lbmNx, lbmNy, lbmNz,
+                  lbmCurrentStep, lbmParams.stepsPerFrame);
+    debugLogAddFact("Физика", "LBM", buf);
+    std::snprintf(buf, sizeof(buf), "rho %.5f, vmax %.4f м/с, TKE %.5f, Re %.1f, сходимость %s",
+                  lbmAvgRho, lbmMaxVelocityWorld, lbmTKE, lbmReynolds,
+                  lbmConverged ? "достигнута" : "нет");
+    debugLogAddFact("Физика", "Состояние LBM", buf);
+    std::snprintf(buf, sizeof(buf), "подъёмная (%.3f; %.3f; %.3f), сопротивление (%.3f; %.3f; %.3f), момент (%.3f; %.3f; %.3f)",
+                  liftVector.x, liftVector.y, liftVector.z,
+                  dragVector.x, dragVector.y, dragVector.z,
+                  momentVector.x, momentVector.y, momentVector.z);
+    debugLogAddFact("Физика", "Силы", buf);
+
+    // --- Производительность ---
+    std::snprintf(buf, sizeof(buf), "кадр %.2f мс, LBM %.2f, частицы %.2f, силы %.2f, линии тока %.2f, воксели %.2f",
+                  perfFrameMs, perfLBMms, perfParticlesMs, perfForcesMs, perfStreamlinesMs, perfVoxelMs);
+    debugLogAddFact("Производительность", "Время подсистем", buf);
+    debugLogAddFact("Производительность", "Средний FPS", std::to_string((int)g_currentFPSAverage));
+    debugLogAddFact("Производительность", "Кадров отрисовано", std::to_string(g_debugFrameCounter));
+
+    // --- Режим качества ---
+    std::snprintf(buf, sizeof(buf), "Lite=%s, Ultra-Lite=%s, пресет=%s, авто-качество=%s, энергосбережение=%s",
+                  g_isLiteMode ? "да" : "нет", g_isUltraLiteMode ? "да" : "нет",
+                  getPresetName(g_currentPreset), g_autoQualityScaling ? "да" : "нет",
+                  g_batterySaver ? "да" : "нет");
+    debugLogAddFact("Режим качества", "Состояние", buf);
+}
+
+// Проба CUDA-бэкенда: честно отвечает, работает ли GPU и почему нет
+static void probeCudaAndLog() {
+    cudaProbeBackend(&g_cudaInfo);
+    g_cudaProbeDone = true;
+    g_cudaStatusText = g_cudaInfo.status;
+    DBG_INFO("проба CUDA-бэкенда: %s", g_cudaStatusText.c_str());
+    debugLogAddFact("Бэкенд", "Вывод диагностики", g_cudaStatusText);
+    if (!g_cudaInfo.usable && useCUDA) {
+        useCUDA = 0;
+        DBG_WARN("CUDA недоступна — расчёт переключён на CPU-бэкенд");
+    }
+}
+
+// v1.25.0 — журнал действий «всего».
+// Вместо того чтобы вешать лог на каждый контрол UI, раз в кадр сравниваем
+// текущие параметры с предыдущими и пишем каждое изменение (что и на какое
+// значение поменяли). Так в отчёте появляется полная история действий
+// пользователя перед тем, как что-то пошло не так.
+static void trackParamChangesForJournal() {
+    if (!debugLogEnabled() || !debugLogActionsEnabled()) return;
+
+    static const char* kFN[] = {
+        "скорость потока (м/с)", "азимут потока", "возвышение потока", "масштаб времени",
+        "число Струхаля", "сила следа", "длина следа", "высота (м)", "лимит FPS",
+        "скорость камеры", "чувствительность мыши", "скорость автоповорота",
+        "турбулентность на входе (LBM)", "высота земли (LBM)"
+    };
+    static float* kFP[] = {
+        &flowSpeed, &flowAzimuth, &flowElevation, &timeScale, &strouhal, &wakeStrength,
+        &wakeLength, &altitude, &maxFPS, &cameraSpeedMultiplier, &mouseSensitivity,
+        &aeroAutoRotateSpeed, &lbmParams.inletTurbulence, &lbmParams.groundHeight
+    };
+    static const char* kIN[] = {
+        "число частиц", "число линий тока", "разрешение воксельной сетки", "шагов LBM на кадр",
+        "сетка LBM X", "сетка LBM Y", "сетка LBM Z", "бэкенд вычислений"
+    };
+    static int* kIP[] = {
+        &numParticles, &numStreamlines, &voxelResolution, &lbmParams.stepsPerFrame,
+        &lbmNx, &lbmNy, &lbmNz, &useCUDA
+    };
+    static const char* kBN[] = {
+        "показ модели", "показ давления", "показ линий тока", "показ частиц", "LBM включён",
+        "Zou/He (LBM)", "конвективный выход (LBM)", "земля (LBM)", "vsync", "лимит FPS",
+        "FSR", "авто-качество", "энергосбережение", "отсечение по пирамиде", "динамические частицы",
+        "адаптивный шаг LBM", "автоповорот", "режим полёта", "режим тестов", "Lite", "Ultra-Lite"
+    };
+    static bool* kBP[] = {
+        &showModel, &showPressure, &showStreamlines, &showParticles, &lbmParams.enabled,
+        &lbmParams.useZouHeBC, &lbmParams.useConvectiveOutlet, &lbmParams.useGround,
+        &vsyncEnabled, &limitFPS, &fsrEnabled, &g_autoQualityScaling, &g_batterySaver,
+        &optFrustumCulling, &optDynamicParticles, &aeroAdaptiveLBM, &autoRotate,
+        &aeroFlightMode, &testModeEnabled, &g_isLiteMode, &g_isUltraLiteMode
+    };
+
+    const size_t NF = sizeof(kFP) / sizeof(kFP[0]);
+    const size_t NI = sizeof(kIP) / sizeof(kIP[0]);
+    const size_t NB = sizeof(kBP) / sizeof(kBP[0]);
+
+    static std::vector<float> prevF;
+    static std::vector<int>   prevI;
+    static std::vector<char>  prevB;
+    static std::vector<double> lastLog;
+
+    if (prevF.size() != NF || prevI.size() != NI || prevB.size() != NB) {
+        prevF.resize(NF); prevI.resize(NI); prevB.resize(NB); lastLog.assign(NF + NI + NB, -1e9);
+        for (size_t i = 0; i < NF; ++i) prevF[i] = *kFP[i];
+        for (size_t i = 0; i < NI; ++i) prevI[i] = *kIP[i];
+        for (size_t i = 0; i < NB; ++i) prevB[i] = (*kBP[i]) ? 1 : 0;
+        DBG_INFO("журнал действий следит за %zu параметрами", NF + NI + NB);
+        return;   // первый кадр — только запоминаем исходные значения
+    }
+
+    double now = glfwGetTime();
+    const double throttle = 0.25;   // не чаще 4 записей в секунду на параметр (ползунки)
+
+    for (size_t i = 0; i < NF; ++i) {
+        float v = *kFP[i];
+        if (!std::isfinite(v)) continue;
+        float eps = std::fabs(v) * 0.002f + 1e-4f;
+        if (std::fabs(v - prevF[i]) > eps && (now - lastLog[i]) > throttle) {
+            debugLogAction("изменён параметр", "%s: %.4f -> %.4f", kFN[i], prevF[i], v);
+            prevF[i] = v;
+            lastLog[i] = now;
+        }
+    }
+    for (size_t i = 0; i < NI; ++i) {
+        int v = *kIP[i];
+        if (v == prevI[i]) continue;
+        if ((now - lastLog[NF + i]) <= throttle) continue;
+        if (i == NI - 1)   // бэкенд вычислений — словами, а не цифрой
+            debugLogAction("изменён параметр", "бэкенд вычислений: %s -> %s",
+                           prevI[i] ? "CUDA" : "CPU", v ? "CUDA" : "CPU");
+        else
+            debugLogAction("изменён параметр", "%s: %d -> %d", kIN[i], prevI[i], v);
+        prevI[i] = v;
+        lastLog[NF + i] = now;
+    }
+    for (size_t i = 0; i < NB; ++i) {
+        char v = (*kBP[i]) ? 1 : 0;
+        if (v == prevB[i]) continue;
+        debugLogAction("переключено", "%s: %s", kBN[i], v ? "ВКЛ" : "выкл");
+        prevB[i] = v;
+    }
+}
+
 int main(int argc, char** argv) {
+    // v1.25.0 — журнал отладки открывается до всего остального, чтобы в него
+    // попали причины любых ранних сбоев (GLFW, окно, GLAD, шейдеры, модель).
+    debugLogInit();
+    debugLogSetFactCallback(collectDebugFacts);
+    DBG_INFO("=== запуск %s ===", AEROS_VERSION_FULL);
+    {
+        std::string argsLine;
+        for (int i = 1; i < argc; ++i) { argsLine += argv[i]; argsLine += " "; }
+        DBG_INFO("аргументы: %s", argsLine.empty() ? "(нет)" : argsLine.c_str());
+        DBG_INFO("папка журнала: %s", debugLogDir().empty() ? "(недоступна для записи)" : debugLogDir().c_str());
+    }
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
     std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.20.0 Lite Multilingual)" << std::endl;
@@ -262,6 +481,9 @@ int main(int argc, char** argv) {
     requestedAPI = RendererAPI::OpenGL; // Lite — только OpenGL по умолчанию
     std::cout << "[Lite] Forcing OpenGL renderer for weak GPUs (HD 4000)" << std::endl;
 #endif
+    // v1.25.0 — ключи режима отладки
+    bool cliDebug = false, cliActions = false, cliPhysics = false, cliOverlay = false, cliSaveReport = false;
+    int  cliPhysicsEvery = 0;
     for (int i=1; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--vulkan" || arg == "-vulkan" || arg == "--vk") {
@@ -270,6 +492,18 @@ int main(int argc, char** argv) {
         } else if (arg == "--opengl" || arg == "-opengl" || arg == "--gl") {
             requestedAPI = RendererAPI::OpenGL;
             std::cout << "[Main] Requested OpenGL renderer via CLI" << std::endl;
+        } else if (arg == "--debug") {
+            cliDebug = true;
+        } else if (arg == "--debug-actions") {
+            cliActions = true;
+        } else if (arg == "--debug-physics") {
+            cliPhysics = true;
+        } else if (arg == "--debug-overlay") {
+            cliOverlay = true;
+        } else if (arg == "--physics-every" && i+1 < argc) {
+            cliPhysicsEvery = std::atoi(argv[++i]);
+        } else if (arg == "--save-report" || arg == "--report" || arg == "--debug-report") {
+            cliSaveReport = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Aeros Engine v" AEROS_VERSION_STRING " — Airflow Visualization\n";
             std::cout << "Full: Vulkan+OpenGL, CUDA, FSR, FG, all features\n";
@@ -285,6 +519,12 @@ int main(int argc, char** argv) {
             std::cout << "  --auto-lite       — auto-detect weak hardware and switch to Lite if needed (default ON)\n";
             std::cout << "  --no-auto-quality — disable dynamic FPS scaling\n";
             std::cout << "  --battery-saver   — force battery saver (30 FPS, low power)\n";
+            std::cout << "  --debug           — debug mode: write logs/aeros-debug.log (same as F9)\n";
+            std::cout << "  --debug-physics   — also write the physics journal logs/physics.csv\n";
+            std::cout << "  --debug-actions   — log every user action (already ON with --debug)\n";
+            std::cout << "  --debug-overlay   — show the last log lines on screen\n";
+            std::cout << "  --physics-every N — one physics row per N frames (default 4)\n";
+            std::cout << "  --save-report     — write Aeros-Debug-Report-<date>.txt and exit (works with no window)\n";
             std::cout << "  --help, -h        — this help\n";
             std::cout << "  model.stl         — STL file to load\n";
             std::cout << "Presets:\n";
@@ -346,6 +586,40 @@ int main(int argc, char** argv) {
         }
     }
 
+    // v1.25.0 — применяем ключи отладки
+    if (cliDebug)            debugLogSetEnabled(true);
+    if (cliActions)          debugLogSetActions(true);
+    if (cliPhysics)          debugLogSetPhysics(true);
+    if (cliOverlay)          debugLogSetOverlay(true);
+    if (cliPhysicsEvery > 0) g_debugPhysicsEveryNFrames = cliPhysicsEvery;
+    DBG_INFO("режим отладки=%s, журнал действий=%s, журнал физики=%s, шаг записи физики=каждый %d кадр",
+             debugLogEnabled() ? "да" : "нет", debugLogActionsEnabled() ? "да" : "нет",
+             debugLogPhysicsEnabled() ? "да" : "нет", g_debugPhysicsEveryNFrames);
+
+    // --save-report: собрать отчёт и выйти. Работает без окна и без графики —
+    // именно так можно прислать диагностику, если программа вообще не запускается.
+    if (cliSaveReport) {
+        probeCudaAndLog();
+        std::string reportPath = debugLogSaveReport();
+        if (reportPath.empty()) {
+            DBG_ERROR("--save-report: не удалось сохранить отчёт (нет папки, доступной для записи)");
+#ifdef _WIN32
+            MessageBoxA(nullptr, "Не удалось сохранить отладочный отчёт: нет папки, доступной для записи.",
+                        "Aeros Engine — отладка", MB_ICONERROR);
+#endif
+            debugLogClose();
+            return 2;
+        }
+        std::cout << "[Debug] Отчёт сохранён: " << reportPath << std::endl;
+#ifdef _WIN32
+        std::string msg = "Отладочный отчёт сохранён:\n" + reportPath +
+                          "\n\nПришлите этот файл разработчику вместе с описанием проблемы.";
+        MessageBoxA(nullptr, msg.c_str(), "Aeros Engine — отладочный отчёт", MB_ICONINFORMATION);
+#endif
+        debugLogClose();
+        return 0;
+    }
+
     // Try load settings
     if (aeroSaveSettings) {
         loadSettings("aeros_settings.ini");
@@ -369,6 +643,7 @@ int main(int argc, char** argv) {
     }
 
     if (!glfwInit()) {
+        DBG_ERROR("glfwInit() не удалась — окно создать невозможно");
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to init GLFW", "Error", MB_ICONERROR);
 #else
@@ -404,6 +679,8 @@ int main(int argc, char** argv) {
     // Заголовок окна — из version.h (единый источник версии), а не захардкожен
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, AEROS_VERSION_FULL, nullptr, nullptr);
     if (!window) {
+        DBG_ERROR("glfwCreateWindow(%u x %u) вернула NULL — драйвер не дал OpenGL 3.3 core",
+                  SCR_WIDTH, SCR_HEIGHT);
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to create GLFW window", "Error", MB_ICONERROR);
 #else
@@ -439,6 +716,7 @@ int main(int argc, char** argv) {
 
     if (!useVulkanWindow) {
         if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+            DBG_ERROR("gladLoadGLLoader не удалась — функции OpenGL не загружены");
 #ifdef _WIN32
             MessageBoxA(nullptr, "Failed to init GLAD", "Error", MB_ICONERROR);
 #else
@@ -454,11 +732,13 @@ int main(int argc, char** argv) {
         std::cerr << "[Main] Renderer init failed, trying OpenGL fallback" << std::endl;
         if (!initRenderer(window, RendererAPI::OpenGL)) {
             std::cerr << "[Main] Both renderers failed" << std::endl;
+            DBG_ERROR("не удалось инициализировать ни Vulkan, ни OpenGL — выход");
             glfwTerminate();
             return -1;
         }
     }
     std::cout << "[Main] Renderer: " << getRendererName() << std::endl;
+    DBG_INFO("рендерер: %s", getRendererName() ? getRendererName() : "?");
 
     // OpenGL debug — v1.9.0 fixed: use GLAD_GL_VERSION_4_3 — only for OpenGL
     if (!useVulkanWindow && GLAD_GL_VERSION_4_3) {
@@ -482,6 +762,17 @@ int main(int argc, char** argv) {
         GLint msaaSamples = 0;
         glGetIntegerv(GL_SAMPLES, &msaaSamples);
         std::cout << "[GL] Vendor: " << glGetString(GL_VENDOR) << " Renderer: " << glGetString(GL_RENDERER) << " Version: " << glGetString(GL_VERSION) << " MSAA: " << msaaSamples << std::endl;
+        // v1.25.0 — строки GL идут в отладочный отчёт: по ним видно, какой драйвер
+        // и какая видеокарта реально отвечают за отрисовку
+        {
+            const char* glVen = (const char*)glGetString(GL_VENDOR);
+            const char* glRen = (const char*)glGetString(GL_RENDERER);
+            const char* glVer = (const char*)glGetString(GL_VERSION);
+            g_debugGLInfo = std::string(glVen ? glVen : "?") + " | " +
+                            (glRen ? glRen : "?") + " | " + (glVer ? glVer : "?");
+            g_debugMSAA = (int)msaaSamples;
+            DBG_INFO("OpenGL: %s | MSAA=%d", g_debugGLInfo.c_str(), g_debugMSAA);
+        }
     } else {
         std::cout << "[Vulkan] Skipping OpenGL state setup — using Vulkan" << std::endl;
     }
@@ -507,11 +798,13 @@ int main(int argc, char** argv) {
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
         std::cerr << "[ImGui] Failed to init GLFW backend" << std::endl;
+        DBG_ERROR("ImGui_ImplGlfw_InitForOpenGL не удалась");
         glfwTerminate();
         return -1;
     }
     if (!ImGui_ImplOpenGL3_Init("#version 330 core")) {
         std::cerr << "[ImGui] Failed to init OpenGL3 backend" << std::endl;
+        DBG_ERROR("ImGui_ImplOpenGL3_Init не удалась");
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         glfwTerminate();
@@ -524,6 +817,8 @@ int main(int argc, char** argv) {
     unsigned int groundShaderProgram   = compileProgram(groundVertexShaderSource, groundFragmentShaderSource);
     if (modelShaderProgram == 0 || particleShaderProgram == 0 || lineShaderProgram == 0 || groundShaderProgram == 0) {
         std::cerr << "[Main] Shader compile failed" << std::endl;
+        DBG_ERROR("компиляция шейдеров не удалась (model=%u particle=%u line=%u ground=%u)",
+                  modelShaderProgram, particleShaderProgram, lineShaderProgram, groundShaderProgram);
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -575,14 +870,17 @@ int main(int argc, char** argv) {
         }
     }
     if (modelPath.empty()) {
+        DBG_INFO("открываю диалог выбора модели (окно уже показано и является владельцем диалога)");
 #ifdef _WIN32
         modelPath = openFileDialog((void*)glfwGetWin32Window(window));
 #else
         modelPath = openFileDialog();
 #endif
+        DBG_INFO("диалог выбора модели вернул: %s", modelPath.empty() ? "(файл не выбран)" : modelPath.c_str());
     }
     if (modelPath.empty()) {
         std::cout << "[Main] No file selected, exiting" << std::endl;
+        DBG_WARN("файл модели не выбран — выход");
         glDeleteProgram(modelShaderProgram);
         glDeleteProgram(particleShaderProgram);
         glDeleteProgram(lineShaderProgram);
@@ -594,11 +892,17 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (!loadModel(modelPath)) {
+        DBG_ERROR("не удалось загрузить модель: %s", modelPath.c_str());
 #ifdef _WIN32
         MessageBoxA(nullptr, ("Failed to load model: " + modelPath).c_str(), "Error", MB_ICONERROR);
 #else
         std::cerr << "Failed to load model: " << modelPath << std::endl;
 #endif
+    } else {
+        g_debugModelPath = modelPath;
+        DBG_INFO("модель загружена: %s (вершин %d, габарит %.3f)",
+                 modelPath.c_str(), modelVertexCount, maxDim);
+        debugLogAction("загружена модель", "%s, вершин %d", modelPath.c_str(), modelVertexCount);
     }
 
     // Окно показано и активировано выше — до диалога выбора модели
@@ -615,6 +919,16 @@ int main(int argc, char** argv) {
 
     float autoRotateAngle = 0.0f;
     float lastInteractionTime = (float)glfwGetTime();
+
+    // v1.25.0 — проверяем CUDA до первого кадра: раньше ошибка GPU всплывала
+    // внутри физики и молча портила расчёт. Теперь причина пишется в журнал,
+    // а при недоступном GPU сразу включается CPU-бэкенд.
+    probeCudaAndLog();
+    DBG_INFO("старт расчёта: частиц %d, линий тока %d, LBM %s (сетка %dx%dx%d), воксели %d, бэкенд %s",
+             numParticles, numStreamlines, lbmParams.enabled ? "включён" : "выключен",
+             lbmNx, lbmNy, lbmNz, voxelResolution, useCUDA ? "CUDA" : "CPU");
+    if (debugLogPhysicsEnabled())
+        DBG_INFO("журнал физики пишется в %s", debugLogPhysicsFilePath().c_str());
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = (float)glfwGetTime();
@@ -644,6 +958,8 @@ int main(int argc, char** argv) {
         }
 
         processInput(window);
+        // v1.25.0 — пишем в журнал действия пользователя (изменения параметров)
+        trackParamChangesForJournal();
         // Detect interaction for auto-rotate pause
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
             glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
@@ -726,6 +1042,74 @@ int main(int argc, char** argv) {
 
         if (testContinuous) validateFrame();
 
+        // ===================== v1.25.0 — журнал отладки =====================
+        g_debugFrameCounter++;
+
+        // 1) Ошибки CUDA больше не теряются: забираем их из бэкенда, пишем в журнал
+        //    и переключаемся на CPU, чтобы физика не продолжала считать мусор.
+        {
+            char cudaErr[900];
+            cudaErr[0] = '\0';
+            int code = cudaConsumeError(cudaErr, sizeof(cudaErr));
+            if (code != 0) {
+                g_debugCudaFallbacks++;
+                DBG_ERROR("ошибка CUDA (код %d): %s", code, cudaErr);
+                g_cudaStatusText = cudaErr;
+                debugLogAddFact("Бэкенд", "Вывод диагностики", g_cudaStatusText);
+                if (useCUDA) {
+                    useCUDA = 0;
+                    DBG_WARN("после ошибки CUDA расчёт переключён на CPU-бэкенд");
+                }
+                // При первой же ошибке GPU сохраняем отчёт сами: пользователю
+                // не нужно ничего помнить, файл уже готов к отправке.
+                if (g_debugCudaFallbacks == 1 && g_lastDebugReportPath.empty()) {
+                    g_lastDebugReportPath = debugLogSaveReport();
+                    if (!g_lastDebugReportPath.empty())
+                        DBG_WARN("отладочный отчёт сохранён автоматически: %s", g_lastDebugReportPath.c_str());
+                }
+            }
+        }
+
+        // 2) Журнал физики: строка CSV на каждый N-й кадр + проверка на NaN/Inf
+        if (debugLogPhysicsEnabled()) {
+            static bool physicsHeaderWritten = false;
+            int everyN = (g_debugPhysicsEveryNFrames > 0) ? g_debugPhysicsEveryNFrames : 1;
+            if (!physicsHeaderWritten) {
+                debugLogPhysicsHeader("frame,time_s,dt_ms,fps,backend,particles,drawn,streamlines,"
+                                      "sl_verts,lbm_step,lbm_rho,lbm_vmax_world,lbm_tke,reynolds,"
+                                      "lift_x,lift_y,lift_z,drag_x,drag_y,drag_z,"
+                                      "frame_ms,lbm_ms,particles_ms,forces_ms,streamlines_ms,voxel_ms,nonfinite");
+                physicsHeaderWritten = true;
+            }
+            if ((g_debugFrameCounter % everyN) == 0) {
+                int nonFinite = debugCountNonFinite(particlePositions.data(), particlePositions.size(), 97);
+                debugLogPhysicsRow("%lld,%.3f,%.3f,%.2f,%s,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.2f,"
+                                   "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d",
+                                   g_debugFrameCounter, currentFrame, deltaTime * 1000.0f,
+                                   (deltaTime > 1e-6f) ? (1.0f / deltaTime) : 0.0f,
+                                   useCUDA ? "CUDA" : "CPU",
+                                   numParticles, particleDrawCount, numStreamlines, streamlineVertexCount,
+                                   lbmCurrentStep, lbmAvgRho, lbmMaxVelocityWorld, lbmTKE, lbmReynolds,
+                                   liftVector.x, liftVector.y, liftVector.z,
+                                   dragVector.x, dragVector.y, dragVector.z,
+                                   perfFrameMs, perfLBMms, perfParticlesMs, perfForcesMs,
+                                   perfStreamlinesMs, perfVoxelMs, nonFinite);
+                if (nonFinite > 0)
+                    DBG_WARN("физика неустойчива: %d неконечных значений (NaN/Inf) в позициях частиц", nonFinite);
+            }
+        }
+
+        // 3) Краткая сводка в общий журнал (не засоряет файл: раз в 300 кадров)
+        if (debugLogEnabled() && (g_debugFrameCounter % 300) == 0) {
+            DBG_PHYS("кадр %lld: FPS %.1f, кадр %.1f мс (LBM %.1f, частицы %.1f, силы %.1f), "
+                     "частиц %d, LBM шаг %d, rho %.5f, vmax %.4f, бэкенд %s",
+                     g_debugFrameCounter, (deltaTime > 1e-6f) ? (1.0f / deltaTime) : 0.0f,
+                     perfFrameMs, perfLBMms, perfParticlesMs, perfForcesMs,
+                     particleDrawCount, lbmCurrentStep, lbmAvgRho, lbmMaxVelocityWorld,
+                     useCUDA ? "CUDA" : "CPU");
+        }
+        // ===================================================================
+
         // Handle screenshot and CSV export requests (v1.9.0)
         if (aeroScreenshotRequested) {
             aeroScreenshotRequested = false;
@@ -733,8 +1117,10 @@ int main(int argc, char** argv) {
             if (saveScreenshotBMP(fname)) {
                 aeroLastScreenshotPath = fname;
                 std::cout << "[Export] Screenshot saved: " << fname << std::endl;
+                DBG_INFO("скриншот сохранён: %s", fname.c_str());
             } else {
                 std::cerr << "[Export] Failed to save screenshot" << std::endl;
+                DBG_ERROR("не удалось сохранить скриншот: %s", fname.c_str());
             }
         }
         if (aeroCSVExportRequested) {
@@ -743,8 +1129,10 @@ int main(int argc, char** argv) {
             if (exportForcesCSV(fname)) {
                 aeroLastCSVPath = fname;
                 std::cout << "[Export] CSV saved: " << fname << std::endl;
+                DBG_INFO("CSV сил сохранён: %s", fname.c_str());
             } else {
                 std::cerr << "[Export] Failed to save CSV" << std::endl;
+                DBG_ERROR("не удалось сохранить CSV сил: %s", fname.c_str());
             }
         }
 
@@ -1090,6 +1478,7 @@ int main(int argc, char** argv) {
     if (aeroSaveSettings) {
         saveSettings("aeros_settings.ini");
         std::cout << "[Settings] Saved to aeros_settings.ini" << std::endl;
+        DBG_INFO("настройки сохранены в aeros_settings.ini");
     }
 
     // Cleanup
@@ -1108,6 +1497,10 @@ int main(int argc, char** argv) {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwTerminate();
+    DBG_INFO("=== завершение работы: кадров %lld, ошибок в журнале %d, откатов GPU на CPU %d ===",
+             g_debugFrameCounter, debugLogErrorCount(), g_debugCudaFallbacks);
+    DBG_INFO("файл журнала: %s", debugLogFilePath().c_str());
+    debugLogClose();
     std::cout << "[Main] Exit OK v1.9.0" << std::endl;
     return 0;
 }
