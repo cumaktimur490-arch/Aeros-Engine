@@ -90,8 +90,11 @@ begin
   Result := Ord(Data[PEOffset + 5]) + Ord(Data[PEOffset + 6]) * 256;
 end;
 
-{ Проверяет установленный exe (ExeName — имя файла в папке {app}).
-  True = архитектура совпала и файл можно запускать. }
+{ Проверяет установленный exe (ExeName - имя файла в папке установки).
+  True = архитектура совпала и файл можно запускать.
+  ВАЖНО: внутри Pascal-комментария нельзя писать фигурные скобки (константы
+  Inno вроде app) - комментарий закрывается по первой же '}' и остаток строки
+  превращается в код. }
 function AerosVerifyInstalledExe(const ExeName: String): Boolean;
 var
   ExePath: String;

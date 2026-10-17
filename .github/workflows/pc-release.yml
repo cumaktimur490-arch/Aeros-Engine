@@ -275,14 +275,16 @@ jobs:
             if ($env:GITHUB_STEP_SUMMARY) {
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## portable - вывод сборки`n$out" -Encoding utf8
             }
-            $all = @(($out -split "`r?`n") | Where-Object {{ $_.Trim() }})
-            $errs = @($all | Where-Object {{ $_ -match 'error|exception|failed|aborted|does not exist|not found|cannot|undefined|unexpected|missing|::' }} | Select-Object -Last 8)
-            if ($errs.Count -eq 0) {{ $errs = @($all | Select-Object -Last 6) }}
-            $tail = @($all | Select-Object -Last 3)
+            $all = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            # Хвост вывода важнее всего: iscc и скрипты обрывают работу на первой
+            # ошибке, поэтому её текст всегда в последних строках.
+            $tail = @($all | Select-Object -Last 8)
+            $errs = @($all | Where-Object { $_ -match 'error|exception|failed|aborted|does not exist|not found|cannot|undefined|unexpected|missing|Column|::' } | Select-Object -Last 6)
+            if ($errs.Count -eq 0) { $errs = $tail }
             $m1 = ($errs -join " // ") -replace '\s+', ' '
-            if ($m1.Length -gt 700) {{ $m1 = $m1.Substring($m1.Length - 700) }}
+            if ($m1.Length -gt 800) { $m1 = $m1.Substring($m1.Length - 800) }
             $m2 = ($tail -join " // ") -replace '\s+', ' '
-            if ($m2.Length -gt 300) {{ $m2 = $m2.Substring($m2.Length - 300) }}
+            if ($m2.Length -gt 800) { $m2 = $m2.Substring($m2.Length - 800) }
             Write-Host "::error::portable-reason: $m1"
             Write-Host "::error::portable-tail: $m2"
             throw "build-portable.ps1 failed (missing: $($missing -join ', '))"
@@ -364,14 +366,16 @@ jobs:
             if ($env:GITHUB_STEP_SUMMARY) {
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## iscc - вывод сборки`n$out" -Encoding utf8
             }
-            $all = @(($out -split "`r?`n") | Where-Object {{ $_.Trim() }})
-            $errs = @($all | Where-Object {{ $_ -match 'error|exception|failed|aborted|does not exist|not found|cannot|undefined|unexpected|missing|::' }} | Select-Object -Last 8)
-            if ($errs.Count -eq 0) {{ $errs = @($all | Select-Object -Last 6) }}
-            $tail = @($all | Select-Object -Last 3)
+            $all = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            # Хвост вывода важнее всего: iscc и скрипты обрывают работу на первой
+            # ошибке, поэтому её текст всегда в последних строках.
+            $tail = @($all | Select-Object -Last 8)
+            $errs = @($all | Where-Object { $_ -match 'error|exception|failed|aborted|does not exist|not found|cannot|undefined|unexpected|missing|Column|::' } | Select-Object -Last 6)
+            if ($errs.Count -eq 0) { $errs = $tail }
             $m1 = ($errs -join " // ") -replace '\s+', ' '
-            if ($m1.Length -gt 700) {{ $m1 = $m1.Substring($m1.Length - 700) }}
+            if ($m1.Length -gt 800) { $m1 = $m1.Substring($m1.Length - 800) }
             $m2 = ($tail -join " // ") -replace '\s+', ' '
-            if ($m2.Length -gt 300) {{ $m2 = $m2.Substring($m2.Length - 300) }}
+            if ($m2.Length -gt 800) { $m2 = $m2.Substring($m2.Length - 800) }
             Write-Host "::error::iscc-reason: $m1"
             Write-Host "::error::iscc-tail: $m2"
             throw "build-installers.ps1 failed (exit=$LASTEXITCODE, missing: $($missing -join ', '))"
@@ -647,8 +651,8 @@ jobs:
               if ($code -ne 0) {
                 $bad++
                 $all = @(($log -split "`r?`n") | Where-Object { $_.Trim() })
-                $errs = @($all | Where-Object { $_ -match 'error|does not exist|cannot|undefined|unexpected|failed|Unknown' } | Select-Object -Last 4)
-                if ($errs.Count -eq 0) { $errs = @($all | Select-Object -Last 3) }
+                # iscc обрывается на первой ошибке: текст сообщения лежит в хвосте вывода
+                $errs = @($all | Select-Object -Last 5)
                 $m = ($errs -join " // ") -replace '\s+', ' '
                 if ($m.Length -gt 600) { $m = $m.Substring($m.Length - 600) }
                 Write-Host "::error::iss-check: $($iss.Name) exit=$code : $m"
