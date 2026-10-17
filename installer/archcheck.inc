@@ -27,14 +27,14 @@ var
   препроцессора ISPP и во внутренних модулях Setup) - компилятор отвечает
   Unknown identifier. Форматируем шестнадцатеричное значение
   поля Machine сами - только на стандартных Copy, mod и div. }
-function AerosHex4(Val: Integer): String;
+function AerosHex4(Num: Integer): String;
 var
   Digits: String;
   V, I, D: Integer;
 begin
   Digits := '0123456789ABCDEF';
   Result := '';
-  V := Val and $FFFF;
+  V := Num and $FFFF;
   for I := 1 to 4 do
   begin
     D := (V mod 16) + 1;
@@ -90,11 +90,12 @@ begin
   Result := Ord(Data[PEOffset + 5]) + Ord(Data[PEOffset + 6]) * 256;
 end;
 
-{ Проверяет установленный exe (ExeName - имя файла в папке установки).
+{ Проверяет установленный exe: ExeName - имя файла в папке установки.
   True = архитектура совпала и файл можно запускать.
-  ВАЖНО: внутри Pascal-комментария нельзя писать фигурные скобки (константы
-  Inno вроде app) - комментарий закрывается по первой же '}' и остаток строки
-  превращается в код. }
+  ВАЖНО: внутри такого комментария нельзя писать фигурные скобки (например,
+  константы Inno) и нельзя окружать их апострофами - комментарий закрывается
+  по первой же закрывающей скобке, а остаток строки компилятор разбирает как
+  код и сообщает String error. }
 function AerosVerifyInstalledExe(const ExeName: String): Boolean;
 var
   ExePath: String;
