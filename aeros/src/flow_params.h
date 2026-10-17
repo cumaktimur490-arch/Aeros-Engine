@@ -26,6 +26,13 @@ struct FlowParams {
     float gridMaxX, gridMaxY, gridMaxZ;
     float cellSizeX, cellSizeY, cellSizeZ;
     int   gridCellCount;
+
+    // Атмосфера
+    float altitude;      // м
+    float airDensity;    // кг/м³
+    float airPressure;   // Pa
+    float airTemperature;// K
+    float speedOfSound;  // м/с
 };
 
 #endif
