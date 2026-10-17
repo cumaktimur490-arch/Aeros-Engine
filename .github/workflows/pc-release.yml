@@ -194,13 +194,34 @@ jobs:
           $backend = if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { "НЕТ-МАРКЕРА" }
           $raw = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes("aeros\bin\main-x64.exe"))
           $fatbin = $raw.Contains("nv_fatbin")
-          $ptx = $raw.Contains(".target sm_75") -or $raw.Contains("compute_75")
-          $sass = $raw.Contains("sm_75")
-          Write-Host "[ci] backend marker=$backend nv_fatbin=$fatbin ptx=$ptx sm75=$sass"
-          Write-Host "::notice::cuda-x64: marker=$backend fatbin=$fatbin ptx=$ptx sm75=$sass"
+          Write-Host "[ci] backend marker=$backend nv_fatbin=$fatbin"
           if ($backend -ne "CUDA") {
             Write-Host "::error::x64 собран БЕЗ CUDA (маркер: $backend) - публикация остановлена"
             throw "x64 build is CPU_ONLY (marker=$backend); CUDA release requires a successful nvcc build"
+          }
+          # cuobjdump - единственный достоверный способ узнать, какой GPU-код реально
+          # лежит в exe. Без PTX видеокарты новее Turing получили бы ошибку 209.
+          $cuobj = Join-Path $env:CUDA_PATH "bin\cuobjdump.exe"
+          $nPtx = -1; $nElf = -1; $archPtx = "?"; $archElf = "?"
+          if (Test-Path $cuobj) {
+            $ptxList = (& $cuobj --list-ptx "aeros\bin\main-x64.exe" *>&1 | Out-String)
+            $elfList = (& $cuobj --list-elf "aeros\bin\main-x64.exe" *>&1 | Out-String)
+            $nPtx = ([regex]::Matches($ptxList, "arch\s*=")).Count
+            $nElf = ([regex]::Matches($elfList, "arch\s*=")).Count
+            $archPtx = (@([regex]::Matches($ptxList, "sm_\d+") | ForEach-Object { $_.Value } | Select-Object -Unique) -join "+")
+            $archElf = (@([regex]::Matches($elfList, "sm_\d+") | ForEach-Object { $_.Value } | Select-Object -Unique) -join "+")
+          } else {
+            Write-Host "[ci] cuobjdump не найден в CUDA_PATH - проверка GPU-кода пропущена"
+          }
+          Write-Host "[ci] gpu-code: ptx=$nPtx($archPtx) elf=$nElf($archElf)"
+          Write-Host "::notice::cuda-x64: marker=$backend fatbin=$fatbin ptx=$nPtx($archPtx) elf=$nElf($archElf)"
+          if ($nPtx -eq 0) {
+            Write-Host "::error::в x64 exe нет PTX (cuobjdump --list-ptx пуст): GPU новее Turing получит ошибку 209"
+            throw "no PTX embedded in main-x64.exe"
+          }
+          if ($nElf -eq 0) {
+            Write-Host "::error::в x64 exe нет SASS (cuobjdump --list-elf пуст): GPU-код не скомпилирован"
+            throw "no SASS embedded in main-x64.exe"
           }
 
       - name: Setup MSVC x86
@@ -213,19 +234,27 @@ jobs:
         run: |
           cl 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "CLBANNER: $_" }
           function PE-Machine($path) {
+            if (-not (Test-Path $path)) { return "НЕТ-ФАЙЛА" }
             $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "НЕ-PE" }
             $pe = [BitConverter]::ToInt32($b, 60)
             return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
           }
           $out = cmd /c "cd aeros && call build-cpu.bat x86" 2>&1 | Out-String
           Write-Host $out
+          $code = $LASTEXITCODE
           $mach = PE-Machine "aeros\bin\main-x86.exe"
-          Write-Host "[ci] PE machine main-x86.exe = $mach (014C = x86)"
-          if ($mach -ne "014C") { throw "main-x86.exe has wrong PE machine $mach (expected 014C)" }
-          if ($LASTEXITCODE -ne 0) {
-            $tail = ($out -split "`r?`n") | Select-Object -Last 40
-            Write-Host ("::error::tail of build-cpu.bat x86%0A" + ($tail -join "%0A"))
-            throw "build-cpu.bat x86 failed"
+          $marker = if (Test-Path "aeros\bin\BUILD-BACKEND-x86.txt") { (Get-Content "aeros\bin\BUILD-BACKEND-x86.txt" -Raw).Trim() } else { "НЕТ" }
+          Write-Host "[ci] x86: exit=$code PE=$mach marker=$marker"
+          Write-Host "::notice::build-x86: exit=$code PE=$mach marker=$marker"
+          if ($code -ne 0 -or $mach -ne "014C") {
+            $tail = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            $errs = @($tail | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|not found|не найден" } | Select-Object -Last 12)
+            if ($errs.Count -eq 0) { $errs = @($tail | Select-Object -Last 10) }
+            $m = ($errs -join " // ") -replace "\s+", " "
+            if ($m.Length -gt 900) { $m = $m.Substring($m.Length - 900) }
+            Write-Host "::error::x86: exit=$code PE=$mach :: $m"
+            throw "build-cpu.bat x86 failed (exit=$code, PE=$mach)"
           }
 
       - name: Setup MSVC arm64
@@ -240,17 +269,26 @@ jobs:
           $out = cmd /c "cd aeros && call build-cpu.bat arm64" 2>&1 | Out-String
           Write-Host $out
           function PE-Machine($path) {
+            if (-not (Test-Path $path)) { return "НЕТ-ФАЙЛА" }
             $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "НЕ-PE" }
             $pe = [BitConverter]::ToInt32($b, 60)
             return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
           }
+          $code = $LASTEXITCODE
           $mach = PE-Machine "aeros\bin\main-arm64.exe"
-          Write-Host "[ci] PE machine main-arm64.exe = $mach (AA64 = arm64)"
-          if ($mach -ne "AA64") { throw "main-arm64.exe has wrong PE machine $mach (expected AA64)" }
-          if ($LASTEXITCODE -ne 0) {
-            $tail = ($out -split "`r?`n") | Select-Object -Last 40
-            Write-Host ("::error::tail of build-cpu.bat arm64%0A" + ($tail -join "%0A"))
-            throw "build-cpu.bat arm64 failed"
+          $marker = if (Test-Path "aeros\bin\BUILD-BACKEND-arm64.txt") { (Get-Content "aeros\bin\BUILD-BACKEND-arm64.txt" -Raw).Trim() } else { "НЕТ" }
+          $glfwLib = Test-Path "libs\glfw\lib-vc2022-arm64\glfw3.lib"
+          Write-Host "[ci] arm64: exit=$code PE=$mach marker=$marker glfw3.lib(arm64)=$glfwLib"
+          Write-Host "::notice::build-arm64: exit=$code PE=$mach marker=$marker glfwlib=$glfwLib"
+          if ($code -ne 0 -or $mach -ne "AA64") {
+            $tail = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            $errs = @($tail | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|not found|не найден" } | Select-Object -Last 12)
+            if ($errs.Count -eq 0) { $errs = @($tail | Select-Object -Last 10) }
+            $m = ($errs -join " // ") -replace "\s+", " "
+            if ($m.Length -gt 900) { $m = $m.Substring($m.Length - 900) }
+            Write-Host "::error::arm64: exit=$code PE=$mach glfwlib=$glfwLib :: $m"
+            throw "build-cpu.bat arm64 failed (exit=$code, PE=$mach)"
           }
 
       - name: Build portable zips

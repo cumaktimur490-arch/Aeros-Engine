@@ -225,7 +225,9 @@ int vformat(char* buf, size_t n, const char* fmt, va_list ap) {
 
 // ---------- факты о системе ----------
 void cpuFacts() {
-#ifdef AEROS_HAVE_CPUID
+// Важно: именно #if по значению, а не #ifdef. На ARM64 макрос определён, но равен 0,
+// и #ifdef пропустил бы сюда x86-код (__cpuid), из-за чего сборка arm64 падала.
+#if AEROS_HAVE_CPUID
     int regs[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
     __cpuid(regs, 1);
@@ -276,7 +278,11 @@ void cpuFacts() {
 #elif defined(__SSE2__)
     debugLogAddFact("Сборка", "Флаги компилятора", "бинарь собран с SSE2 (базовый набор)");
 #elif defined(_MSC_VER)
+  #if defined(_M_ARM64)
+    debugLogAddFact("Сборка", "Флаги компилятора", "MSVC ARM64: базовый набор NEON, /arch не задаётся");
+  #else
     debugLogAddFact("Сборка", "Флаги компилятора", "MSVC: базовый набор x64 = SSE2, x86 = /arch:SSE2");
+  #endif
 #endif
 }
 
