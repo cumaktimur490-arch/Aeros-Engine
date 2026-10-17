@@ -560,7 +560,7 @@ jobs:
           - CUDA-бэкенд — NVIDIA GPU (Turing и новее); иначе автоматически CPU-бэкенд.
 
           ## Сборка из исходников
-          VS 2022 + CUDA Toolkit: ``aeros\build-release.bat`` (x64+CUDA), ``aeros\build-cpu.bat [x64|x86|arm64]`` (CPU);
+          VS 2022 + CUDA Toolkit: ``aeros\build.bat`` (x64+CUDA), ``aeros\build-cpu.bat [x64|x86|arm64]`` (CPU);
           установщики: ``installer\build-installers.ps1``, портативные: ``installer\build-portable.ps1`` (Inno Setup 6).
           "@ | Set-Content -Encoding utf8 RELEASE_NOTES.md
 
