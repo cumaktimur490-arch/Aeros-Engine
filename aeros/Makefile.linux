@@ -86,6 +86,7 @@ SOURCES = \
     $(SRCDIR)/lite_config.cpp \
     $(SRCDIR)/benchmark.cpp \
     $(SRCDIR)/debug_log.cpp \
+    $(SRCDIR)/timelapse.cpp \
     $(SRCDIR)/glad.c \
     $(SRCDIR)/imgui/imgui.cpp \
     $(SRCDIR)/imgui/imgui_draw.cpp \

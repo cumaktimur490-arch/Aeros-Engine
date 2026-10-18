@@ -57,9 +57,9 @@ float sampleSDFCPU(const glm::vec3& p) {
 
     // Если вне — возвращаем ближайший
     if (ix0<0||iy0<0||iz0<0||ix1>=g_voxNx||iy1>=g_voxNy||iz1>=g_voxNz) {
-        int ix = (int)((p.x - g_voxMinX)/csx);
-        int iy = (int)((p.y - g_voxMinY)/csy);
-        int iz = (int)((p.z - g_voxMinZ)/csz);
+        int ix = (int)std::floor((p.x - g_voxMinX)/csx);
+        int iy = (int)std::floor((p.y - g_voxMinY)/csy);
+        int iz = (int)std::floor((p.z - g_voxMinZ)/csz);
         if (ix<0||ix>=g_voxNx||iy<0||iy>=g_voxNy||iz<0||iz>=g_voxNz) return 1000.0f;
         int idx = (iz*g_voxNy+iy)*g_voxNx+ix;
         if (idx<0||idx>=(int)g_distanceField.size()) return 1000.0f;
@@ -99,9 +99,9 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
     float len = glm::length(n);
     if (!isValidFloatSafe(len) || len < 1e-6f) {
         // Fallback к воксельному градиенту
-        int ix = (int)((p.x - g_voxMinX)/csx);
-        int iy = (int)((p.y - g_voxMinY)/csy);
-        int iz = (int)((p.z - g_voxMinZ)/csz);
+        int ix = (int)std::floor((p.x - g_voxMinX)/csx);
+        int iy = (int)std::floor((p.y - g_voxMinY)/csy);
+        int iz = (int)std::floor((p.z - g_voxMinZ)/csz);
         if (ix<=0||ix>=g_voxNx-1||iy<=0||iy>=g_voxNy-1||iz<=0||iz>=g_voxNz-1) return glm::vec3(0,1,0);
         auto safeGet = [&](int x,int y,int z)->float {
             if (x<0||x>=g_voxNx||y<0||y>=g_voxNy||z<0||z>=g_voxNz) return 0.0f;
@@ -194,16 +194,16 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     float m = fmaxf(sizeX, fmaxf(sizeY, sizeZ));
 
     g_voxNx = res;
-    g_voxNy = (int)(res * sizeY / m); if (g_voxNy < 4) g_voxNy = 4;
-    g_voxNz = (int)(res * sizeZ / m); if (g_voxNz < 4) g_voxNz = 4;
+    g_voxNy = (int)std::floor(res * sizeY / m); if (g_voxNy < 4) g_voxNy = 4;
+    g_voxNz = (int)std::floor(res * sizeZ / m); if (g_voxNz < 4) g_voxNz = 4;
 
     long long totalLL = (long long)g_voxNx * g_voxNy * g_voxNz;
     const long long MAX_CELLS = 10*1024*1024;
     if (totalLL > MAX_CELLS) {
         float scale = powf((float)MAX_CELLS / totalLL, 1.0f/3.0f);
-        g_voxNx = (int)(g_voxNx*scale); if (g_voxNx < 4) g_voxNx = 4;
-        g_voxNy = (int)(g_voxNy*scale); if (g_voxNy < 4) g_voxNy = 4;
-        g_voxNz = (int)(g_voxNz*scale); if (g_voxNz < 4) g_voxNz = 4;
+        g_voxNx = (int)std::floor(g_voxNx*scale); if (g_voxNx < 4) g_voxNx = 4;
+        g_voxNy = (int)std::floor(g_voxNy*scale); if (g_voxNy < 4) g_voxNy = 4;
+        g_voxNz = (int)std::floor(g_voxNz*scale); if (g_voxNz < 4) g_voxNz = 4;
         std::cout << "[Voxel] Clamped to " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz << std::endl;
     }
 

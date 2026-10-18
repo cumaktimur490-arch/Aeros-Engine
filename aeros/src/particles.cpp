@@ -112,7 +112,14 @@ static inline ParticleState particleRK4(const ParticleState& s, float dt, const 
     ParticleState res;
     res.pos = s.pos + (v1 + 2.0f*v2 + 2.0f*v3 + v4)*(dt/6.0f);
     res.vel = s.vel + (a1 + 2.0f*a2 + 2.0f*a3 + a4)*(dt/6.0f);
-    if (!std::isfinite(res.pos.x)) res = s;
+    // v1.26.0 — проверяются все три компоненты позиции и скорость.
+    // Раньше проверялась только pos.x: NaN в y/z оставался в буфере вершин,
+    // а NaN в скорости не проверялся вовсе и сохранялся между кадрами,
+    // из-за чего частица «залипала» или улетала за пределы области.
+    if (!std::isfinite(res.pos.x) || !std::isfinite(res.pos.y) || !std::isfinite(res.pos.z))
+        res.pos = s.pos;
+    if (!std::isfinite(res.vel.x) || !std::isfinite(res.vel.y) || !std::isfinite(res.vel.z))
+        res.vel = glm::vec3(prm.vx, prm.vy, prm.vz);
     return res;
 }
 
@@ -292,6 +299,15 @@ void updateParticles(float dt) {
                 glm::vec3 acc = particleAcceleration(pPos, pVel, flowParams, d_p, rho_p);
                 newState.vel = pVel + acc * dt * timeScale;
                 newState.pos = pPos + newState.vel * dt * timeScale;
+                // v1.26.0 — путь Эйлера вообще не проверял результат: при
+                // вырожденных d_p/rho_p ускорение могло стать NaN, и частица
+                // навсегда оставалась с неконечной позицией.
+                if (!std::isfinite(newState.pos.x) || !std::isfinite(newState.pos.y) ||
+                    !std::isfinite(newState.pos.z))
+                    newState.pos = pPos;
+                if (!std::isfinite(newState.vel.x) || !std::isfinite(newState.vel.y) ||
+                    !std::isfinite(newState.vel.z))
+                    newState.vel = glm::vec3(vxInf, vyInf, vzInf);
             }
 
             glm::vec3 np = newState.pos;
@@ -299,9 +315,12 @@ void updateParticles(float dt) {
             float surfDist = 1000.0f;
 
             if (useColl) {
-                int ix = (int)((np.x - voxMinX) / csx);
-                int iy = (int)((np.y - voxMinY) / csy);
-                int iz = (int)((np.z - voxMinZ) / csz);
+                // v1.26.0: floor, а не усечение. При (int)(-0.4) = 0 частица,
+                // вылетевшая за нижнюю границу области, читала ячейку у верхней
+                // стены и получала ложное расстояние до поверхности.
+                int ix = (int)std::floor((np.x - voxMinX) / csx);
+                int iy = (int)std::floor((np.y - voxMinY) / csy);
+                int iz = (int)std::floor((np.z - voxMinZ) / csz);
                 if (ix>=0 && ix<voxNx && iy>=0 && iy<voxNy && iz>=0 && iz<voxNz) {
                     int idx = (iz*voxNy + iy)*voxNx + ix;
                     if (idx >=0 && idx < distSize) {

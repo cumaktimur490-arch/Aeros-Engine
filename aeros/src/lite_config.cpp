@@ -322,6 +322,11 @@ void applyUltraLiteDefaults() {
     vsyncEnabled = true;
     limitFPS = true;
     maxFPS = (float)ULTRA_LITE_TARGET_FPS;
+    // v1.26.0 — таймлапс физики на слабом железе: короче история и без снимков
+    // поля (один снимок 24^3 — это 2-3 мс, при цели 20 FPS это каждый пятый кадр).
+    tlCapacity = 1200;
+    tlFieldEvery = 0;
+    tlChartFrames = 300;
     optFramePacing = true;
     optTargetFPS = (float)ULTRA_LITE_TARGET_FPS;
 
@@ -401,6 +406,10 @@ void applyLiteDefaults() {
     vsyncEnabled = LITE_VSYNC_DEFAULT;
     limitFPS = LITE_LIMIT_FPS_DEFAULT;
     maxFPS = LITE_MAX_FPS;
+    // v1.26.0 — таймлапс физики в профиле Lite: история короче, снимки поля реже
+    tlCapacity = 2400;
+    tlFieldEvery = 60;
+    tlChartFrames = 400;
     optFramePacing = true;
     optTargetFPS = LITE_TARGET_FPS;
 

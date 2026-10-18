@@ -428,4 +428,29 @@ extern std::string     g_lastDebugReportPath; // куда сохранили п�
 extern int             g_debugCudaFallbacks;  // сколько раз физика откатилась с GPU на CPU
 extern int             g_debugPhysicsEveryNFrames; // шаг записи журнала физики (1 = каждый кадр)
 
+// --- v1.26.0 Режим вычислений: таймлапс физики ---
+// Запись истории расчёта и её просмотр (F7 — запись, F8 — воспроизведение).
+extern bool  tlEnabled;        // идёт ли запись
+extern bool  tlPlaying;        // воспроизведение/пауза
+extern bool  tlLoop;           // зациклить воспроизведение
+extern bool  tlShowField;      // показывать срез поля давления при просмотре
+extern bool  tlShowWindow;     // показывать отдельное окно таймлапса (графики и поле)
+extern bool  tlAutoRecord;     // писать постоянно (кольцо), чтобы история была к моменту сбоя
+extern float tlSpeed;          // 1.0 = реальное время записи, 8.0 = в 8 раз быстрее
+extern int   tlCapacity;       // кадров в кольцевом буфере
+extern int   tlFieldEvery;     // снимать поле каждый N-й кадр (0 = не снимать)
+extern int   tlChartFrames;    // сколько кадров истории рисовать в графиках
+extern std::string g_lastTimelapsePath;  // куда сохранили историю (CSV)
+
+// --- v1.26.0 Карта давления: диапазон Cp ---
+extern bool  aeroCpAutoRange;  // брать диапазон из фактических данных, а не фиксированный
+extern float aeroCpMin;        // ручной диапазон (когда авто выключен)
+extern float aeroCpMax;
+extern float g_cpLo;           // фактический диапазон, по которому идёт раскраска
+extern float g_cpHi;
+extern float lbmPressureMin;   // мин/макс давления (Па) в сетке LBM за последний шаг
+extern float lbmPressureMax;
+extern float lbmResidualRho;   // сходимость LBM: RMS изменения плотности за шаг
+extern float lbmResidualU;     // сходимость LBM: max изменения скорости за шаг
+
 #endif // GLOBALS_H

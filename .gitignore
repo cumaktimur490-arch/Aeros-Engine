@@ -22,3 +22,5 @@ dist/
 logs/
 physics.csv
 Aeros-Debug-Report-*.txt
+# v1.26.0 — история таймлапса физики
+timelapse-*.csv

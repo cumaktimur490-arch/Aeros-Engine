@@ -9,6 +9,7 @@
 #include "flow_field.h"
 #include "voxel_grid.h"
 #include "globals.h"
+#include "lbm.h"        // v1.26.0 — общая цветовая карта давления
 #include <glm/glm.hpp>
 #include <cmath>
 #include <cstdio>
@@ -67,9 +68,9 @@ extern "C" void updateParticlesCUDA(std::vector<float>& positions, std::vector<f
         float surfDist = 1000.0f;
 
         if (useVoxelCollision && !g_distanceField.empty()) {
-            int ix = (int)((np.x - g_voxMinX) / params.cellSizeX);
-            int iy = (int)((np.y - g_voxMinY) / params.cellSizeY);
-            int iz = (int)((np.z - g_voxMinZ) / params.cellSizeZ);
+            int ix = (int)std::floor((np.x - g_voxMinX) / params.cellSizeX);
+            int iy = (int)std::floor((np.y - g_voxMinY) / params.cellSizeY);
+            int iz = (int)std::floor((np.z - g_voxMinZ) / params.cellSizeZ);
             if (ix>=0 && ix<g_voxNx && iy>=0 && iy<g_voxNy && iz>=0 && iz<g_voxNz) {
                 int idx = (iz*g_voxNy + iy)*g_voxNx + ix;
                 float rawDist = g_distanceField[idx];
@@ -149,16 +150,12 @@ extern "C" void computeVertexPressureCUDA(const std::vector<float>& vertices,
             if (w > 1.0f) w = 1.0f;
             cp -= 0.8f * w * w;
         }
-        if (cp > 1.0f)  cp = 1.0f;
-        if (cp < -3.0f) cp = -3.0f;
-
-        float t = (cp + 1.0f) / 2.0f;
-        t = glm::clamp(t, 0.0f, 1.0f);
-        glm::vec3 col;
-        if (t < 0.25f) { float k = t/0.25f; col = glm::vec3(0,k,1); }
-        else if (t < 0.5f) { float k = (t-0.25f)/0.25f; col = glm::vec3(0,1,1-k); }
-        else if (t < 0.75f) { float k = (t-0.5f)/0.25f; col = glm::vec3(k,1,0); }
-        else { float k = (t-0.75f)/0.25f; col = glm::vec3(1,1-k,0); }
+        // v1.26.0 — заглушка красит той же функцией, что и настоящий расчёт:
+        // единая карта давления (общий диапазон и общая схема), вместо своей
+        // зашитой шкалы (cp+1)/2. Иначе CPU-сборка и CUDA-сборка показывали
+        // разные цвета для одного и того же Cp.
+        cp = aeroClampCp(cp);
+        glm::vec3 col = getRealisticPressureColor(cp);
         outColors[3*i]   = col.x;
         outColors[3*i+1] = col.y;
         outColors[3*i+2] = col.z;
@@ -173,3 +170,6 @@ extern "C" void setVoxelData(const int* voxel, const float* dist,
     (void)voxel; (void)dist; (void)nx; (void)ny; (void)nz;
     (void)mnX; (void)mnY; (void)mnZ; (void)csX; (void)csY; (void)csZ;
 }
+
+// v1.26.0 — в CPU-сборке буферов устройства нет, освобождать нечего.
+extern "C" void cudaReleaseAll() {}

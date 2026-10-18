@@ -133,39 +133,84 @@ static void computeFlowAxis(int& axis, int& sign, glm::vec3& dirNorm) {
 }
 
 // =====================================================
-// Цветовые карты v1.11.0 — без изменений, но с clamp
+// Цветовые карты v1.26.0
+//
+// Карта давления переделана:
+//  * диапазон берётся из фактических данных (aeroCpAutoRange) или задаётся вручную,
+//    а не зашит как [-3, +1]. Данные LBM ограничены скоростным напором и почти
+//    всегда лежат в [-2, +2], поэтому в старом окне невозмущённый поток (Cp = 0)
+//    попадал на 75% шкалы и рисовался оранжевым, а всё сжатие сливалось в красный;
+//  * схема расходящаяся: Cp = 0 — нейтральный светло-серый, разрежение — холодная
+//    ветвь, сжатие — тёплая. Ноль всегда в центре, независимо от асимметрии данных;
+//  * схема №2 больше не игнорируется: раньше getRealisticPressureColor обрабатывала
+//    только 1 и 3, и выбор «Plasma» для давления ничего не менял.
 // =====================================================
+namespace {
+// Линейная интерполяция по опорным цветам, t ∈ [0,1]
+glm::vec3 rampColor(float t, const glm::vec3* stops, int n) {
+    if (n <= 0) return glm::vec3(0.5f);
+    if (n == 1) return stops[0];
+    if (!(t > 0.0f)) return stops[0];
+    if (!(t < 1.0f)) return stops[n-1];
+    float x = t * (float)(n - 1);
+    int i = (int)x;
+    if (i >= n - 1) i = n - 2;
+    if (i < 0) i = 0;
+    float k = x - (float)i;
+    glm::vec3 c = stops[i] * (1.0f - k) + stops[i+1] * k;
+    if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z)) return glm::vec3(0.5f);
+    return c;
+}
+} // namespace
+
+glm::vec3 pressureColorInRange(float cp, float lo, float hi) {
+    if (!std::isfinite(cp)) cp = 0.0f;
+    if (!std::isfinite(lo) || !std::isfinite(hi) || hi - lo < 1e-4f) { lo = -2.0f; hi = 2.0f; }
+
+    // Последовательные схемы красят по положению во всём диапазоне
+    if (aeroColorMap == 1 || aeroColorMap == 2) {
+        static const glm::vec3 viridis[5] = {
+            glm::vec3(0.267f, 0.004f, 0.329f), glm::vec3(0.229f, 0.322f, 0.545f),
+            glm::vec3(0.127f, 0.566f, 0.550f), glm::vec3(0.550f, 0.790f, 0.350f),
+            glm::vec3(0.993f, 0.906f, 0.144f)
+        };
+        static const glm::vec3 plasma[5] = {
+            glm::vec3(0.050f, 0.030f, 0.528f), glm::vec3(0.494f, 0.012f, 0.658f),
+            glm::vec3(0.798f, 0.280f, 0.470f), glm::vec3(0.973f, 0.585f, 0.254f),
+            glm::vec3(0.940f, 0.975f, 0.131f)
+        };
+        float t = glm::clamp((cp - lo) / (hi - lo), 0.0f, 1.0f);
+        return rampColor(t, (aeroColorMap == 1) ? viridis : plasma, 5);
+    }
+
+    // Расходящиеся схемы: две независимые ветви от нейтрального цвета
+    static const glm::vec3 neutral(0.93f, 0.93f, 0.95f);
+    static const glm::vec3 coldRainbow[4] = {
+        neutral, glm::vec3(0.55f, 0.82f, 0.94f), glm::vec3(0.15f, 0.45f, 0.85f), glm::vec3(0.03f, 0.10f, 0.60f)
+    };
+    static const glm::vec3 hotRainbow[4] = {
+        neutral, glm::vec3(1.00f, 0.85f, 0.35f), glm::vec3(0.96f, 0.45f, 0.10f), glm::vec3(0.72f, 0.05f, 0.05f)
+    };
+    static const glm::vec3 coolCold[4] = {
+        neutral, glm::vec3(0.60f, 0.79f, 0.92f), glm::vec3(0.26f, 0.45f, 0.80f), glm::vec3(0.09f, 0.15f, 0.58f)
+    };
+    static const glm::vec3 coolWarm[4] = {
+        neutral, glm::vec3(0.96f, 0.70f, 0.60f), glm::vec3(0.86f, 0.30f, 0.22f), glm::vec3(0.55f, 0.02f, 0.10f)
+    };
+    const bool coolwarm = (aeroColorMap == 3);
+
+    if (cp <= 0.0f) {
+        float s = (lo < -1e-6f) ? glm::clamp(cp / lo, 0.0f, 1.0f) : 0.0f;
+        return rampColor(s, coolwarm ? coolCold : coldRainbow, 4);
+    }
+    float s = (hi > 1e-6f) ? glm::clamp(cp / hi, 0.0f, 1.0f) : 0.0f;
+    return rampColor(s, coolwarm ? coolWarm : hotRainbow, 4);
+}
+
 glm::vec3 getRealisticPressureColor(float cp) {
-    if (!std::isfinite(cp)) cp = 0;
-    float t = (cp + 3.0f) / 4.0f;
-    t = glm::clamp(t, 0.0f, 1.0f);
-    
-    if (aeroColorMap == 1) {
-        if (t < 0.25f) { float k=t/0.25f; return glm::vec3(0.267f+k*0.1f, 0.004f+k*0.2f, 0.329f+k*0.3f); }
-        else if (t < 0.5f) { float k=(t-0.25f)/0.25f; return glm::vec3(0.22f+k*0.05f, 0.3f+k*0.2f, 0.5f); }
-        else if (t < 0.75f) { float k=(t-0.5f)/0.25f; return glm::vec3(0.12f+k*0.4f, 0.5f+k*0.2f, 0.5f-k*0.2f); }
-        else { float k=(t-0.75f)/0.25f; return glm::vec3(0.5f+k*0.49f, 0.7f+k*0.2f, 0.3f-k*0.1f); }
-    } else if (aeroColorMap == 3) {
-        if (t < 0.5f) { float k=t*2.0f; return glm::vec3(0.2f+k*0.3f, 0.3f+k*0.3f, 0.9f-k*0.2f); }
-        else { float k=(t-0.5f)*2.0f; return glm::vec3(0.5f+k*0.5f, 0.6f-k*0.4f, 0.7f-k*0.5f); }
-    }
-    
-    if (t < 0.2f) {
-        float k = t / 0.2f;
-        return glm::vec3(0.0f, k*0.5f, 0.5f + 0.5f*k);
-    } else if (t < 0.4f) {
-        float k = (t-0.2f)/0.2f;
-        return glm::vec3(0.0f, 0.5f + 0.5f*k, 1.0f - 0.3f*k);
-    } else if (t < 0.6f) {
-        float k = (t-0.4f)/0.2f;
-        return glm::vec3(k*0.8f, 1.0f, 0.7f - 0.7f*k);
-    } else if (t < 0.8f) {
-        float k = (t-0.6f)/0.2f;
-        return glm::vec3(0.8f + 0.2f*k, 1.0f - 0.5f*k, 0.0f);
-    } else {
-        float k = (t-0.8f)/0.2f;
-        return glm::vec3(1.0f, 0.5f - 0.5f*k, 0.0f);
-    }
+    float lo = aeroCpAutoRange ? g_cpLo : aeroCpMin;
+    float hi = aeroCpAutoRange ? g_cpHi : aeroCpMax;
+    return pressureColorInRange(cp, lo, hi);
 }
 
 glm::vec3 getVelocityMagnitudeColor(float velMag, float maxVel) {
@@ -991,6 +1036,56 @@ void stepLBMCPU(int steps) {
                 pPtr[cell] = pPhys;
             }
         }
+
+        // v1.26.0 — мин/макс давления и остаток сходимости считаются здесь же,
+        // одним проходом с ограниченным числом ячеек (не больше 256K сравнений),
+        // чтобы UI и карта давления не делали max_element по всей сетке каждый кадр.
+        {
+            int stride = 1;
+            while (total / stride > 262144) stride *= 2;
+            float pMin = 1e30f, pMax = -1e30f;
+            static std::vector<float> prevRho;
+            static int prevTotal = -1;
+            static int prevStep  = -1;
+            bool residualValid = ((int)prevRho.size() == total && prevTotal == total &&
+                                  prevStep >= 0 && lbmCurrentStep >= prevStep);
+            if ((int)prevRho.size() != total) {
+                try { prevRho.assign((size_t)total, 1.0f); } catch (...) { prevRho.clear(); }
+            }
+            double sumSq = 0.0;
+            int nSampled = 0;
+            for (int cell = 0; cell < total; cell += stride) {
+                float p = pPtr[cell];
+                if (std::isfinite(p)) { if (p < pMin) pMin = p; if (p > pMax) pMax = p; }
+                if (residualValid && cell < (int)prevRho.size()) {
+                    float r = lbmRho[cell];
+                    if (std::isfinite(r)) {
+                        float d = r - prevRho[cell];
+                        sumSq += (double)d * (double)d;
+                        ++nSampled;
+                    }
+                }
+            }
+            lbmPressureMin = (pMin <= pMax && std::isfinite(pMin)) ? pMin : 0.0f;
+            lbmPressureMax = (pMin <= pMax && std::isfinite(pMax)) ? pMax : 0.0f;
+            if (residualValid && nSampled > 0)
+                lbmResidualRho = (float)std::sqrt(sumSq / (double)nSampled);
+            else
+                lbmResidualRho = 0.0f;
+            // Изменение максимальной скорости за кадр — дешёвый индикатор того,
+            // что поток ещё перестраивается (полный векторный остаток стоил бы
+            // ещё три поля памяти).
+            static float prevMaxVelLB = 0.0f;
+            lbmResidualU = std::fabs(lbmMaxVelocityLB - prevMaxVelLB);
+            prevMaxVelLB = lbmMaxVelocityLB;
+            // Сохраняем плотность для следующего сравнения (только жидкие ячейки)
+            for (int cell = 0; cell < total && cell < (int)prevRho.size(); ++cell) {
+                float r = lbmRho[cell];
+                prevRho[cell] = std::isfinite(r) ? r : 1.0f;
+            }
+            prevTotal = total;
+            prevStep  = lbmCurrentStep;
+        }
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -1108,25 +1203,99 @@ glm::vec3 getLBMVelocityWorld(const glm::vec3& worldPos) {
     return vWorld;
 }
 
-float getLBMDensityWorld(const glm::vec3& worldPos) {
-    if (!lbmInitialized) return 1.0f;
+// =====================================================
+// v1.26.0 — единый трилинейный сэмплер скалярных полей решётки.
+//
+// Раньше каждый аксессор считал индекс как (int)fx. Для fx = -0.4 это 0, а не -1:
+// точка чуть вне расчётной области читала ячейку у её края и получала «почти
+// правильные» значения, а сама карта была ступенчатой (ближайшая ячейка вместо
+// интерполяции). Теперь: floor, трилинейная интерполяция, твёрдые ячейки
+// исключаются с перенормировкой весов — как уже делалось для скорости.
+// =====================================================
+static bool sampleFieldTrilinear(const std::vector<float>& field,
+                                 const glm::vec3& worldPos,
+                                 bool skipSolid, float* out) {
+    if (!out) return false;
+    *out = 0.0f;
+    if (!lbmInitialized || field.empty()) return false;
+    if (!std::isfinite(worldPos.x) || !std::isfinite(worldPos.y) || !std::isfinite(worldPos.z))
+        return false;
+    if (lbmCellSizeX < 1e-9f || lbmCellSizeY < 1e-9f || lbmCellSizeZ < 1e-9f) return false;
+    if (lbmNx < 2 || lbmNy < 2 || lbmNz < 2) return false;
+
     float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
     float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
     float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
-    if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return 1.0f;
-    int cell = (iz*lbmNy + iy)*lbmNx + ix;
-    if (cell < 0 || cell >= (int)lbmRho.size()) return 1.0f;
-    float rho = lbmRho[cell];
-    return std::isfinite(rho) ? glm::clamp(rho, 0.8f, 1.2f) : 1.0f;
+    int ix = (int)std::floor(fx);
+    int iy = (int)std::floor(fy);
+    int iz = (int)std::floor(fz);
+    if (ix < 0 || iy < 0 || iz < 0) return false;
+    if (ix > lbmNx - 2 || iy > lbmNy - 2 || iz > lbmNz - 2) return false;
+
+    float tx = glm::clamp(fx - (float)ix, 0.0f, 1.0f);
+    float ty = glm::clamp(fy - (float)iy, 0.0f, 1.0f);
+    float tz = glm::clamp(fz - (float)iz, 0.0f, 1.0f);
+    const float wx[2] = { 1.0f - tx, tx };
+    const float wy[2] = { 1.0f - ty, ty };
+    const float wz[2] = { 1.0f - tz, tz };
+
+    const int total = lbmNx * lbmNy * lbmNz;
+    if ((int)field.size() < total) return false;
+    const bool checkSolid = skipSolid && (int)lbmIsSolid.size() >= total &&
+                            (int)lbmIsGround.size() >= total;
+
+    float acc = 0.0f, wsum = 0.0f;
+    for (int dz = 0; dz <= 1; ++dz) {
+        for (int dy = 0; dy <= 1; ++dy) {
+            for (int dx = 0; dx <= 1; ++dx) {
+                int cell = ((iz + dz) * lbmNy + (iy + dy)) * lbmNx + (ix + dx);
+                if (cell < 0 || cell >= total) continue;
+                if (checkSolid && (lbmIsSolid[cell] || lbmIsGround[cell])) continue;
+                float v = field[cell];
+                if (!std::isfinite(v)) continue;
+                float w = wx[dx] * wy[dy] * wz[dz];
+                acc += v * w;
+                wsum += w;
+            }
+        }
+    }
+    if (wsum < 1e-6f) return false;
+    acc /= wsum;
+    if (!std::isfinite(acc)) return false;
+    *out = acc;
+    return true;
+}
+
+// Давление (Па, избыточное) с трилинейной интерполяцией. Checked-вариант
+// сообщает, были ли данные: это позволяет карте давления и таймлапсу отличать
+// «ноль по физике» от «точки вне расчётной области».
+bool getLBMPressureWorldChecked(const glm::vec3& worldPos, float* outPa) {
+    return sampleFieldTrilinear(lbmPressure, worldPos, true, outPa);
+}
+
+float getLBMPressureWorld(const glm::vec3& worldPos) {
+    float pa = 0.0f;
+    if (getLBMPressureWorldChecked(worldPos, &pa)) return pa;
+    return 0.0f;
+}
+
+float getLBMDensityWorld(const glm::vec3& worldPos) {
+    float rho = 1.0f;
+    if (sampleFieldTrilinear(lbmRho, worldPos, true, &rho)) return glm::clamp(rho, 0.8f, 1.2f);
+    return 1.0f;
 }
 
 bool isLBMSolidWorld(const glm::vec3& worldPos) {
     if (!lbmInitialized) return false;
+    if (!std::isfinite(worldPos.x) || !std::isfinite(worldPos.y) || !std::isfinite(worldPos.z))
+        return false;
+    if (lbmCellSizeX < 1e-9f || lbmCellSizeY < 1e-9f || lbmCellSizeZ < 1e-9f) return false;
     float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
     float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
     float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+    // маска твёрдого тела интерполируется nearest, но индекс обязан быть floor:
+    // при (int)(-0.4) = 0 точка слева от области попадала в ячейку у её края
+    int ix = (int)std::floor(fx), iy = (int)std::floor(fy), iz = (int)std::floor(fz);
     if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return false;
     int cell = (iz*lbmNy + iy)*lbmNx + ix;
     if (cell < 0 || cell >= (int)lbmIsSolid.size()) return false;
@@ -1135,41 +1304,23 @@ bool isLBMSolidWorld(const glm::vec3& worldPos) {
 
 float getLBMVorticityWorld(const glm::vec3& worldPos) {
     if (!lbmInitialized || lbmVorticityMag.empty()) return 0.0f;
-    float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
-    float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
-    float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
-    if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return 0.0f;
-    int cell = (iz*lbmNy + iy)*lbmNx + ix;
-    if (cell < 0 || cell >= (int)lbmVorticityMag.size()) return 0.0f;
-    float v = lbmVorticityMag[cell];
-    return std::isfinite(v) ? v : 0.0f;
+    float v = 0.0f;
+    if (sampleFieldTrilinear(lbmVorticityMag, worldPos, true, &v)) return v;
+    return 0.0f;
 }
 
 float getLBMQWorld(const glm::vec3& worldPos) {
     if (!lbmInitialized || lbmQCriterion.empty()) return 0.0f;
-    float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
-    float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
-    float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
-    if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return 0.0f;
-    int cell = (iz*lbmNy + iy)*lbmNx + ix;
-    if (cell < 0 || cell >= (int)lbmQCriterion.size()) return 0.0f;
-    float q = lbmQCriterion[cell];
-    return std::isfinite(q) ? q : 0.0f;
+    float v = 0.0f;
+    if (sampleFieldTrilinear(lbmQCriterion, worldPos, true, &v)) return v;
+    return 0.0f;
 }
 
 float getLBMTKEWorld(const glm::vec3& worldPos) {
     if (!lbmInitialized || lbmTKEField.empty()) return 0.0f;
-    float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
-    float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
-    float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
-    if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return 0.0f;
-    int cell = (iz*lbmNy + iy)*lbmNx + ix;
-    if (cell < 0 || cell >= (int)lbmTKEField.size()) return 0.0f;
-    float tke = lbmTKEField[cell];
-    return std::isfinite(tke) ? tke : 0.0f;
+    float v = 0.0f;
+    if (sampleFieldTrilinear(lbmTKEField, worldPos, true, &v)) return v;
+    return 0.0f;
 }
 
 float getLBMVelocityMagWorld(const glm::vec3& worldPos) {
@@ -1180,15 +1331,9 @@ float getLBMVelocityMagWorld(const glm::vec3& worldPos) {
 
 float getLBMStrainWorld(const glm::vec3& worldPos) {
     if (!lbmInitialized || lbmStrainMag.empty()) return 0.0f;
-    float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
-    float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
-    float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
-    if (ix < 0 || ix >= lbmNx || iy < 0 || iy >= lbmNy || iz < 0 || iz >= lbmNz) return 0.0f;
-    int cell = (iz*lbmNy + iy)*lbmNx + ix;
-    if (cell < 0 || cell >= (int)lbmStrainMag.size()) return 0.0f;
-    float s = lbmStrainMag[cell];
-    return std::isfinite(s) ? s : 0.0f;
+    float v = 0.0f;
+    if (sampleFieldTrilinear(lbmStrainMag, worldPos, true, &v)) return v;
+    return 0.0f;
 }
 
 void computeLBMVorticityAndQ() {
@@ -1415,7 +1560,7 @@ float getLBMHelicityWorld(const glm::vec3& worldPos) {
     float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
     float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
     float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+    int ix = (int)std::floor(fx), iy = (int)std::floor(fy), iz = (int)std::floor(fz);
     if (ix <= 0 || ix >= lbmNx-1 || iy <= 0 || iy >= lbmNy-1 || iz <= 0 || iz >= lbmNz-1) return 0.0f;
     int cell = (iz*lbmNy + iy)*lbmNx + ix;
     if (cell < 0 || cell >= (int)lbmVorticityMag.size()) return 0.0f;
@@ -1447,17 +1592,10 @@ float getLBMTotalPressureWorld(const glm::vec3& worldPos) {
     float rho = airDensity;
     float pStatic = airPressure;
     // v1.11.0 fix: скобки для тернарного оператора
+    // v1.26.0: то же трилинейное давление, что и у карты, иначе полное давление
+    // «прыгало» на границах ячеек
     float lbmP = 0.0f;
-    float fx = (worldPos.x - lbmMinX) / lbmCellSizeX;
-    float fy = (worldPos.y - lbmMinY) / lbmCellSizeY;
-    float fz = (worldPos.z - lbmMinZ) / lbmCellSizeZ;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
-    if (ix>=0 && ix<lbmNx && iy>=0 && iy<lbmNy && iz>=0 && iz<lbmNz) {
-        int cell = (iz*lbmNy + iy)*lbmNx + ix;
-        if (cell>=0 && cell < (int)lbmPressure.size()) {
-            lbmP = lbmPressure[cell];
-        }
-    }
+    getLBMPressureWorldChecked(worldPos, &lbmP);
     pStatic += lbmP;
     float pt = pStatic + 0.5f * rho * mag2;
     return std::isfinite(pt) ? pt : airPressure;

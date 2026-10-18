@@ -54,6 +54,7 @@
 #include "vulkan_renderer.h"
 #include "lite_config.h"
 #include "debug_log.h"   // v1.25.0 — режим отладки: журнал событий, действий и физики
+#include "timelapse.h"   // v1.26.0 — режим вычислений: таймлапс физики (F7/F8)
 
 #include <cstdio>
 #include <cstdlib>
@@ -321,6 +322,22 @@ static void collectDebugFacts() {
     debugLogAddFact("Производительность", "Средний FPS", std::to_string((int)g_currentFPSAverage));
     debugLogAddFact("Производительность", "Кадров отрисовано", std::to_string(g_debugFrameCounter));
 
+    // --- Таймлапс физики и карта давления (v1.26.0) ---
+    std::snprintf(buf, sizeof(buf), "запись %s, фоновая история %s, ёмкость %d кадров, в буфере %d, снимков поля %d",
+                  tlEnabled ? "включена (F7)" : "выключена", tlAutoRecord ? "да" : "нет",
+                  tlCapacity, timelapseFrameCount(), timelapseFieldCount());
+    debugLogAddFact("Таймлапс", "Состояние", buf);
+    std::snprintf(buf, sizeof(buf), "скорость %.2fx, позиция %d, зацикливание %s",
+                  tlSpeed, timelapsePlayIndex(), tlLoop ? "да" : "нет");
+    debugLogAddFact("Таймлапс", "Воспроизведение", buf);
+    std::snprintf(buf, sizeof(buf), "%s, диапазон Cp [%.3f; %.3f], схема %d, давление LBM [%.1f; %.1f] Па",
+                  aeroCpAutoRange ? "авто-диапазон" : "ручной диапазон", g_cpLo, g_cpHi,
+                  aeroColorMap, lbmPressureMin, lbmPressureMax);
+    debugLogAddFact("Карта давления", "Настройка", buf);
+    std::snprintf(buf, sizeof(buf), "RMS изменения плотности %.3e, изменение макс. скорости %.3e (за кадр)",
+                  lbmResidualRho, lbmResidualU);
+    debugLogAddFact("Карта давления", "Остаток сходимости LBM", buf);
+
     // --- Режим качества ---
     std::snprintf(buf, sizeof(buf), "Lite=%s, Ultra-Lite=%s, пресет=%s, авто-качество=%s, энергосбережение=%s",
                   g_isLiteMode ? "да" : "нет", g_isUltraLiteMode ? "да" : "нет",
@@ -484,6 +501,12 @@ int main(int argc, char** argv) {
     // v1.25.0 — ключи режима отладки
     bool cliDebug = false, cliActions = false, cliPhysics = false, cliOverlay = false, cliSaveReport = false;
     int  cliPhysicsEvery = 0;
+    // v1.26.0 — ключи таймлапса физики
+    bool  cliTimelapse = false;          // начать запись сразу
+    bool  cliNoAutoTL  = false;          // не вести фоновую историю
+    int   cliTLCap     = 0;              // ёмкость буфера, кадров
+    int   cliTLField   = -1;             // снимок поля каждый N-й кадр (0 = не снимать)
+    float cliTLSpeed   = 0.0f;           // скорость воспроизведения
     for (int i=1; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--vulkan" || arg == "-vulkan" || arg == "--vk") {
@@ -502,6 +525,16 @@ int main(int argc, char** argv) {
             cliOverlay = true;
         } else if (arg == "--physics-every" && i+1 < argc) {
             cliPhysicsEvery = std::atoi(argv[++i]);
+        } else if (arg == "--timelapse") {
+            cliTimelapse = true;
+        } else if (arg == "--no-timelapse") {
+            cliNoAutoTL = true;
+        } else if (arg == "--timelapse-capacity" && i+1 < argc) {
+            cliTLCap = std::atoi(argv[++i]);
+        } else if (arg == "--timelapse-field" && i+1 < argc) {
+            cliTLField = std::atoi(argv[++i]);
+        } else if (arg == "--timelapse-speed" && i+1 < argc) {
+            cliTLSpeed = (float)std::atof(argv[++i]);
         } else if (arg == "--save-report" || arg == "--report" || arg == "--debug-report") {
             cliSaveReport = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -525,6 +558,11 @@ int main(int argc, char** argv) {
             std::cout << "  --debug-overlay   — show the last log lines on screen\n";
             std::cout << "  --physics-every N — one physics row per N frames (default 4)\n";
             std::cout << "  --save-report     — write Aeros-Debug-Report-<date>.txt and exit (works with no window)\n";
+            std::cout << "  --timelapse       — start recording the physics timelapse at once (same as F7)\n";
+            std::cout << "  --no-timelapse    — do not keep the background physics history\n";
+            std::cout << "  --timelapse-capacity N — ring buffer size in frames (default 6000)\n";
+            std::cout << "  --timelapse-field N    — capture a pressure-field snapshot every N frames (0 = off)\n";
+            std::cout << "  --timelapse-speed X    — playback speed, 1.0 = real time (same as the panel slider)\n";
             std::cout << "  --help, -h        — this help\n";
             std::cout << "  model.stl         — STL file to load\n";
             std::cout << "Presets:\n";
@@ -596,6 +634,17 @@ int main(int argc, char** argv) {
              debugLogEnabled() ? "да" : "нет", debugLogActionsEnabled() ? "да" : "нет",
              debugLogPhysicsEnabled() ? "да" : "нет", g_debugPhysicsEveryNFrames);
 
+    // v1.26.0 — применяем ключи таймлапса и готовим буфер истории физики
+    if (cliTLCap > 0)   tlCapacity   = cliTLCap;
+    if (cliTLField >= 0) tlFieldEvery = cliTLField;
+    if (cliTLSpeed > 0.0f) tlSpeed    = cliTLSpeed;
+    if (cliNoAutoTL)    tlAutoRecord = false;
+    if (cliTimelapse)   tlEnabled    = true;
+    timelapseInit();
+    debugLogAddSectionCallback(timelapseSummary);
+    DBG_INFO("таймлапс физики: ёмкость %d кадров, снимок поля каждый %d-й кадр, фоновая запись %s",
+             tlCapacity, tlFieldEvery, tlAutoRecord ? "включена" : "выключена");
+
     // --save-report: собрать отчёт и выйти. Работает без окна и без графики —
     // именно так можно прислать диагностику, если программа вообще не запускается.
     if (cliSaveReport) {
@@ -663,6 +712,18 @@ int main(int argc, char** argv) {
 
     // v1.19.0 Vulkan support — check if Vulkan requested, then don't create OpenGL context
     bool useVulkanWindow = false;
+    if (requestedAPI == RendererAPI::Vulkan && !isVulkanAvailable()) {
+        // v1.26.0 — явное сообщение вместо молчаливого отката. Особенно важно,
+        // потому что renderer=vulkan сохраняется в aeros_settings.ini и без
+        // этого сообщения пользователь каждый запуск получал бы чёрное окно
+        // (или непонятный OpenGL) без объяснения причины.
+        DBG_WARN("Vulkan запрошен (ключ --vulkan или aeros_settings.ini), но рендерер Vulkan "
+                 "в этой версии не реализован — окно создаётся с контекстом OpenGL 3.3");
+        debugLogAddFact("Рендерер", "Vulkan",
+                        vulkanLoaderPresent()
+                            ? "запрошен, но не реализован в этой версии (загрузчик в системе есть) — используется OpenGL"
+                            : "запрошен, но не реализован в этой версии (загрузчик не найден) — используется OpenGL");
+    }
     if (requestedAPI == RendererAPI::Vulkan && isVulkanAvailable()) {
         // For Vulkan, we need no API
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -1082,7 +1143,12 @@ int main(int argc, char** argv) {
                 physicsHeaderWritten = true;
             }
             if ((g_debugFrameCounter % everyN) == 0) {
-                int nonFinite = debugCountNonFinite(particlePositions.data(), particlePositions.size(), 97);
+                // v1.26.0: полный проход по позициям, пока массив небольшой.
+                // Прежний шаг 97 пропускал до 96/97 неконечных значений, поэтому
+                // потеря устойчивости могла не попасть в журнал физики вовсе.
+                int nonFiniteStride = (particlePositions.size() <= 300000) ? 1 : 16;
+                int nonFinite = debugCountNonFinite(particlePositions.data(), particlePositions.size(),
+                                                    (std::size_t)nonFiniteStride);
                 debugLogPhysicsRow("%lld,%.3f,%.3f,%.2f,%s,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.2f,"
                                    "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d",
                                    g_debugFrameCounter, currentFrame, deltaTime * 1000.0f,
@@ -1099,7 +1165,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        // 3) Краткая сводка в общий журнал (не засоряет файл: раз в 300 кадров)
+        // 3) Таймлапс физики (v1.26.0): двигаем курсор воспроизведения и пишем кадр
+        timelapseAdvance(deltaTime);
+        timelapseRecordFrame(g_debugFrameCounter, currentFrame);
+
+        // 4) Краткая сводка в общий журнал (не засоряет файл: раз в 300 кадров)
         if (debugLogEnabled() && (g_debugFrameCounter % 300) == 0) {
             DBG_PHYS("кадр %lld: FPS %.1f, кадр %.1f мс (LBM %.1f, частицы %.1f, силы %.1f), "
                      "частиц %d, LBM шаг %d, rho %.5f, vmax %.4f, бэкенд %s",
@@ -1500,6 +1570,20 @@ int main(int argc, char** argv) {
     DBG_INFO("=== завершение работы: кадров %lld, ошибок в журнале %d, откатов GPU на CPU %d ===",
              g_debugFrameCounter, debugLogErrorCount(), g_debugCudaFallbacks);
     DBG_INFO("файл журнала: %s", debugLogFilePath().c_str());
+
+    // v1.26.0 — освобождаем память GPU (раньше поле SDF не освобождалось никогда)
+    cudaReleaseAll();
+
+    // История физики сохраняется автоматически, если был включён режим отладки:
+    // вместе с отчётом это даёт полную картину того, что происходило в расчёте.
+    if (debugLogEnabled() && timelapseFrameCount() > 0) {
+        std::string tlPath = timelapseExportCSV();
+        if (!tlPath.empty()) {
+            debugLogAddFact("Таймлапс", "Файл истории", tlPath);
+            DBG_INFO("таймлапс физики сохранён: %s", tlPath.c_str());
+        }
+    }
+    timelapseShutdown();
     debugLogClose();
     std::cout << "[Main] Exit OK v1.9.0" << std::endl;
     return 0;

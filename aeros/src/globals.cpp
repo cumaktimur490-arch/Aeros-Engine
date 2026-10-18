@@ -335,3 +335,27 @@ std::string     g_cudaStatusText;
 std::string     g_lastDebugReportPath;
 int             g_debugCudaFallbacks = 0;
 int             g_debugPhysicsEveryNFrames = 4;
+
+// --- v1.26.0 Режим вычислений: таймлапс физики ---
+bool  tlEnabled    = false;
+bool  tlPlaying    = false;
+bool  tlLoop       = true;
+bool  tlShowField  = true;
+bool  tlShowWindow = false;
+bool  tlAutoRecord = true;   // история есть всегда: при сбое можно отмотать назад
+float tlSpeed      = 4.0f;   // таймлапс по умолчанию в 4 раза быстрее реального времени
+int   tlCapacity   = 6000;   // ~100 секунд при 60 FPS, ~4 МБ
+int   tlFieldEvery = 30;   // снимок поля — это 24^3 сэмплов (2-3 мс), поэтому не каждый кадр
+int   tlChartFrames = 600;
+std::string g_lastTimelapsePath;
+
+// --- v1.26.0 Карта давления ---
+bool  aeroCpAutoRange = true;
+float aeroCpMin = -2.0f;
+float aeroCpMax =  2.0f;
+float g_cpLo = -2.0f;
+float g_cpHi =  2.0f;
+float lbmPressureMin = 0.0f;
+float lbmPressureMax = 0.0f;
+float lbmResidualRho = 0.0f;
+float lbmResidualU   = 0.0f;

@@ -61,6 +61,13 @@ void debugLogAddFact(const std::string& category, const std::string& key, const 
 typedef void (*DebugFactCallback)();
 void debugLogSetFactCallback(DebugFactCallback cb);
 
+// v1.26.0 — дополнительные разделы отчёта (многострочный свободный текст).
+// Сводка таймлапса физики — это таблица, а не пара «ключ: значение», поэтому
+// модули могут добавить в отчёт свой собственный блок. Колбэков может быть
+// несколько, они вызываются в порядке регистрации после списка фактов.
+typedef std::string (*DebugSectionCallback)();
+void debugLogAddSectionCallback(DebugSectionCallback cb);
+
 // Экран: последние записи журнала (0 = самая свежая)
 int         debugLogRecentCount();
 std::string debugLogRecent(int indexFromNewest);

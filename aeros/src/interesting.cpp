@@ -392,9 +392,9 @@ void updateSmokeTunnel(float dt) {
     float csy = (g_smokeMaxY - g_smokeMinY)/g_smokeNy;
     float csz = (g_smokeMaxZ - g_smokeMinZ)/g_smokeNz;
     for (auto& p : g_smokeParticles) {
-        int ix = (int)((p.pos.x - g_smokeMinX)/csx);
-        int iy = (int)((p.pos.y - g_smokeMinY)/csy);
-        int iz = (int)((p.pos.z - g_smokeMinZ)/csz);
+        int ix = (int)std::floor((p.pos.x - g_smokeMinX)/csx);
+        int iy = (int)std::floor((p.pos.y - g_smokeMinY)/csy);
+        int iz = (int)std::floor((p.pos.z - g_smokeMinZ)/csz);
         if (ix<0||ix>=g_smokeNx||iy<0||iy>=g_smokeNy||iz<0||iz>=g_smokeNz) continue;
         int idx = (iz*g_smokeNy+iy)*g_smokeNx+ix;
         g_smokeDensityField[idx] += p.density * 0.1f;
@@ -432,7 +432,7 @@ glm::vec3 sampleSmokeDensity(const glm::vec3& pos) {
     float fx = (pos.x - g_smokeMinX)/csx - 0.5f;
     float fy = (pos.y - g_smokeMinY)/csy - 0.5f;
     float fz = (pos.z - g_smokeMinZ)/csz - 0.5f;
-    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+    int ix = (int)std::floor(fx), iy = (int)std::floor(fy), iz = (int)std::floor(fz);
     if (ix<0||ix>=g_smokeNx-1||iy<0||iy>=g_smokeNy-1||iz<0||iz>=g_smokeNz-1) return glm::vec3(0);
     float tx = fx-ix, ty = fy-iy, tz = fz-iz;
     int idx000 = (iz*g_smokeNy+iy)*g_smokeNx+ix;

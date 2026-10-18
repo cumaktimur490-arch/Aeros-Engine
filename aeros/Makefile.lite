@@ -50,6 +50,7 @@ SOURCES = \
     $(SRCDIR)/lite_config.cpp \
     $(SRCDIR)/benchmark.cpp \
     $(SRCDIR)/debug_log.cpp \
+    $(SRCDIR)/timelapse.cpp \
     $(SRCDIR)/cuda_stub.cpp \
     $(SRCDIR)/glad.c \
     $(SRCDIR)/imgui/imgui.cpp \

@@ -529,6 +529,14 @@ void debugLogAddFact(const std::string& category, const std::string& key, const 
     g_facts.push_back(f);
 }
 
+static std::vector<DebugSectionCallback> g_sections;   // v1.26.0
+
+void debugLogAddSectionCallback(DebugSectionCallback cb) {
+    if (!cb) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_sections.push_back(cb);
+}
+
 void debugLogSetFactCallback(DebugFactCallback cb) { g_factCb = cb; }
 
 int debugLogRecentCount() {
@@ -590,6 +598,15 @@ std::string debugLogBuildReport() {
             out += "--- " + lastCat + " ---\n";
         }
         out += "  " + g_facts[i].key + ": " + g_facts[i].value + "\n";
+    }
+
+    // v1.26.0 — дополнительные разделы (например, сводка таймлапса физики)
+    for (size_t i = 0; i < g_sections.size(); ++i) {
+        std::string txt = g_sections[i] ? g_sections[i]() : std::string();
+        if (txt.empty()) continue;
+        out += "\n";
+        out += txt;
+        if (txt[txt.size() - 1] != '\n') out += "\n";
     }
 
     out += "\n--- Последние записи журнала (до 400) ---\n";

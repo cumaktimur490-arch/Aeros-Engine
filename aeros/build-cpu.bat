@@ -169,6 +169,8 @@ cl /c !CXXFLAGS! src\benchmark.cpp /Fo:bin\benchmark.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\debug_log.cpp /Fo:bin\debug_log.obj
 if !errorlevel! neq 0 exit /b 1
+cl /c !CXXFLAGS! src\timelapse.cpp /Fo:bin\timelapse.obj
+if !errorlevel! neq 0 exit /b 1
 
 cl /c !CXXFLAGS! src\imgui\imgui.cpp /Fo:bin\imgui.obj
 if !errorlevel! neq 0 exit /b 1
@@ -202,7 +204,7 @@ echo [Aeros CPU] Linking (LTCG optimized)...
 link /LTCG /OUT:bin\main-!OUT_ARCH!.exe ^
   bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
   bin\voxel_grid.obj bin\flow_field.obj bin\particles.obj bin\streamlines.obj ^
-  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\lite_config.obj bin\cuda_stub.obj bin\benchmark.obj bin\debug_log.obj bin\glad.obj ^
+  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\lite_config.obj bin\cuda_stub.obj bin\benchmark.obj bin\debug_log.obj bin\timelapse.obj bin\glad.obj ^
   bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
   bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj !ICON_RES! ^
   /LIBPATH:"!LIBDIR!\glfw\!GLFW_LIBDIR!" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^

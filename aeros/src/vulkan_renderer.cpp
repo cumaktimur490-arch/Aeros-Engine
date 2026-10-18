@@ -65,38 +65,47 @@ static bool s_vulkanAvailable = false;
 // =====================================================
 // Vulkan availability — dynamic loading check
 // =====================================================
-bool isVulkanAvailable() {
-    if (s_vulkanChecked) return s_vulkanAvailable;
-    s_vulkanChecked = true;
-
+// v1.26.0 — «найден ли загрузчик Vulkan» и «можно ли на нём рисовать» — это
+// два разных вопроса, и раньше они были смешаны в одной функции.
+bool vulkanLoaderPresent() {
+    static bool checked = false;
+    static bool present = false;
+    if (checked) return present;
+    checked = true;
 #if HAS_VULKAN_H
     // Try to load vulkan-1.dll / libvulkan.so
 #ifdef _WIN32
     HMODULE mod = LoadLibraryA("vulkan-1.dll");
-    if (mod) {
-        FreeLibrary(mod);
-        s_vulkanAvailable = true;
-        std::cout << "[Vulkan] vulkan-1.dll found — Vulkan available" << std::endl;
-    } else {
-        std::cout << "[Vulkan] vulkan-1.dll not found — Vulkan unavailable, using OpenGL" << std::endl;
-        s_vulkanAvailable = false;
-    }
+    if (mod) { FreeLibrary(mod); present = true; }
 #else
     void* lib = dlopen("libvulkan.so.1", RTLD_NOW);
     if (!lib) lib = dlopen("libvulkan.so", RTLD_NOW);
-    if (lib) {
-        dlclose(lib);
-        s_vulkanAvailable = true;
-        std::cout << "[Vulkan] libvulkan.so found — Vulkan available" << std::endl;
-    } else {
-        std::cout << "[Vulkan] libvulkan.so not found — Vulkan unavailable, using OpenGL" << std::endl;
-        s_vulkanAvailable = false;
-    }
+    if (lib) { dlclose(lib); present = true; }
 #endif
 #else
-    std::cout << "[Vulkan] Vulkan headers not available at compile time — Vulkan disabled" << std::endl;
-    s_vulkanAvailable = false;
+    present = false;
 #endif
+    return present;
+}
+
+bool isVulkanAvailable() {
+    if (s_vulkanChecked) return s_vulkanAvailable;
+    s_vulkanChecked = true;
+
+    // Честный ответ: Vulkan-рендерер в этой версии не реализован — его функции
+    // (createRenderPass, createSwapchain, запись команд) возвращают «успех»,
+    // ничего не рисуя. Загрузчик vulkan-1.dll при этом есть почти на любом ПК с
+    // драйвером видеокарты, поэтому прежняя проверка сообщала «Vulkan доступен»,
+    // main.cpp создавал окно с GLFW_NO_API (без контекста OpenGL), и пользователь
+    // получал чёрное окно без единой подсказки. Хуже того: renderer=vulkan
+    // сохранялся в aeros_settings.ini и продолжал ломать каждый следующий запуск.
+    bool loader = vulkanLoaderPresent();
+    s_vulkanAvailable = false;
+    if (loader)
+        std::cout << "[Vulkan] loader found, but the Vulkan renderer is not implemented in this "
+                     "version - falling back to OpenGL" << std::endl;
+    else
+        std::cout << "[Vulkan] loader not found - using OpenGL" << std::endl;
     return s_vulkanAvailable;
 }
 
@@ -105,16 +114,10 @@ bool initVulkanLoader() {
 }
 
 std::string getVulkanVersionString() {
-#if HAS_VULKAN_H
-    if (!isVulkanAvailable()) return "Not available";
-    // Query instance version if possible
-    uint32_t apiVersion = 0;
-    // vkEnumerateInstanceVersion may not be available in older loaders
-    // For simplicity, return 1.3 as target
-    return "1.3 (target)";
-#else
-    return "Headers not found — install Vulkan SDK";
-#endif
+    // v1.26.0 — больше не обещаем «1.3 (target)»: рендерер не реализован.
+    return vulkanLoaderPresent()
+        ? "не реализован в этой версии (загрузчик Vulkan в системе найден)"
+        : "не реализован в этой версии (загрузчик Vulkan не найден)";
 }
 
 std::vector<std::string> getVulkanExtensions() {

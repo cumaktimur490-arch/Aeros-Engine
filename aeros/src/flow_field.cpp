@@ -138,6 +138,19 @@ void updateFlowParams() {
         if (Re > 2e9f) Re = 2e9f;
         aeroReNumber = Re;
     }
+
+    // v1.26.0 — диапазон и схема карты давления передаются на GPU вместе с
+    // остальными параметрами, чтобы цвета не зависели от выбранного бэкенда.
+    {
+        float lo = aeroCpAutoRange ? g_cpLo : aeroCpMin;
+        float hi = aeroCpAutoRange ? g_cpHi : aeroCpMax;
+        if (!std::isfinite(lo)) lo = -2.0f;
+        if (!std::isfinite(hi)) hi =  2.0f;
+        if (hi - lo < 1e-4f) { lo = -2.0f; hi = 2.0f; }
+        flowParams.cpLo = lo;
+        flowParams.cpHi = hi;
+        flowParams.colorMap = (aeroColorMap >= 0 && aeroColorMap <= 3) ? aeroColorMap : 0;
+    }
 }
 
 // Вспомогательная: корректный потенциал эллипсоида
@@ -595,4 +608,72 @@ glm::vec3 colorForPoint(const glm::vec3& v, float sdfDist, const FlowParams& prm
         if (spdT < 0.5f) return glm::vec3(1.0f, spdT*2.0f, 0.0f);
         else return glm::vec3(1.0f-(spdT-0.5f)*2.0f, 1.0f, 0.0f);
     }
+}
+
+// =====================================================
+// v1.26.0 — авто-диапазон карты давления.
+//
+// До этого раскраска использовала фиксированное окно Cp ∈ [-3, +1], а фактические
+// данные (LBM ограничивает избыточное давление величиной скоростного напора) почти
+// всегда лежали в [-2, +2]. В результате невозмущённый поток (Cp = 0) попадал на
+// 75% шкалы и рисовался оранжевым, а всё положительное давление сливалось в красный.
+// Здесь диапазон считается по реальным значениям, робастно (отсечение 1% крайних
+// значений гистограммой, чтобы единичный пик на острой кромке не растягивал карту)
+// и сглаживается, чтобы картинка не «дышала» каждый кадр.
+// =====================================================
+void aeroUpdateCpRange(const float* cpValues, int count) {
+    if (!cpValues || count <= 0) return;
+
+    int stride = 1;
+    while (count / stride > 65536) stride *= 2;
+
+    const int   NB = 240;
+    const float HIST_LO = -4.0f;
+    const float HIST_HI =  2.0f;
+    const float invBin = (float)NB / (HIST_HI - HIST_LO);
+    int hist[NB];
+    for (int i = 0; i < NB; ++i) hist[i] = 0;
+    int n = 0;
+    float hardLo = 1e30f, hardHi = -1e30f;
+
+    for (int i = 0; i < count; i += stride) {
+        float v = cpValues[i];
+        if (!std::isfinite(v)) continue;
+        if (v < hardLo) hardLo = v;
+        if (v > hardHi) hardHi = v;
+        int b = (int)((v - HIST_LO) * invBin);
+        if (b < 0) b = 0;
+        if (b >= NB) b = NB - 1;
+        hist[b]++;
+        ++n;
+    }
+    if (n < 16 || hardLo >= hardHi) return;   // данных мало — оставляем прежний диапазон
+
+    // Квантили 1% и 99%
+    int cut = n / 100;
+    if (cut < 1) cut = 1;
+    int acc = 0;
+    float q01 = HIST_LO, q99 = HIST_HI;
+    for (int b = 0; b < NB; ++b) {
+        acc += hist[b];
+        if (acc >= cut) { q01 = HIST_LO + ((float)b + 0.5f) / invBin; break; }
+    }
+    acc = 0;
+    for (int b = NB - 1; b >= 0; --b) {
+        acc += hist[b];
+        if (acc >= cut) { q99 = HIST_LO + ((float)b + 0.5f) / invBin; break; }
+    }
+    if (!(std::isfinite(q01) && std::isfinite(q99)) || q99 <= q01) return;
+
+    // Симметрично относительно нуля: Cp = 0 обязан быть в центре схемы
+    float m = std::fabs(q01) > std::fabs(q99) ? std::fabs(q01) : std::fabs(q99);
+    if (m < 0.05f) m = 0.05f;   // не даём диапазону схлопнуться (иначе деление на ноль)
+    if (m > 4.0f)  m = 4.0f;    // и не растягиваем из-за экстремального выброса
+
+    const float k = 0.15f;      // сглаживание
+    float lo = g_cpLo + ((-m) - g_cpLo) * k;
+    float hi = g_cpHi + (( m) - g_cpHi) * k;
+    if (!std::isfinite(lo) || !std::isfinite(hi) || hi - lo < 1e-4f) { lo = -2.0f; hi = 2.0f; }
+    g_cpLo = lo;
+    g_cpHi = hi;
 }

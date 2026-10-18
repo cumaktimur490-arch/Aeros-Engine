@@ -8,6 +8,7 @@
 #include "globals.h"
 #include "input.h"
 #include "debug_log.h"
+#include "timelapse.h"   // v1.26.0 — таймлапс физики (F7/F8)
 #include "forces.h"
 #include "streamlines.h"
 #include "fsr.h"
@@ -170,6 +171,35 @@ void processInput(GLFWwindow* window) {
         aeroCSVExportRequested = true;
     }
     f6WasPressed = f6Pressed;
+
+    // F7 — режим вычислений: запись таймлапса физики (v1.26.0)
+    static bool f7WasPressed = false;
+    bool f7Pressed = glfwGetKey(window, GLFW_KEY_F7) == GLFW_PRESS;
+    if (f7Pressed && !f7WasPressed) {
+        tlEnabled = !tlEnabled;
+        if (tlEnabled) {
+            tlPlaying = false;            // начинать просмотр во время записи нельзя
+            timelapseClear();
+        }
+        debugLogAction("клавиша", "F7 — таймлапс физики: запись %s", tlEnabled ? "ВКЛ" : "ВЫКЛ");
+    }
+    f7WasPressed = f7Pressed;
+
+    // F8 — воспроизведение таймлапса / пауза
+    static bool f8WasPressed = false;
+    bool f8Pressed = glfwGetKey(window, GLFW_KEY_F8) == GLFW_PRESS;
+    if (f8Pressed && !f8WasPressed) {
+        if (timelapseFrameCount() <= 0) {
+            debugLogAction("клавиша", "F8 — таймлапс пуст, воспроизводить нечего (сначала F7)");
+        } else {
+            tlPlaying = !tlPlaying;
+            if (tlPlaying && timelapsePlayIndex() >= timelapseFrameCount() - 1)
+                timelapsePlayFromStart();     // повторное нажатие в конце — начать сначала
+            debugLogAction("клавиша", "F8 — воспроизведение таймлапса: %s (скорость %.2fx)",
+                           tlPlaying ? "СТАРТ" : "ПАУЗА", tlSpeed);
+        }
+    }
+    f8WasPressed = f8Pressed;
 
     // F9 — режим отладки: включить/выключить журнал событий, действий и физики
     static bool f9WasPressed = false;

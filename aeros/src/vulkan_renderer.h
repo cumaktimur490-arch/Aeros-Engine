@@ -27,6 +27,10 @@ struct RendererConfig {
 
 // Vulkan availability check
 bool isVulkanAvailable();
+// v1.26.0 — найден ли в системе загрузчик Vulkan (vulkan-1.dll / libvulkan.so).
+// Отделено от isVulkanAvailable(): загрузчик есть почти везде, а рисовать через
+// Vulkan эта версия не умеет, поэтому «доступен» означает именно «умеет рисовать».
+bool vulkanLoaderPresent();
 bool initVulkanLoader();
 std::string getVulkanVersionString();
 std::vector<std::string> getVulkanExtensions();

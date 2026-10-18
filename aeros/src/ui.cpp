@@ -7,10 +7,13 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <fstream>
+#include <vector>
 #include <thread>
 
 #include "globals.h"
 #include "debug_log.h"   // v1.25.0 — панель «Отладка и журнал»
+#include "timelapse.h"   // v1.26.0 — панель «Режим вычислений: таймлапс физики»
 #include "vulkan_renderer.h"
 #include "stl_loader.h"
 #include "model.h"
@@ -27,6 +30,358 @@
 #include "framegen.h"
 #include "interesting.h"
 #include "lite_config.h"
+
+// =====================================================
+// v1.26.0 — «Режим вычислений»: таймлапс физики.
+//
+// Пишется кольцевая история кадров (все скаляры физики, силы, времена подсистем,
+// счётчик NaN/Inf, остаток сходимости LBM) и периодические снимки поля давления.
+// Здесь — панель управления (в главном окне) и отдельное окно с графиками и
+// тепловыми срезами, чтобы можно было «отмотать назад» и посмотреть, как именно
+// развивался расчёт: где зародился срыв, когда поплыли числа, на каком кадре
+// появились NaN и как в этот момент вели себя FPS и времена подсистем.
+// =====================================================
+namespace {
+
+float tlValFps(const TLFrame& f)      { return f.fps; }
+float tlValFrameMs(const TLFrame& f)  { return f.frameMs; }
+float tlValLbmMs(const TLFrame& f)    { return f.lbmMs; }
+float tlValLiftY(const TLFrame& f)    { return f.lift[1]; }
+float tlValDragLen(const TLFrame& f)  { return std::sqrt(f.drag[0]*f.drag[0] + f.drag[1]*f.drag[1] + f.drag[2]*f.drag[2]); }
+float tlValTke(const TLFrame& f)      { return f.lbmTke; }
+float tlValResidual(const TLFrame& f) { return f.residualRho; }
+float tlValVmax(const TLFrame& f)     { return f.lbmVmax; }
+float tlValDrawn(const TLFrame& f)    { return (float)f.drawn; }
+float tlValNonFinite(const TLFrame& f){ return (float)f.nonfinite; }
+
+// График истории: окно из tlChartFrames кадров, заканчивающееся на курсоре.
+void drawTLChart(const char* label, float (*get)(const TLFrame&), ImU32 color, float height) {
+    int count = timelapseFrameCount();
+    if (count < 2) { ImGui::Text("%s: %s", label, _TR("no data", "нет данных")); return; }
+
+    int shown = tlChartFrames;
+    if (shown <= 0 || shown > count) shown = count;
+    int base = timelapsePlayIndex();
+    if (base < 0) base = count - 1;
+    int startIdx = base - shown + 1;
+    if (startIdx < 0) startIdx = 0;
+    int n = base - startIdx + 1;
+
+    TLFrame f;
+    float lo = 1e30f, hi = -1e30f;
+    for (int i = startIdx; i <= base; ++i) {
+        if (!timelapseGetFrame(i, &f)) continue;
+        float v = get(f);
+        if (!std::isfinite(v)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+    }
+    if (lo > hi) { lo = 0.0f; hi = 1.0f; }
+    if (hi - lo < 1e-9f) { lo -= 0.5f; hi += 0.5f; }
+
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float w = ImGui::GetContentRegionAvail().x;
+    if (w < 60.0f) w = 240.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + height), IM_COL32(16, 18, 24, 255));
+    // нулевой уровень, если он попадает в диапазон
+    if (lo < 0.0f && hi > 0.0f) {
+        float zy = p.y + height - height * (0.0f - lo) / (hi - lo);
+        dl->AddLine(ImVec2(p.x, zy), ImVec2(p.x + w, zy), IM_COL32(90, 96, 112, 180), 1.0f);
+    }
+    dl->AddRect(p, ImVec2(p.x + w, p.y + height), IM_COL32(70, 76, 92, 255));
+
+    ImVec2 prev(0.0f, 0.0f);
+    bool hasPrev = false;
+    for (int k = 0; k < n; ++k) {
+        if (!timelapseGetFrame(startIdx + k, &f)) { hasPrev = false; continue; }
+        float v = get(f);
+        if (!std::isfinite(v)) { hasPrev = false; continue; }
+        float x = p.x + w * (n > 1 ? (float)k / (float)(n - 1) : 1.0f);
+        float t = (v - lo) / (hi - lo);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        ImVec2 cur(x, p.y + height - height * t);
+        if (hasPrev) dl->AddLine(prev, cur, color, 1.4f);
+        prev = cur; hasPrev = true;
+    }
+    // курсор воспроизведения — правый край показанного окна
+    if (n > 0) {
+        float x = p.x + w - 1.0f;
+        dl->AddLine(ImVec2(x, p.y), ImVec2(x, p.y + height), IM_COL32(255, 214, 96, 220), 1.6f);
+    }
+    ImGui::Dummy(ImVec2(w, height));
+    ImGui::Text("%s: %.4g … %.4g  (%s %.4g)", label, lo, hi, _TR("now", "сейчас"),
+                timelapseGetFrame(base, &f) ? get(f) : 0.0f);
+}
+
+// Тепловой срез записанного поля давления. axis: 0 = XY, 1 = XZ, 2 = YZ.
+void drawTLFieldSlice(const std::vector<unsigned char>& field, float lo, float hi,
+                      int axis, const char* title, float cell) {
+    const int R = timelapseFieldRes();
+    int mid = R / 2;
+    ImGui::TextUnformatted(title);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (int b = 0; b < R; ++b) {
+        for (int a = 0; a < R; ++a) {
+            int ix, iy, iz;
+            if (axis == 0)      { ix = a; iy = b; iz = mid; }
+            else if (axis == 1) { ix = a; iy = mid; iz = b; }
+            else                { ix = mid; iy = b; iz = a; }
+            unsigned char v = timelapseFieldAt(field, ix, iy, iz);
+            ImU32 col;
+            if (v == TL_FIELD_NODATA) {
+                col = IM_COL32(38, 40, 46, 255);        // нет данных: твёрдое тело / вне области
+            } else {
+                float t = (float)v / 250.0f;
+                float cp = lo + (hi - lo) * t;
+                glm::vec3 c = pressureColorInRange(cp, lo, hi);
+                col = IM_COL32((int)(c.x * 255.0f), (int)(c.y * 255.0f), (int)(c.z * 255.0f), 255);
+            }
+            // вертикальная ось экрана направлена вниз, поэтому b инвертируем
+            float y0 = p.y + cell * (float)(R - 1 - b);
+            dl->AddRectFilled(ImVec2(p.x + cell * (float)a, y0),
+                              ImVec2(p.x + cell * (float)(a + 1) + 0.6f, y0 + cell + 0.6f), col);
+        }
+    }
+    ImGui::Dummy(ImVec2(cell * (float)R, cell * (float)R));
+}
+
+} // namespace
+
+static void drawTimelapsePanel() {
+    if (!ImGui::CollapsingHeader(_TR("Computation mode: physics timelapse v1.26.0",
+                                     "Режим вычислений: таймлапс физики v1.26.0")))
+        return;
+
+    ImGui::Text("%s", _TR("F7 — record, F8 — play/pause. History lets you rewind the simulation.",
+                          "F7 — запись, F8 — воспроизведение. Историю расчёта можно отмотать назад."));
+
+    if (ImGui::Checkbox(_TR("Record timelapse (F7)", "Запись таймлапса (F7)"), &tlEnabled)) {
+        if (tlEnabled) { tlPlaying = false; timelapseClear(); tlShowWindow = true; }
+        debugLogAction("таймлапс", "запись %s (панель)", tlEnabled ? "ВКЛЮЧЕНА" : "выключена");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Clear", "Очистить"))) timelapseClear();
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Export CSV", "Экспорт CSV"))) {
+        g_lastTimelapsePath = timelapseExportCSV();
+        if (g_lastTimelapsePath.empty())
+            DBG_ERROR("таймлапс: экспорт CSV не удался");
+    }
+
+    if (ImGui::Checkbox(_TR("Background history (always keep the ring buffer)",
+                            "Фоновая история (держать кольцо постоянно)"), &tlAutoRecord))
+        debugLogAction("таймлапс", "фоновая история %s", tlAutoRecord ? "включена" : "выключена");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", _TR("so the history exists at the moment of a failure",
+                                  "чтобы история была к моменту сбоя"));
+
+    int cap = tlCapacity;
+    if (ImGui::SliderInt(_TR("Buffer capacity, frames", "Ёмкость буфера, кадров"), &cap, 300, 60000)) {
+        tlCapacity = cap;      // буфер пересоздаётся при следующей записи (история очищается)
+    }
+    int fe = tlFieldEvery;
+    if (ImGui::SliderInt(_TR("Field snapshot every N frames", "Снимок поля каждый N-й кадр"), &fe, 0, 120)) {
+        tlFieldEvery = fe;
+        debugLogAction("таймлапс", "снимок поля каждый %d-й кадр", fe);
+    }
+    int cf = tlChartFrames;
+    if (ImGui::SliderInt(_TR("Chart window, frames", "Окно графиков, кадров"), &cf, 60, 6000))
+        tlChartFrames = cf;
+
+    int count = timelapseFrameCount();
+    ImGui::Text("%s: %d / %lld  |  %s: %lld  |  %s: %d",
+                _TR("Frames in buffer", "Кадров в буфере"), count, timelapseFramesRecorded(),
+                _TR("overwritten", "перезаписано"), timelapseTotalDropped(),
+                _TR("field snapshots", "снимков поля"), timelapseFieldCount());
+    float recFps = timelapseRecordedFps();
+    ImGui::Text("%s: %.1f s  |  %s: %.1f  |  %s: %.1f МБ",
+                _TR("Duration", "Длительность"), timelapseDurationSeconds(),
+                _TR("recording FPS", "частота записи"), recFps,
+                _TR("memory", "память"),
+                (float)(count * (int)sizeof(TLFrame) + timelapseFieldCount() * timelapseFieldRes()
+                        * timelapseFieldRes() * timelapseFieldRes()) / 1048576.0f);
+
+    ImGui::Separator();
+    ImGui::Text("%s", _TR("Playback", "Воспроизведение"));
+    if (ImGui::Button(tlPlaying ? _TR("Pause (F8)", "Пауза (F8)") : _TR("Play (F8)", "Воспроизвести (F8)"))) {
+        if (count <= 0) {
+            ImGui::OpenPopup(_TR("Timelapse is empty", "Таймлапс пуст"));
+        } else {
+            tlPlaying = !tlPlaying;
+            tlShowWindow = true;
+            if (tlPlaying && timelapsePlayIndex() >= count - 1) timelapsePlayFromStart();
+            debugLogAction("таймлапс", "воспроизведение %s (панель)", tlPlaying ? "СТАРТ" : "ПАУЗА");
+        }
+    }
+    if (ImGui::BeginPopupModal(_TR("Timelapse is empty", "Таймлапс пуст"), nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("%s", _TR("Nothing recorded yet. Press F7 or enable background history.",
+                              "Записи ещё нет. Нажмите F7 или включите фоновую историю."));
+        if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("|<")) timelapsePlayFromStart();
+    ImGui::SameLine();
+    if (ImGui::Button(">|")) timelapsePlayFromEnd();
+    ImGui::SameLine();
+    ImGui::Checkbox(_TR("Loop", "По кругу"), &tlLoop);
+
+    if (ImGui::SliderFloat(_TR("Speed (1 = real time)", "Скорость (1 = реальное время)"), &tlSpeed, 0.1f, 32.0f, "%.2fx"))
+        debugLogAction("таймлапс", "скорость воспроизведения %.2fx", tlSpeed);
+
+    int idx = timelapsePlayIndex();
+    if (count > 0) {
+        if (ImGui::SliderInt(_TR("Frame in buffer", "Кадр в буфере"), &idx, 0, count - 1))
+            timelapseSetPlayIndex(idx);
+    }
+
+    ImGui::Checkbox(_TR("Show timelapse window", "Показывать окно таймлапса"), &tlShowWindow);
+    ImGui::SameLine();
+    ImGui::Checkbox(_TR("Show pressure field", "Показывать поле давления"), &tlShowField);
+
+    if (!g_lastTimelapsePath.empty())
+        ImGui::TextWrapped("%s: %s", _TR("History saved to", "История сохранена"), g_lastTimelapsePath.c_str());
+    ImGui::TextWrapped("%s", _TR("The history is attached to the debug report (F10) and exported to logs/timelapse-*.csv on exit.",
+                                 "Сводка истории входит в отладочный отчёт (F10), а при выходе она выгружается в logs/timelapse-*.csv."));
+}
+
+static void drawTimelapseWindow() {
+    if (!tlShowWindow) return;
+    ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2((float)(display_w > 900 ? display_w - 800 : 20), 40), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(_TR("Physics timelapse (F7 record / F8 play)", "Таймлапс физики (F7 запись / F8 просмотр)"),
+                      &tlShowWindow, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::End();
+        return;
+    }
+
+    int count = timelapseFrameCount();
+    TLFrame f;
+    if (count <= 0 || !timelapseGetPlayFrame(&f)) {
+        ImGui::TextWrapped("%s", _TR("Nothing recorded yet. Press F7 (or enable background history) and let the simulation run.",
+                                     "Записи ещё нет. Нажмите F7 (или включите фоновую историю) и дайте расчёту поработать."));
+        ImGui::End();
+        return;
+    }
+
+    long long frameNo = f.frame;
+    ImGui::Text("%s %lld  |  %s %.2f s  |  %s  |  %s %.2f x",
+                _TR("sim frame", "кадр симуляции"), frameNo,
+                _TR("record time", "время записи"), f.time_s,
+                f.backendCuda ? "CUDA" : "CPU",
+                _TR("speed", "скорость"), tlSpeed);
+    ImGui::Text("%s %.1f  |  %s %.2f ms  |  LBM %s %d  |  %s %.5f  |  %s %.3f m/s",
+                _TR("FPS", "FPS"), f.fps, _TR("frame", "кадр"), f.frameMs,
+                _TR("step", "шаг"), f.lbmStep, _TR("rho", "rho"), f.lbmRho,
+                _TR("vmax", "vmax"), f.lbmVmax);
+    ImGui::Text("%s (%.3f; %.3f; %.3f) N  |  %s (%.3f; %.3f; %.3f) N  |  %s %.3f Nm",
+                _TR("Lift", "Подъёмная"), f.lift[0], f.lift[1], f.lift[2],
+                _TR("Drag", "Сопротивление"), f.drag[0], f.drag[1], f.drag[2],
+                _TR("Moment", "Момент"),
+                std::sqrt(f.moment[0]*f.moment[0] + f.moment[1]*f.moment[1] + f.moment[2]*f.moment[2]));
+    ImGui::Text("TKE %.3e  |  %s %.3e  |  %s %d  |  %s %d  |  %s %.2f/%.2f/%.2f ms",
+                f.lbmTke, _TR("residual", "остаток"), f.residualRho,
+                _TR("particles drawn", "частиц рисуется"), f.drawn,
+                _TR("NaN/Inf", "NaN/Inf"), f.nonfinite,
+                _TR("subsystems", "подсистемы"), f.lbmMs, f.partMs, f.forceMs);
+    if (f.nonfinite > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "%s",
+                           _TR("This frame had non-finite values: the physics was unstable here.",
+                               "В этом кадре были неконечные значения: физика здесь теряла устойчивость."));
+
+    ImGui::Separator();
+    drawTLChart(_TR("FPS", "FPS"), tlValFps, IM_COL32(120, 220, 140, 255), 44.0f);
+    drawTLChart(_TR("frame time, ms", "время кадра, мс"), tlValFrameMs, IM_COL32(120, 190, 255, 255), 44.0f);
+    drawTLChart(_TR("LBM time, ms", "время LBM, мс"), tlValLbmMs, IM_COL32(190, 160, 255, 255), 44.0f);
+    drawTLChart(_TR("lift Y, N", "подъёмная Y, Н"), tlValLiftY, IM_COL32(255, 200, 110, 255), 44.0f);
+    drawTLChart(_TR("|drag|, N", "|сопротивление|, Н"), tlValDragLen, IM_COL32(255, 130, 110, 255), 44.0f);
+    drawTLChart(_TR("TKE", "TKE"), tlValTke, IM_COL32(160, 230, 220, 255), 40.0f);
+    drawTLChart(_TR("LBM residual (RMS drho)", "остаток LBM (RMS drho)"), tlValResidual, IM_COL32(230, 170, 220, 255), 40.0f);
+    drawTLChart(_TR("max velocity, m/s", "макс. скорость, м/с"), tlValVmax, IM_COL32(200, 220, 130, 255), 40.0f);
+    drawTLChart(_TR("particles drawn", "частиц рисуется"), tlValDrawn, IM_COL32(150, 180, 200, 255), 40.0f);
+    drawTLChart(_TR("NaN/Inf count", "счётчик NaN/Inf"), tlValNonFinite, IM_COL32(255, 90, 90, 255), 36.0f);
+
+    if (tlShowField) {
+        ImGui::Separator();
+        std::vector<unsigned char> field;
+        float lo = -2.0f, hi = 2.0f;
+        long long usedFrame = 0;
+        if (timelapseFieldForFrame(frameNo, &field, &lo, &hi, &usedFrame)) {
+            ImGui::Text("%s %lld  |  Cp %.2f … %.2f  |  %s %d^3",
+                        _TR("field snapshot of frame", "снимок поля кадра"), usedFrame, lo, hi,
+                        _TR("grid", "сетка"), timelapseFieldRes());
+            float cell = 5.0f;
+            drawTLFieldSlice(field, lo, hi, 0, _TR("XY slice", "срез XY"), cell);
+            ImGui::SameLine();
+            drawTLFieldSlice(field, lo, hi, 1, _TR("XZ slice", "срез XZ"), cell);
+            ImGui::SameLine();
+            drawTLFieldSlice(field, lo, hi, 2, _TR("YZ slice", "срез YZ"), cell);
+            ImGui::TextDisabled("%s", _TR("Grey cells are solid body or outside the computational domain.",
+                                          "Серые ячейки — твёрдое тело или вне расчётной области."));
+        } else {
+            ImGui::TextWrapped("%s", _TR("No field snapshot for this frame. Snapshots are taken every N frames (slider in the panel); N = 0 disables them.",
+                                         "Для этого кадра нет снимка поля. Снимки делаются каждый N-й кадр (ползунок в панели); N = 0 отключает их."));
+        }
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button(_TR("Export history to CSV", "Экспорт истории в CSV"))) {
+        g_lastTimelapsePath = timelapseExportCSV();
+        debugLogAction("таймлапс", "экспорт истории из окна просмотра: %s",
+                       g_lastTimelapsePath.empty() ? "ОШИБКА" : g_lastTimelapsePath.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Save debug report (F10)", "Сохранить отчёт (F10)"))) {
+        g_lastDebugReportPath = debugLogSaveReport();
+        debugLogAction("кнопка", "отладочный отчёт из окна таймлапса: %s",
+                       g_lastDebugReportPath.empty() ? "ОШИБКА" : g_lastDebugReportPath.c_str());
+    }
+    if (!g_lastTimelapsePath.empty())
+        ImGui::TextWrapped("CSV: %s", g_lastTimelapsePath.c_str());
+
+    ImGui::End();
+}
+
+// =====================================================
+// v1.26.0 — запись renderer=... в aeros_settings.ini.
+//
+// Прежний код открывал файл в режиме "a" и дописывал строку. При запуске main.cpp
+// читает файл сверху вниз и берёт ПЕРВУЮ найденную строку renderer=/api=, поэтому
+// второй и следующие выборы рендерера молча не применялись: в файле накапливалось
+// несколько противоречивых записей, а работала всегда самая старая. Теперь файл
+// переписывается: старые записи рендерера удаляются, новая добавляется одна.
+// =====================================================
+static void saveRendererSetting(const char* value) {
+    if (!value) return;
+    std::vector<std::string> kept;
+    {
+        std::ifstream in("aeros_settings.ini");
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.compare(0, 9, "renderer=") == 0) continue;
+            if (line.compare(0, 4, "api=") == 0) continue;
+            kept.push_back(line);
+        }
+    }
+    std::ofstream out("aeros_settings.ini", std::ios::out | std::ios::trunc);
+    if (!out) {
+        DBG_ERROR("не удалось перезаписать aeros_settings.ini (renderer=%s) — файл недоступен для записи", value);
+        return;
+    }
+    for (size_t i = 0; i < kept.size(); ++i) out << kept[i] << "\n";
+    out << "renderer=" << value << "\n";
+    bool ok = out.good();
+    out.close();
+    if (ok) {
+        debugLogAction("выбор рендерера", "renderer=%s сохранён в aeros_settings.ini (старые записи удалены)", value);
+        DBG_INFO("рендерер в настройках: %s (применится после перезапуска)", value);
+    } else {
+        DBG_ERROR("ошибка записи aeros_settings.ini (renderer=%s)", value);
+    }
+}
 
 // =====================================================
 // Панель управления — v1.19.0 GoGonam AoS.
@@ -91,10 +446,12 @@ if (ImGui::CollapsingHeader(_TR("Performance v1.19.0", "Производител
             total, _TR("cells", "ячеек"), mlups, lbmTimeMs, lbmTKE);
         ImGui::Text("Re: %.0f | Conv: %.2e | %s: %d | %s",
             lbmReynolds, lbmConvergence, _TR("Steps", "Шагов"), lbmCurrentStep, lbmConverged?_TR("YES","ДА"):_TR("NO","НЕТ"));
-        float maxP = lbmPressure.empty()?0:*std::max_element(lbmPressure.begin(), lbmPressure.end());
-        float minP = lbmPressure.empty()?0:*std::min_element(lbmPressure.begin(), lbmPressure.end());
+        // v1.26.0: мин/макс давления считаются один раз за шаг решателя (lbm.cpp),
+        // а не полным проходом по всей сетке каждый кадр — на 128^3 это были
+        // миллионы сравнений на кадр только ради строки текста.
         ImGui::Text("%s: [%.2f, %.2f] | MaxVel LB %.3f World %.2f m/s",
-            _TR("Pressure", "Давление"), minP, maxP, lbmMaxVelocityLB, lbmMaxVelocityWorld);
+            _TR("Pressure", "Давление"), lbmPressureMin, lbmPressureMax, lbmMaxVelocityLB, lbmMaxVelocityWorld);
+        ImGui::Text("%s: RMS drho %.3e | dUmax %.3e", _TR("Residual", "Остаток"), lbmResidualRho, lbmResidualU);
     }
     ImGui::Checkbox(_TR("Show Perf Graph", "Показывать график"), &aeroShowPerfGraph);
     ImGui::Checkbox(_TR("Show Memory Usage", "Показывать память"), &aeroShowMemoryUsage);
@@ -703,34 +1060,44 @@ if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra
 
 if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %s", _TR("Current", "Текущий"), getRendererName());
-    ImGui::Text("%s: %s", _TR("Vulkan Available", "Vulkan доступен"), isVulkanAvailable() ? "Yes — Vulkan 1.3" : "No — OpenGL fallback");
-    if (isVulkanAvailable()) {
-        ImGui::Text("Vulkan Version: %s", getVulkanVersionString().c_str());
-        auto devs = getVulkanDevices();
-        if (!devs.empty()) {
-            ImGui::Text("%s:", _TR("Vulkan Devices", "Устройства Vulkan"));
-            for (size_t i=0; i<devs.size() && i<3; ++i) ImGui::BulletText("%s", devs[i].c_str());
-        }
-    }
+    // v1.26.0 — статус Vulkan больше не врёт. Прежняя строка обещала
+    // «Yes — Vulkan 1.3» по одному факту наличия vulkan-1.dll в системе, хотя
+    // рендерер не реализован: выбравший Vulkan получал чёрное окно.
+    ImGui::Text("%s: %s", _TR("Vulkan Available", "Vulkan доступен"),
+                isVulkanAvailable() ? "Yes" : _TR("No — OpenGL", "Нет — OpenGL"));
+    ImGui::Text("%s: %s", _TR("Vulkan loader", "Загрузчик Vulkan"),
+                vulkanLoaderPresent() ? _TR("found in system", "найден в системе")
+                                      : _TR("not found", "не найден"));
+    ImGui::Text("Vulkan: %s", getVulkanVersionString().c_str());
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Select Renderer (requires restart)", "Выберите рендерер (требует перезапуск)"));
-    if (ImGui::Button("Auto (Vulkan if available, else OpenGL)")) {
-        // Save to settings
-        FILE* f = fopen("aeros_settings.ini", "a");
-        if (f) { fprintf(f, "renderer=auto\n"); fclose(f); }
+    if (ImGui::Button(_TR("Auto (OpenGL)", "Авто (OpenGL)"))) {
+        saveRendererSetting("auto");
         ImGui::OpenPopup("RestartPopup");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Vulkan 1.3")) {
-        FILE* f = fopen("aeros_settings.ini", "a");
-        if (f) { fprintf(f, "renderer=vulkan\n"); fclose(f); }
-        ImGui::OpenPopup("RestartPopup");
+    // v1.26.0 — кнопка Vulkan больше не обещает того, чего в этой версии нет.
+    if (ImGui::Button(_TR("Vulkan (not implemented yet)", "Vulkan (пока не реализован)"))) {
+        ImGui::OpenPopup("VulkanNotImpl");
     }
     ImGui::SameLine();
-    if (ImGui::Button("OpenGL 4.6")) {
-        FILE* f = fopen("aeros_settings.ini", "a");
-        if (f) { fprintf(f, "renderer=opengl\n"); fclose(f); }
+    if (ImGui::Button("OpenGL 3.3+")) {
+        saveRendererSetting("opengl");
         ImGui::OpenPopup("RestartPopup");
+    }
+    if (ImGui::BeginPopup("VulkanNotImpl")) {
+        ImGui::TextWrapped("%s", _TR("The Vulkan renderer is a stub in this version: it reports success but draws nothing. "
+                                     "The application always runs on OpenGL.",
+                                     "Vulkan-рендерер в этой версии — заглушка: он рапортует об успехе, но ничего не рисует. "
+                                     "Программа всегда работает на OpenGL."));
+        if (ImGui::Button(_TR("Save OpenGL", "Сохранить OpenGL"))) {
+            saveRendererSetting("opengl");
+            ImGui::CloseCurrentPopup();
+            ImGui::OpenPopup("RestartPopup");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(_TR("Close", "Закрыть"))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
     if (ImGui::BeginPopup("RestartPopup")) {
         ImGui::Text("%s", _TR("Renderer will change after restart", "Рендерер изменится после перезапуска"));
@@ -739,9 +1106,11 @@ if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "�
         ImGui::EndPopup();
     }
     ImGui::Separator();
-    ImGui::Text("%s:", _TR("Vulkan Benefits", "Преимущества Vulkan"));
-    ImGui::BulletText("%s", _TR("Lower CPU overhead, more draw calls", "Меньше нагрузки на CPU, больше draw calls"));
-    ImGui::BulletText("%s", _TR("Better multi-threading", "Лучше многопоточность"));
+    ImGui::Text("%s:", _TR("Renderer status", "Состояние рендереров"));
+    ImGui::BulletText("%s", _TR("OpenGL 3.3 core — working renderer, used by default",
+                                "OpenGL 3.3 core — рабочий рендерер, используется по умолчанию"));
+    ImGui::BulletText("%s", _TR("Vulkan — interface is present, drawing is not implemented yet",
+                                "Vulkan — интерфейс есть, отрисовка пока не реализована"));
     ImGui::BulletText("%s", _TR("Ray tracing ready (future)", "Готов к трассировке лучей (будущее)"));
     ImGui::BulletText("%s", _TR("Works on Windows and Linux", "Работает на Windows и Linux"));
     ImGui::Separator();
@@ -889,9 +1258,8 @@ if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.19.0 Realistic+", "Дав�
     ImGui::Text("%s: %.3f Nm | CoP: (%.2f, %.2f, %.2f)", _TR("Moment", "Момент"), momentMagnitude, centerOfPressure.x, centerOfPressure.y, centerOfPressure.z);
     ImGui::Text("%s: %.4f m2 | q: %.1f Pa | Re: %.0f", _TR("Ref Area", "Площадь"), aeroRefArea, q, aeroReNumber);
     if (lbmInitialized) {
-        float minP = lbmPressure.empty()?0:*std::min_element(lbmPressure.begin(), lbmPressure.end());
-        float maxP = lbmPressure.empty()?0:*std::max_element(lbmPressure.begin(), lbmPressure.end());
-        ImGui::Text("LBM %s: [%.2f, %.2f] | TKE avg %.4f", _TR("Pressure", "Давление"), minP, maxP, lbmTKE);
+        ImGui::Text("LBM %s: [%.2f, %.2f] | TKE avg %.4f", _TR("Pressure", "Давление"),
+                    lbmPressureMin, lbmPressureMax, lbmTKE);
     }
     ImGui::Separator();
     if (ImGui::Button(_TR("Export Forces CSV (F6)", "Экспорт сил в CSV (F6)"))) {
@@ -907,7 +1275,58 @@ if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.19.0 Realistic+", "Дав�
     if (showColorLegend && showPressure) {
         ImGui::Separator();
         ImGui::Text("%s:", _TR("Color Legend", "Легенда цветов"));
-        if (aeroVisMode == AeroVisMode::Pressure) ImGui::Text("Cp: -3.0 (blue, %s) -> 0 (yellow) -> +1.0 (red, %s)", _TR("suction", "разрежение"), _TR("stagnation", "торможение"));
+        if (aeroVisMode == AeroVisMode::Pressure) {
+            // v1.26.0 — настоящая цветовая шкала вместо текстовой.
+            // Старая надпись обещала «Cp: -3.0 (синий) -> 0 (жёлтый) -> +1.0 (красный)»,
+            // но окно раскраски было фиксированным и не совпадало с данными: ноль
+            // попадал на 75% шкалы и рисовался оранжевым. Теперь показываем ровно
+            // те цвета и тот диапазон, которые реально применяются к модели.
+            float lo = aeroCpAutoRange ? g_cpLo : aeroCpMin;
+            float hi = aeroCpAutoRange ? g_cpHi : aeroCpMax;
+            if (!(hi - lo > 1e-4f)) { lo = -2.0f; hi = 2.0f; }
+            ImVec2 barPos = ImGui::GetCursorScreenPos();
+            float barW = ImGui::GetContentRegionAvail().x;
+            if (barW < 80.0f) barW = 220.0f;
+            const float barH = 14.0f;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const int SEG = 96;
+            for (int k = 0; k < SEG; ++k) {
+                float t0 = (float)k / (float)SEG;
+                float t1 = (float)(k + 1) / (float)SEG;
+                float cp = lo + (hi - lo) * (t0 + t1) * 0.5f;
+                glm::vec3 c = pressureColorInRange(cp, lo, hi);
+                dl->AddRectFilled(ImVec2(barPos.x + barW * t0, barPos.y),
+                                  ImVec2(barPos.x + barW * t1 + 0.6f, barPos.y + barH),
+                                  IM_COL32((int)(c.x * 255.0f), (int)(c.y * 255.0f), (int)(c.z * 255.0f), 255));
+            }
+            dl->AddRect(barPos, ImVec2(barPos.x + barW, barPos.y + barH), IM_COL32(120, 126, 140, 255));
+            if (lo < 0.0f && hi > 0.0f) {
+                float zx = barPos.x + barW * (0.0f - lo) / (hi - lo);
+                dl->AddLine(ImVec2(zx, barPos.y - 2.0f), ImVec2(zx, barPos.y + barH + 2.0f),
+                            IM_COL32(255, 255, 255, 210), 1.4f);
+            }
+            ImGui::Dummy(ImVec2(barW, barH));
+            ImGui::Text("Cp: %.2f (%s)   0 (%s)   +%.2f (%s)", lo, _TR("suction", "разрежение"),
+                        _TR("freestream", "поток"), hi, _TR("stagnation", "торможение"));
+            if (ImGui::Checkbox(_TR("Auto Cp range", "Авто-диапазон Cp"), &aeroCpAutoRange)) {
+                debugLogAction("карта давления", "авто-диапазон Cp %s",
+                               aeroCpAutoRange ? "включён" : "выключен");
+            }
+            if (aeroCpAutoRange) {
+                ImGui::Text("%s: [%.2f; %.2f]  (%s: [%.1f; %.1f] Па)",
+                            _TR("Range from data", "Диапазон по данным"), g_cpLo, g_cpHi,
+                            _TR("LBM pressure", "Давление LBM"), lbmPressureMin, lbmPressureMax);
+            } else {
+                if (ImGui::SliderFloat(_TR("Cp min", "Cp минимум"), &aeroCpMin, -4.0f, -0.05f)) {
+                    if (aeroCpMin > aeroCpMax - 0.05f) aeroCpMin = aeroCpMax - 0.05f;
+                    if (showPressure) updateVertexColors();
+                }
+                if (ImGui::SliderFloat(_TR("Cp max", "Cp максимум"), &aeroCpMax, 0.05f, 4.0f)) {
+                    if (aeroCpMax < aeroCpMin + 0.05f) aeroCpMax = aeroCpMin + 0.05f;
+                    if (showPressure) updateVertexColors();
+                }
+            }
+        }
         else if (aeroVisMode == AeroVisMode::VelocityMagnitude) ImGui::Text("|U|: 0 (blue, %s) -> %.1f m/s (red, %s)", _TR("low", "мало"), maxSpeedForColor, _TR("high", "много"));
         else if (aeroVisMode == AeroVisMode::Vorticity) ImGui::Text("|w|: 0 (blue) -> 10 (white) -> 20+ (red)");
         else if (aeroVisMode == AeroVisMode::QCriterion) ImGui::Text("Q: <0 (blue, strain) | >0 (red/yellow, vortex)");
@@ -1177,6 +1596,8 @@ if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+R
     // v1.25.0 — Отладка и журнал: всё, что нужно, чтобы прислать
     // разработчику диагностику и понять, почему не работает CUDA.
     // ============================================================
+    drawTimelapsePanel();
+
     if (ImGui::CollapsingHeader(_TR("Debug & Journal v1.25.0", "Отладка и журнал v1.25.0"))) {
         ImGui::Text("%s", _TR("F9 — debug mode on/off, F10 — save report",
                               "F9 — включить/выключить отладку, F10 — сохранить отчёт"));
@@ -1279,4 +1700,7 @@ if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+R
         }
         ImGui::End();
     }
+
+    // v1.26.0 — окно таймлапса физики (графики истории и снимки поля давления)
+    drawTimelapseWindow();
 }

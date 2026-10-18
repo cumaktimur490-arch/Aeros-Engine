@@ -66,6 +66,11 @@ void updateLBM(float deltaTime);
 
 glm::vec3 getLBMVelocityWorld(const glm::vec3& worldPos);
 float getLBMDensityWorld(const glm::vec3& worldPos);
+// v1.26.0: давление (Па, избыточное) с трилинейной интерполяцией.
+// Раньше все скаляры брались «ближайшей ячейкой» с приведением (int), из-за чего
+// карта давления была ступенчатой, а точки чуть вне области читали ячейку 0.
+float getLBMPressureWorld(const glm::vec3& worldPos);
+bool  getLBMPressureWorldChecked(const glm::vec3& worldPos, float* outPa);
 glm::vec3 getLBMVelocityLB(const glm::vec3& worldPos);
 bool isLBMSolidWorld(const glm::vec3& worldPos);
 float getLBMVorticityWorld(const glm::vec3& worldPos);
@@ -79,6 +84,10 @@ void computeLBMForcesFromLBM();
 float computeLBMRe();
 float computeLBMRefArea();
 glm::vec3 getRealisticPressureColor(float cp);
+// v1.26.0 — то же, но с явно заданным диапазоном. Нужно для воспроизведения
+// таймлапса: снимки поля квантованы в диапазоне, который действовал в момент
+// записи, а не в текущем.
+glm::vec3 pressureColorInRange(float cp, float lo, float hi);
 glm::vec3 getVelocityMagnitudeColor(float velMag, float maxVel);
 glm::vec3 getVorticityColor(float vortMag);
 glm::vec3 getQCriterionColor(float q);

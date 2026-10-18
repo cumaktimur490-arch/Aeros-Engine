@@ -35,6 +35,16 @@ static const char* cudaHintRu(cudaError_t e) {
             return "Не хватило памяти GPU для выделения буфера.";
         case cudaErrorInitializationError:
             return "Инициализация CUDA не удалась. Помогает чистая переустановка драйвера NVIDIA (галочка Perform clean installation).";
+        case cudaErrorIllegalAddress:
+            return "Ядро GPU обратилось к недопустимому адресу. Расчёт прерван, работает CPU-бэкенд — пришлите отладочный отчёт (F10).";
+        case cudaErrorLaunchTimeout:
+            return "Ядро GPU не завершилось вовремя (сработал TDR Windows). Уменьшите число частиц или разрешение сетки LBM.";
+        case cudaErrorLaunchOutOfResources:
+            return "Не хватило ресурсов GPU для запуска ядра (память или регистры). Уменьшите число частиц/разрешение сетки.";
+        case cudaErrorAssert:
+            return "Сработала проверка внутри ядра GPU: физика получила недопустимые данные. Работает CPU-бэкенд.";
+        case cudaErrorInvalidDevicePointer:
+            return "Передан неверный указатель на память GPU (буфер освобождён или принадлежит другому контексту).";
         case cudaErrorLaunchFailure:
             return "Сбой ядра GPU при выполнении (некорректный адрес или перегрев).";
         case cudaErrorInvalidValue:
@@ -110,6 +120,23 @@ extern "C" void cudaProbeBackend(CudaBackendInfo* out) {
     out->driverVersion = drv;
     out->runtimeVersion = rt;
 
+    // v1.26.0 — проверка версии драйвера ДО запуска тестового ядра.
+    // Сборка сделана на CUDA 13.x: приложения этого семейства работают на
+    // драйверах ветки 580 и новее (совместимость внутри мажорной версии).
+    // Драйвер, сообщающий CUDA 12.x, не запустит наши ядра, и без этой проверки
+    // пользователь видел бы просто «код 35/36» вместо понятной причины.
+    if (drv > 0 && drv < 13000) {
+        out->usable = 0;
+        out->lastError = (int)cudaErrorInsufficientDriver;
+        std::snprintf(out->status, sizeof(out->status),
+                      "Драйвер NVIDIA поддерживает CUDA %d.%d, а эта сборка требует CUDA 13.x "
+                      "(драйвер ветки 580.xx и новее). Обновите драйвер с nvidia.com — "
+                      "после этого CUDA заработает без переустановки программы. "
+                      "Сейчас расчёт идёт на CPU.",
+                      drv / 1000, (drv % 1000) / 10);
+        return;
+    }
+
     cudaError_t e = cudaGetDeviceCount(&out->deviceCount);
     out->lastError = (int)e;
     if (e != cudaSuccess) {
@@ -174,9 +201,12 @@ __device__ bool sampleSDF(float3 p, float* dist, int nx, int ny, int nz,
                           float csX, float csY, float csZ, float* outD)
 {
     if (!dist) { *outD = 1000.0f; return false; }
-    int ix = (int)((p.x - mnX) / csX);
-    int iy = (int)((p.y - mnY) / csY);
-    int iz = (int)((p.z - mnZ) / csZ);
+    // v1.26.0: floorf, а не усечение. При (int)(-0.4) = 0 частица вне области
+    // читала ячейку у противоположного края и получала ложное столкновение —
+    // та же ошибка, что была в CPU-коде (particles.cpp, voxel_grid.cpp).
+    int ix = (int)floorf((p.x - mnX) / csX);
+    int iy = (int)floorf((p.y - mnY) / csY);
+    int iz = (int)floorf((p.z - mnZ) / csZ);
     if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) {
         *outD = 1000.0f;
         return false;
@@ -517,69 +547,193 @@ __global__ void pressureKernel(float3* verts, float3* nrms, float3* outCol,
         if (w > 1.0f) w = 1.0f;
         cp -= 0.8f * w * w;
     }
-    if (cp > 1.0f) cp = 1.0f;
-    if (cp < -3.0f) cp = -3.0f;
+    // v1.26.0: ограничение и раскраска — те же, что на CPU (aeroClampCp и
+    // getRealisticPressureColor). До этого у ядра была своя зашитая шкала
+    // (cp+1)/2 и свой набор цветов, поэтому при переключении CUDA/CPU модель
+    // меняла окраску, а легенда в панели не соответствовала картинке.
+    if (cp > 2.0f) cp = 2.0f;
+    if (cp < -4.0f) cp = -4.0f;
+    outCol[i] = pressureColorD(cp, prm.cpLo, prm.cpHi, prm.colorMap);
+}
 
-    float t = (cp + 1.0f) / 2.0f;
-    t = fminf(fmaxf(t, 0.0f), 1.0f);
-    float3 c;
-    if (t < 0.25f)      { float k = t/0.25f;         c = make_float3(0.0f, k, 1.0f); }
-    else if (t < 0.5f)  { float k = (t-0.25f)/0.25f; c = make_float3(0.0f, 1.0f, 1.0f-k); }
-    else if (t < 0.75f) { float k = (t-0.5f)/0.25f;  c = make_float3(k, 1.0f, 0.0f); }
-    else                { float k = (t-0.75f)/0.25f; c = make_float3(1.0f, 1.0f-k, 0.0f); }
-    outCol[i] = c;
+// =====================================================
+// v1.26.0 — цветовая карта давления на устройстве.
+// Точная копия getRealisticPressureColor() из lbm.cpp: устройство не может
+// вызывать хост-функции, поэтому логика продублирована, но параметры
+// (диапазон Cp и номер схемы) приходят в FlowParams — значит CPU и GPU
+// красят одинаково при любом бэкенде.
+// =====================================================
+__device__ inline float3 rampColorD(float t, const float3* stops, int n) {
+    if (n <= 0) return make_float3(0.5f, 0.5f, 0.5f);
+    if (n == 1) return stops[0];
+    if (!(t > 0.0f)) return stops[0];
+    if (!(t < 1.0f)) return stops[n-1];
+    float x = t * (float)(n - 1);
+    int i = (int)x;
+    if (i >= n - 1) i = n - 2;
+    if (i < 0) i = 0;
+    float k = x - (float)i;
+    return make_float3(stops[i].x*(1.0f-k) + stops[i+1].x*k,
+                       stops[i].y*(1.0f-k) + stops[i+1].y*k,
+                       stops[i].z*(1.0f-k) + stops[i+1].z*k);
+}
+
+__device__ inline float3 pressureColorD(float cp, float lo, float hi, int colorMap) {
+    if (!(cp == cp)) cp = 0.0f;                    // NaN
+    if (!(hi - lo > 1e-4f)) { lo = -2.0f; hi = 2.0f; }
+
+    if (colorMap == 1 || colorMap == 2) {
+        const float3 viridis[5] = {
+            make_float3(0.267f, 0.004f, 0.329f), make_float3(0.229f, 0.322f, 0.545f),
+            make_float3(0.127f, 0.566f, 0.550f), make_float3(0.550f, 0.790f, 0.350f),
+            make_float3(0.993f, 0.906f, 0.144f)
+        };
+        const float3 plasma[5] = {
+            make_float3(0.050f, 0.030f, 0.528f), make_float3(0.494f, 0.012f, 0.658f),
+            make_float3(0.798f, 0.280f, 0.470f), make_float3(0.973f, 0.585f, 0.254f),
+            make_float3(0.940f, 0.975f, 0.131f)
+        };
+        float t = fminf(fmaxf((cp - lo) / (hi - lo), 0.0f), 1.0f);
+        return rampColorD(t, (colorMap == 1) ? viridis : plasma, 5);
+    }
+
+    const float3 neutral = make_float3(0.93f, 0.93f, 0.95f);
+    const float3 coldRainbow[4] = {
+        neutral, make_float3(0.55f, 0.82f, 0.94f),
+        make_float3(0.15f, 0.45f, 0.85f), make_float3(0.03f, 0.10f, 0.60f)
+    };
+    const float3 hotRainbow[4] = {
+        neutral, make_float3(1.00f, 0.85f, 0.35f),
+        make_float3(0.96f, 0.45f, 0.10f), make_float3(0.72f, 0.05f, 0.05f)
+    };
+    const float3 coolCold[4] = {
+        neutral, make_float3(0.60f, 0.79f, 0.92f),
+        make_float3(0.26f, 0.45f, 0.80f), make_float3(0.09f, 0.15f, 0.58f)
+    };
+    const float3 coolWarm[4] = {
+        neutral, make_float3(0.96f, 0.70f, 0.60f),
+        make_float3(0.86f, 0.30f, 0.22f), make_float3(0.55f, 0.02f, 0.10f)
+    };
+    const bool coolwarm = (colorMap == 3);
+    if (cp <= 0.0f) {
+        float s = (lo < -1e-6f) ? fminf(fmaxf(cp / lo, 0.0f), 1.0f) : 0.0f;
+        return rampColorD(s, coolwarm ? coolCold : coldRainbow, 4);
+    }
+    float s = (hi > 1e-6f) ? fminf(fmaxf(cp / hi, 0.0f), 1.0f) : 0.0f;
+    return rampColorD(s, coolwarm ? coolWarm : hotRainbow, 4);
 }
 
 // ============ Host API ============
+// Сколько ячеек SDF реально лежит в g_dDist. Нужно, чтобы ядро не читало поле
+// по размерам новой сетки, если загрузить старое/новое поле не удалось.
+static long long g_dDistCount = 0;
+
 extern "C" void setVoxelData(const int* voxel, const float* dist,
                              int nx, int ny, int nz,
                              float mnX, float mnY, float mnZ,
                              float csX, float csY, float csZ)
 {
     (void)voxel; (void)mnX; (void)mnY; (void)mnZ; (void)csX; (void)csY; (void)csZ;
-    if (g_dDist) { cudaFree(g_dDist); g_dDist = nullptr; }
-    int total = nx * ny * nz;
-    if (total <= 0) return;
-    if (dist) {
-        cudaMalloc(&g_dDist, total * sizeof(float));
-        cudaMemcpy(g_dDist, dist, total * sizeof(float), cudaMemcpyHostToDevice);
+    long long total = (long long)nx * (long long)ny * (long long)nz;
+    if (total <= 0 || !dist) {
+        if (g_dDist) { cudaFree(g_dDist); g_dDist = nullptr; }
+        g_dDistCount = 0;
+        return;
     }
+    // v1.26.0 — раньше ошибки cudaMalloc/cudaMemcpy не проверялись: при неудаче
+    // g_dDist оставался освобождённым или мусорным, а ядра продолжали его
+    // разыменовывать. Теперь новый буфер готовится отдельно и подменяет старый
+    // только после успешной загрузки, а причина уходит в журнал.
+    float* tmp = nullptr;
+    cudaError_t e = cudaMalloc(&tmp, (size_t)total * sizeof(float));
+    if (e != cudaSuccess) { cudaRecordErrorAt(e, __FILE__, __LINE__); return; }
+    e = cudaMemcpy(tmp, dist, (size_t)total * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) { cudaRecordErrorAt(e, __FILE__, __LINE__); cudaFree(tmp); return; }
+    if (g_dDist) cudaFree(g_dDist);
+    g_dDist = tmp;
+    g_dDistCount = total;
+}
+
+// Поле SDF обязано соответствовать текущей сетке из FlowParams, иначе ядро
+// читало бы память за пределами буфера (сетка перестраивается на лету).
+static void validateDistField(const FlowParams& prm) {
+    if (!g_dDist) return;
+    long long need = (long long)prm.gridNx * (long long)prm.gridNy * (long long)prm.gridNz;
+    if (need <= 0 || need != g_dDistCount) {
+        cudaFree(g_dDist);
+        g_dDist = nullptr;
+        g_dDistCount = 0;
+    }
+}
+
+// =====================================================
+// v1.26.0 — постоянные буферы устройства.
+//
+// Раньше каждый вызов (то есть каждый кадр) делал 2-3 cudaMalloc/cudaFree и
+// cudaDeviceSynchronize после запуска ядра. Аллокации на устройстве дороги и
+// фрагментируют память, а синхронизация дублировалась: cudaMemcpy D2H на потоке
+// по умолчанию и так блокирующая. Теперь буферы живут между кадрами и растут с
+// запасом, лишних синхронизаций нет, память освобождается один раз — при
+// завершении (cudaReleaseAll).
+// =====================================================
+static float3* g_dPos   = nullptr; static size_t g_capPos   = 0;
+static float3* g_dCol   = nullptr; static size_t g_capCol   = 0;
+static float3* g_dVerts = nullptr; static size_t g_capVerts = 0;
+static float3* g_dNorms = nullptr; static size_t g_capNorms = 0;
+
+static bool ensureBuffer(float3** pp, size_t* cap, size_t need) {
+    if (!pp || !cap || need == 0) return false;
+    if (*pp && *cap >= need) return true;
+    size_t want = need + need / 4 + 1024;   // запас 25%, чтобы не расти каждый кадр
+    float3* tmp = nullptr;
+    cudaError_t e = cudaMalloc(&tmp, want * sizeof(float3));
+    if (e != cudaSuccess) { cudaRecordErrorAt(e, __FILE__, __LINE__); return false; }
+    if (*pp) cudaFree(*pp);
+    *pp = tmp;
+    *cap = want;
+    return true;
+}
+
+extern "C" void cudaReleaseAll() {
+    if (g_dPos)   { cudaFree(g_dPos);   g_dPos = nullptr;   g_capPos = 0; }
+    if (g_dCol)   { cudaFree(g_dCol);   g_dCol = nullptr;   g_capCol = 0; }
+    if (g_dVerts) { cudaFree(g_dVerts); g_dVerts = nullptr; g_capVerts = 0; }
+    if (g_dNorms) { cudaFree(g_dNorms); g_dNorms = nullptr; g_capNorms = 0; }
+    if (g_dDist)  { cudaFree(g_dDist);  g_dDist = nullptr;  g_dDistCount = 0; }
 }
 
 extern "C" void initParticlesCUDA(std::vector<float>& pos, std::vector<float>& col,
                                    int n, const FlowParams& prm)
 {
-    pos.resize(n * 3);
-    col.resize(n * 3);
-    float3 *dp, *dc;
-    CUDA_CHECK(cudaMalloc(&dp, n * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(&dc, n * sizeof(float3)));
+    if (n <= 0) return;
+    try {
+        pos.resize((size_t)n * 3);
+        col.resize((size_t)n * 3);
+    } catch (...) { return; }
+    if (!ensureBuffer(&g_dPos, &g_capPos, (size_t)n)) return;
+    if (!ensureBuffer(&g_dCol, &g_capCol, (size_t)n)) return;
     int bs = 256, nb = (n + bs - 1) / bs;
-    initParticlesKernel<<<nb, bs>>>(dp, dc, n, prm);
+    initParticlesKernel<<<nb, bs>>>(g_dPos, g_dCol, n, prm);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(pos.data(), dp, n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(col.data(), dc, n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
-    cudaFree(dp);
-    cudaFree(dc);
+    CUDA_CHECK(cudaMemcpy(pos.data(), g_dPos, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(col.data(), g_dCol, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 extern "C" void updateParticlesCUDA(std::vector<float>& pos, std::vector<float>& col,
                                      int n, const FlowParams& prm, float dt)
 {
-    float3 *dp, *dc;
-    CUDA_CHECK(cudaMalloc(&dp, n * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(&dc, n * sizeof(float3)));
-    CUDA_CHECK(cudaMemcpy(dp, pos.data(), n * 3 * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dc, col.data(), n * 3 * sizeof(float), cudaMemcpyHostToDevice));
+    if (n <= 0) return;
+    if ((int)pos.size() < n * 3 || (int)col.size() < n * 3) return;
+    if (!ensureBuffer(&g_dPos, &g_capPos, (size_t)n)) return;
+    if (!ensureBuffer(&g_dCol, &g_capCol, (size_t)n)) return;
+    validateDistField(prm);
+    CUDA_CHECK(cudaMemcpy(g_dPos, pos.data(), (size_t)n * 3 * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g_dCol, col.data(), (size_t)n * 3 * sizeof(float), cudaMemcpyHostToDevice));
     int bs = 256, nb = (n + bs - 1) / bs;
-    updateParticlesKernel<<<nb, bs>>>(dp, dc, n, prm, dt, g_dDist);
+    updateParticlesKernel<<<nb, bs>>>(g_dPos, g_dCol, n, prm, dt, g_dDist);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(pos.data(), dp, n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(col.data(), dc, n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
-    cudaFree(dp);
-    cudaFree(dc);
+    CUDA_CHECK(cudaMemcpy(pos.data(), g_dPos, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(col.data(), g_dCol, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 extern "C" void computeVertexPressureCUDA(const std::vector<float>& verts,
@@ -587,19 +741,17 @@ extern "C" void computeVertexPressureCUDA(const std::vector<float>& verts,
                                            std::vector<float>& outCol,
                                            int n, const FlowParams& prm)
 {
-    outCol.resize(n * 3);
-    float3 *dv, *dn, *dc;
-    CUDA_CHECK(cudaMalloc(&dv, n * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(&dn, n * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(&dc, n * sizeof(float3)));
-    CUDA_CHECK(cudaMemcpy(dv, verts.data(), n * 3 * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dn, nrms.data(), n * 3 * sizeof(float), cudaMemcpyHostToDevice));
+    if (n <= 0) return;
+    if ((int)verts.size() < n * 3 || (int)nrms.size() < n * 3) return;
+    try { outCol.resize((size_t)n * 3); } catch (...) { return; }
+    if (!ensureBuffer(&g_dVerts, &g_capVerts, (size_t)n)) return;
+    if (!ensureBuffer(&g_dNorms, &g_capNorms, (size_t)n)) return;
+    if (!ensureBuffer(&g_dCol,   &g_capCol,   (size_t)n)) return;
+    validateDistField(prm);
+    CUDA_CHECK(cudaMemcpy(g_dVerts, verts.data(), (size_t)n * 3 * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g_dNorms, nrms.data(),  (size_t)n * 3 * sizeof(float), cudaMemcpyHostToDevice));
     int bs = 256, nb = (n + bs - 1) / bs;
-    pressureKernel<<<nb, bs>>>(dv, dn, dc, n, prm, g_dDist);
+    pressureKernel<<<nb, bs>>>(g_dVerts, g_dNorms, g_dCol, n, prm, g_dDist);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(outCol.data(), dc, n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
-    cudaFree(dv);
-    cudaFree(dn);
-    cudaFree(dc);
+    CUDA_CHECK(cudaMemcpy(outCol.data(), g_dCol, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
 }
