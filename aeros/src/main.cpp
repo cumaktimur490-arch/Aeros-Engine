@@ -187,6 +187,9 @@ bool saveSettings(const std::string& path) {
     f << "aeroShowParticleTrails=" << (aeroShowParticleTrails ? 1 : 0) << "\n";
     f << "aeroAdaptiveLBM=" << (aeroAdaptiveLBM ? 1 : 0) << "\n";
     f << "aeroUseRK4Particles=" << (aeroUseRK4Particles ? 1 : 0) << "\n";
+    // v1.27.0 — масштаб интерфейса: удобство панелей должно сохраняться между запусками
+    f << "uiScale=" << uiScale << "\n";
+    f << "tlFullscreen=" << (tlFullscreen ? 1 : 0) << "\n";
     return f.good();
 }
 
@@ -226,6 +229,12 @@ bool loadSettings(const std::string& path) {
             else if (key == "aeroShowParticleTrails") aeroShowParticleTrails = (std::stoi(val) != 0);
             else if (key == "aeroAdaptiveLBM") aeroAdaptiveLBM = (std::stoi(val) != 0);
             else if (key == "aeroUseRK4Particles") aeroUseRK4Particles = (std::stoi(val) != 0);
+            else if (key == "uiScale") {
+                uiScale = std::stof(val);
+                if (!std::isfinite(uiScale) || uiScale < 0.8f) uiScale = 0.8f;
+                if (uiScale > 1.8f) uiScale = 1.8f;
+            }
+            else if (key == "tlFullscreen") tlFullscreen = (std::stoi(val) != 0);
         } catch (...) { /* ignore parse errors */ }
     }
     return true;
@@ -336,7 +345,15 @@ static void collectDebugFacts() {
     debugLogAddFact("Карта давления", "Настройка", buf);
     std::snprintf(buf, sizeof(buf), "RMS изменения плотности %.3e, изменение макс. скорости %.3e (за кадр)",
                   lbmResidualRho, lbmResidualU);
-    debugLogAddFact("Карта давления", "Остаток сходимости LBM", buf);
+    debugLogAddFact("LBM", "Остаток сходимости", buf);
+    // v1.27.0 — счётчики аномалий решателя. Нули означают, что расчёт шёл чисто;
+    // рост говорит о потере устойчивости раньше, чем она станет видна по rho.
+    std::snprintf(buf, sizeof(buf), "отрицательных популяций %lld, заменённых нефизических %lld (за последний шаг)",
+                  lbmNegativePops, lbmBadPops);
+    debugLogAddFact("LBM", "Аномалии популяций", buf);
+    std::snprintf(buf, sizeof(buf), "подсеточная вязкость Смагоринского Cs=%.3f, TKE %.3e м2/с2 (модель в решёточных единицах)",
+                  lbmParams.smagorinskyC, lbmTKE);
+    debugLogAddFact("LBM", "Модель турбулентности", buf);
 
     // --- Режим качества ---
     std::snprintf(buf, sizeof(buf), "Lite=%s, Ultra-Lite=%s, пресет=%s, авто-качество=%s, энергосбережение=%s",

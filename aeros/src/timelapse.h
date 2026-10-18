@@ -59,6 +59,8 @@ struct TLFrame {
     int   nonfinite;          // сколько NaN/Inf насчитали в этом кадре
     float residualRho;        // RMS изменения плотности за шаг LBM (сходимость)
     float residualU;          // max изменения скорости за шаг LBM
+    long long negPops;        // v1.27.0: сколько популяций f ушло в минус за шаг
+    long long badPops;        // v1.27.0: сколько значений заменено как нефизические
     float cpLo;               // нижняя граница диапазона карты давления
     float cpHi;               // верхняя граница диапазона карты давления
     long long fieldFrameNo;   // номер кадра, для которого есть снимок поля (0 = нет)
@@ -68,6 +70,7 @@ struct TLFrame {
           drawn(0), streamlines(0), slVerts(0), lbmStep(0), lbmRho(0), lbmVmax(0),
           lbmTke(0), reynolds(0), frameMs(0), lbmMs(0), partMs(0), forceMs(0),
           streamMs(0), voxelMs(0), nonfinite(0), residualRho(0), residualU(0),
+          negPops(0), badPops(0),
           cpLo(0), cpHi(0), fieldFrameNo(0) {
         lift[0]=lift[1]=lift[2]=0; drag[0]=drag[1]=drag[2]=0;
         moment[0]=moment[1]=moment[2]=0; cop[0]=cop[1]=cop[2]=0;

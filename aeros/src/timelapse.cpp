@@ -278,6 +278,8 @@ void timelapseRecordFrame(long long frameNumber, float timeSeconds) {
     f.voxelMs   = fin(perfVoxelMs);
     f.residualRho = fin(lbmResidualRho);
     f.residualU   = fin(lbmResidualU);
+    f.negPops     = lbmNegativePops;
+    f.badPops     = lbmBadPops;
     f.cpLo      = fin(g_cpLo);
     f.cpHi      = fin(g_cpHi);
     // Проверка устойчивости (NaN/Inf). Шаг 97, как в журнале физики v1.25.0,
@@ -479,7 +481,8 @@ const char* timelapseCsvHeader() {
            "lbm_step,lbm_rho,lbm_vmax_world,lbm_tke,reynolds,"
            "lift_x,lift_y,lift_z,drag_x,drag_y,drag_z,moment_x,moment_y,moment_z,"
            "cop_x,cop_y,cop_z,frame_ms,lbm_ms,particles_ms,forces_ms,streamlines_ms,"
-           "voxel_ms,nonfinite,residual_rho,residual_u,cp_lo,cp_hi,has_field";
+           "voxel_ms,nonfinite,residual_rho,residual_u,cp_lo,cp_hi,"
+           "lbm_neg_pops,lbm_bad_pops,has_field";
 }
 
 void timelapseCsvRow(const TLFrame& f, std::string* out) {
@@ -490,7 +493,7 @@ void timelapseCsvRow(const TLFrame& f, std::string* out) {
                   "%.6f,%.6f,%.6f,%.6f,%.3f,"
                   "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
                   "%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
-                  "%d,%.3e,%.3e,%.4f,%.4f,%d",
+                  "%d,%.3e,%.3e,%.4f,%.4f,%lld,%lld,%d",
                   f.frame, f.time_s, f.dt_ms, f.fps, f.backendCuda ? "CUDA" : "CPU",
                   f.particles, f.drawn, f.streamlines, f.slVerts, f.lbmStep,
                   f.lbmRho, f.lbmVmax, f.lbmTke, f.reynolds,
@@ -500,7 +503,7 @@ void timelapseCsvRow(const TLFrame& f, std::string* out) {
                   f.cop[0], f.cop[1], f.cop[2],
                   f.frameMs, f.lbmMs, f.partMs, f.forceMs, f.streamMs, f.voxelMs,
                   f.nonfinite, f.residualRho, f.residualU, f.cpLo, f.cpHi,
-                  f.fieldFrameNo ? 1 : 0);
+                  f.negPops, f.badPops, f.fieldFrameNo ? 1 : 0);
     *out = buf;
 }
 
@@ -552,6 +555,7 @@ std::string timelapseSummary() {
     float liftMin = 1e30f, liftMax = -1e30f, dragMin = 1e30f, dragMax = -1e30f;
     double liftSum = 0, dragSum = 0;
     long long nonfiniteFrames = 0, nonfiniteTotal = 0, cudaFrames = 0, fieldFrames = 0;
+    long long negPopsTotal = 0, badPopsTotal = 0, negPopsFrames = 0;
     int n = 0;
     for (int i = 0; i < g_count; ++i) {
         TLFrame f;
@@ -575,6 +579,9 @@ std::string timelapseSummary() {
         if (dragLen > dragMax) dragMax = dragLen;
         liftSum += liftLen; dragSum += dragLen;
         if (f.nonfinite > 0) { ++nonfiniteFrames; nonfiniteTotal += f.nonfinite; }
+        negPopsTotal += f.negPops;
+        badPopsTotal += f.badPops;
+        if (f.negPops > 0 || f.badPops > 0) ++negPopsFrames;
         if (f.backendCuda) ++cudaFrames;
         if (f.fieldFrameNo) ++fieldFrames;
     }
@@ -611,8 +618,14 @@ std::string timelapseSummary() {
                   "Кадры на CUDA: %lld из %d | кадров с NaN/Inf: %lld (всего значений %lld)\n",
                   cudaFrames, n, nonfiniteFrames, nonfiniteTotal);
     s += buf;
+    std::snprintf(buf, sizeof(buf),
+                  "Аномалии решателя LBM: отрицательных популяций %lld, заменённых нефизических %lld, кадров с аномалиями %lld\n",
+                  negPopsTotal, badPopsTotal, negPopsFrames);
+    s += buf;
     if (nonfiniteFrames > 0)
         s += "ВНИМАНИЕ: в записи есть кадры с неконечными значениями — физика теряла устойчивость.\n";
+    if (negPopsTotal > 0 || badPopsTotal > 0)
+        s += "ВНИМАНИЕ: решатель LBM выходил за физический диапазон популяций — уменьшите шаг/скорость или увеличьте tau.\n";
     if (cudaFrames > 0 && cudaFrames < n)
         s += "ВНИМАНИЕ: бэкенд переключался между CUDA и CPU внутри записи.\n";
     return s;

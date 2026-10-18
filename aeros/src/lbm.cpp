@@ -28,6 +28,10 @@ float lbmMaxVelocityLB = 0.0f;
 float lbmMaxVelocityWorld = 0.0f;
 float lbmReynolds = 0.0f;
 float lbmConvergence = 0.0f;
+// v1.27.0 — диагностика устойчивости решателя: сколько популяций за шаг ушло в
+// отрицательные значения и сколько было заменено как нефизические. Нули — норма.
+long long lbmNegativePops = 0;
+long long lbmBadPops = 0;
 float lbmTimeMs = 0.0f;
 float lbmTKE = 0.0f;
 
@@ -94,11 +98,15 @@ inline float computeEquilibriumFast(int qi, float rho, float ux, float uy, float
     if (!std::isfinite(cu)) cu = 0.0f;
 
     float feq = w[qi]*rho*(1.0f + cu*invCs2 + cu*cu*invCs2SqHalf - usqr*1.5f);
-    // Только проверка на NaN/Inf, без искусственного ограничения 2.0
     if (!std::isfinite(feq)) feq = w[qi]*rho;
-    // Минимальная положительность — LBM допускает небольшие отрицательные, но для стабильности >0
-    if (feq < 0.0f && qi != 0) feq = 0.0f; // только не центральная может быть 0
-    if (feq < 0.0f) feq = w[qi]*rho*0.1f;
+    // v1.27.0 — обнуление отрицательных feq убрано.
+    //
+    // При ограничении |u| <= 0.3 (оно применяется выше) равновесная функция
+    // неотрицательна аналитически: худший случай cu = -0.3, usqr = 0.09 даёт
+    // feq/(w*rho) = 1 - 0.9 + 0.405 - 0.135 = 0.37 > 0. То есть прежнее
+    // «if (feq < 0) feq = 0» срабатывало только на испорченных данных и при этом
+    // нарушало сохранение массы и импульса (сумма feq переставала равняться rho),
+    // из-за чего плотность дрейфовала, а решатель уходил в перезапуск.
     return feq;
 }
 
@@ -583,6 +591,13 @@ void stepLBMCPU(int steps) {
     glm::vec3 flowDir;
     computeFlowAxis(flowAxis, flowSign, flowDir);
 
+    // v1.27.0 — масштаб скорости (решёточные -> м/с) и его квадрат: нужны, чтобы
+    // подсеточная кинетическая энергия была в м²/с², а не в безразмерных единицах.
+    float velScale = flowSpeed / U0mag;
+    if (!std::isfinite(velScale) || velScale > 1000.0f) velScale = 20.0f;
+    if (velScale < 0.01f) velScale = 0.01f;
+    const float velScale2 = velScale * velScale;
+
     float* fPtr = f.data();
     float* fNextPtr = fNext.data();
     float* rhoPtr = lbmRho.data();
@@ -607,9 +622,13 @@ void stepLBMCPU(int steps) {
         double kineticAcc = 0.0;
         double tkeAcc = 0.0;
         int nanCount = 0;
+        // v1.27.0 — счётчики «грязных» данных. Раньше такие значения молча
+        // подменялись, и потеря устойчивости была не видна ни в UI, ни в отчёте.
+        long long negPops = 0;      // популяций ушло в отрицательные значения
+        long long badPops = 0;      // значений вне физического диапазона / NaN
 
         #ifdef _OPENMP
-        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount) reduction(max:maxVelGlobal)
+        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount,negPops,badPops) reduction(max:maxVelGlobal)
         {
             #pragma omp for nowait
         #endif
@@ -625,10 +644,12 @@ void stepLBMCPU(int steps) {
             float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
             for (int qi = 0; qi < Q; ++qi) {
                 float fi = fPtr[base+qi];
-                if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; }
-                // Убран жесткий clamp -0.5/2.0, заменен на мягкий
-                if (fi < -0.2f) fi = w[qi]*0.5f;
-                if (fi > 1.0f) fi = w[qi]*1.5f;
+                if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
+                // v1.27.0 — пороги расширены до заведомо нефизических значений и
+                // считаются. Прежние (-0.2 и 1.0) подменяли вполне рабочие
+                // популяции, а каждая подмена меняла сумму f, то есть массу и
+                // импульс ячейки, причём без единого сообщения.
+                if (fi < -1.0f || fi > 10.0f) { fi = w[qi]; badPops++; }
                 rho += fi;
                 ux += fi * (float)c[qi][0];
                 uy += fi * (float)c[qi][1];
@@ -698,8 +719,17 @@ void stepLBMCPU(int steps) {
                                 if (!std::isfinite(Cs) || Cs < 0) Cs = 0.12f;
                                 if (Cs > 0.3f) Cs = 0.3f;
 
-                                // v1.11.0: правильная формула Smagorinsky с delta = cellSize
-                                float dx = lbmCellSizeX; // характерный размер ячейки
+                                // v1.27.0 — Δ в РЕШЁТОЧНЫХ единицах, то есть 1.
+                                //
+                                // Прежняя формула подставляла сюда размер ячейки в метрах
+                                // (lbmCellSizeX ~ 0.01..0.1 м), тогда как |S| считается по
+                                // решёточным скоростям и решёточному шагу. Смешение единиц
+                                // занижало ν_t на 2-4 порядка, поэтому вклад модели
+                                // турбулентности в τ был порядка 1e-5 — LES фактически не
+                                // работала, и срывные/неустойчивые режимы считались без
+                                // подсеточной диссипации.
+                                // Каноническая запись (Yu и др.): ν_t = (Cs·Δ)²·|S|, Δ = 1.
+                                float dx = 1.0f; // шаг решётки в решёточных единицах
                                 // Van Driest damping у стенок: Cs_eff = Cs * (1 - exp(-y+/26))
                                 // y+ оцениваем как расстояние до ближайшей твердой ячейки
                                 // Поиск ближайшей твердой ячейки в радиусе 5
@@ -743,19 +773,33 @@ void stepLBMCPU(int steps) {
                 if (!std::isfinite(fi)) fi = feq;
                 float fNew = fi - (fi - feq) * invTau;
                 if (!std::isfinite(fNew)) fNew = feq;
-                if (fNew < 0.0f) fNew = 0.0f; // только положительность
+                // v1.27.0 — отрицательные популяции считаются, но НЕ обнуляются.
+                // Обнуление ломало сохранение массы: суммарная плотность ячейки
+                // переставала соответствовать потоку, а сам факт потери был невидим.
+                // Отрицательное f в LBM допустимо, пока rho > 0, а настоящую
+                // расходимость ловит проверка rho ниже и перезапуск решателя.
+                if (fNew < 0.0f) negPops++;
                 fPtr[base+qi] = fNew;
             }
 
             rhoPtr[cell] = rho;
             uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
             strainPtr[cell] = strainMag;
-            // v1.11.0: корректный TKE = (Cs*dx*S)^2
-            float dx = lbmCellSizeX;
-            float Cs = lbmParams.smagorinskyC;
-            float tke = Cs*Cs * dx*dx * strainMag*strainMag;
-            if (!std::isfinite(tke) || tke < 0) tke = 0;
-            if (tke > 1.0f) tke = 1.0f;
+            // v1.27.0 — подсеточная кинетическая энергия в ФИЗИЧЕСКИХ единицах (м²/с²).
+            //
+            // Было: Cs²·dx²·S² с dx в метрах и S в решёточных единицах — величина
+            // без размерности смысла, к тому же сверху зажатая единицей, поэтому
+            // режим «Turbulent KE» и поле lbmTKEField показывали произвольные числа.
+            // По модели Смагоринского k = (Cs·Δ·|S|)² в решёточных единицах (Δ = 1),
+            // затем перевод в м²/с² квадратом масштаба скорости V∞/U0 — тем же,
+            // которым переводятся скорости решётки в мировые.
+            float CsT = lbmParams.smagorinskyC;
+            if (!std::isfinite(CsT) || CsT < 0.0f) CsT = 0.12f;
+            if (CsT > 0.3f) CsT = 0.3f;
+            float tkeLb = (CsT * strainMag) * (CsT * strainMag);
+            float tke = tkeLb * velScale2;
+            if (!std::isfinite(tke) || tke < 0.0f) tke = 0.0f;
+            if (tke > 1.0e6f) tke = 1.0e6f;
             tkePtr[cell] = tke;
 
             float velMag = std::sqrt(usqr);
@@ -964,6 +1008,8 @@ void stepLBMCPU(int steps) {
         if (scale < 0.01f) scale = 0.01f;
         lbmMaxVelocityWorld = maxVelGlobal * scale;
 
+        lbmNegativePops = negPops;
+        lbmBadPops = badPops;
         lbmConvergence = std::fabs(lbmAvgKineticEnergy - prevKinetic);
         prevKinetic = lbmAvgKineticEnergy;
         lbmConverged = (lbmConvergence < lbmParams.convergenceThreshold);
@@ -1421,8 +1467,16 @@ void computeLBMVorticityAndQ() {
 }
 
 float computeLBMRe() {
-    // v1.11.0: физический Re, не решеточный
-    const float mu = 1.81e-5f;
+    // v1.27.0 — вязкость по Сазерленду, как в forces.cpp и flow_field.cpp.
+    // Здесь была зашита константа 1.81e-5 (воздух при ~293 K), а результат
+    // перезаписывал aeroReNumber, поэтому на высоте, где температура и плотность
+    // другие, число Рейнольдса в панели и в CSV не совпадало с тем, по которому
+    // считались коэффициенты трения.
+    float T = airTemperature;
+    if (!std::isfinite(T) || T < 100.0f) T = 288.15f;
+    const float T0s = 273.15f, S = 110.4f, mu0 = 1.716e-5f;
+    float mu = mu0 * powf(T/T0s, 1.5f) * (T0s+S)/(T+S);
+    if (!std::isfinite(mu) || mu < 1e-6f) mu = 1.81e-5f;
     float L = maxDim;
     if (L < 1e-6f) L = 1.0f;
     float Re = airDensity * flowSpeed * L / mu;

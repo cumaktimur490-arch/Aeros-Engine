@@ -38,6 +38,9 @@ extern float lbmMaxVelocityLB;
 extern float lbmMaxVelocityWorld;
 extern float lbmReynolds;
 extern float lbmConvergence;
+// v1.27.0 — диагностика устойчивости (нули — норма, рост означает развал расчёта)
+extern long long lbmNegativePops;
+extern long long lbmBadPops;
 extern float lbmTimeMs;
 extern float lbmTKE;
 

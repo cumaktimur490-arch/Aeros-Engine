@@ -435,6 +435,8 @@ extern bool  tlPlaying;        // воспроизведение/пауза
 extern bool  tlLoop;           // зациклить воспроизведение
 extern bool  tlShowField;      // показывать срез поля давления при просмотре
 extern bool  tlShowWindow;     // показывать отдельное окно таймлапса (графики и поле)
+extern bool  tlFullscreen;     // самописец на всё окно (F11), а не маленькая табличка
+extern float uiScale;          // масштаб шрифта панелей (0.8..1.8), сохраняется в настройках
 extern bool  tlAutoRecord;     // писать постоянно (кольцо), чтобы история была к моменту сбоя
 extern float tlSpeed;          // 1.0 = реальное время записи, 8.0 = в 8 раз быстрее
 extern int   tlCapacity;       // кадров в кольцевом буфере

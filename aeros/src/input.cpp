@@ -201,6 +201,17 @@ void processInput(GLFWwindow* window) {
     }
     f8WasPressed = f8Pressed;
 
+    // F11 — самописец (таймлапс физики) на всё окно: графики и поле давления
+    // разворачиваются во весь экран вместо маленькой плавающей панели.
+    static bool f11WasPressed = false;
+    bool f11Pressed = glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS;
+    if (f11Pressed && !f11WasPressed) {
+        tlFullscreen = !tlFullscreen;
+        if (tlFullscreen) tlShowWindow = true;
+        debugLogAction("клавиша", "F11 — самописец на всё окно: %s", tlFullscreen ? "ВКЛ" : "ВЫКЛ");
+    }
+    f11WasPressed = f11Pressed;
+
     // F9 — режим отладки: включить/выключить журнал событий, действий и физики
     static bool f9WasPressed = false;
     bool f9Pressed = glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS;

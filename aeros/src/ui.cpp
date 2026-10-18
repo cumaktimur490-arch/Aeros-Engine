@@ -53,6 +53,9 @@ float tlValResidual(const TLFrame& f) { return f.residualRho; }
 float tlValVmax(const TLFrame& f)     { return f.lbmVmax; }
 float tlValDrawn(const TLFrame& f)    { return (float)f.drawn; }
 float tlValNonFinite(const TLFrame& f){ return (float)f.nonfinite; }
+// v1.27.0 — суммарные аномалии решателя LBM: отрицательные популяции и значения,
+// которые пришлось заменить как нефизические. Нуль — расчёт чистый.
+float tlValLbmAnomaly(const TLFrame& f) { return (float)(f.negPops + f.badPops); }
 
 // График истории: окно из tlChartFrames кадров, заканчивающееся на курсоре.
 void drawTLChart(const char* label, float (*get)(const TLFrame&), ImU32 color, float height) {
@@ -250,97 +253,199 @@ static void drawTimelapsePanel() {
 
 static void drawTimelapseWindow() {
     if (!tlShowWindow) return;
-    ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2((float)(display_w > 900 ? display_w - 800 : 20), 40), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(_TR("Physics timelapse (F7 record / F8 play)", "Таймлапс физики (F7 запись / F8 просмотр)"),
-                      &tlShowWindow, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::End();
-        return;
+
+    const float W = (float)(display_w > 200 ? display_w : 800);
+    const float H = (float)(display_h > 200 ? display_h : 600);
+    const char* title = tlFullscreen
+        ? _TR("Physics recorder - fullscreen (F11 to exit)", "Самописец физики - на всё окно (F11 - выйти)")
+        : _TR("Physics timelapse (F7 record / F8 play / F11 fullscreen)",
+              "Таймлапс физики (F7 запись / F8 просмотр / F11 на всё окно)");
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse;
+    if (tlFullscreen) {
+        // Режим «на всё окно»: панель занимает весь экран, графики и поле давления
+        // растягиваются по доступной площади, а не сидят в фиксированном размере 760x520.
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2(W, H));
+        flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
+    } else {
+        ImGui::SetNextWindowSize(ImVec2(860.0f, 600.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(W > 900.0f ? W - 880.0f : 20.0f, 40.0f), ImGuiCond_FirstUseEver);
     }
+
+    if (!ImGui::Begin(title, &tlShowWindow, flags)) { ImGui::End(); return; }
+    if (uiScale > 0.5f) ImGui::SetWindowFontScale(glm::clamp(uiScale, 0.7f, 2.0f));
 
     int count = timelapseFrameCount();
     TLFrame f;
     if (count <= 0 || !timelapseGetPlayFrame(&f)) {
         ImGui::TextWrapped("%s", _TR("Nothing recorded yet. Press F7 (or enable background history) and let the simulation run.",
                                      "Записи ещё нет. Нажмите F7 (или включите фоновую историю) и дайте расчёту поработать."));
+        ImGui::Separator();
+        if (ImGui::Button(_TR("Exit fullscreen (F11)", "Выйти из полноэкранного режима (F11)"))) tlFullscreen = false;
         ImGui::End();
         return;
     }
 
+    // ---------- Панель инструментов: всё в одну-две строки ----------
+    if (ImGui::Button(tlEnabled ? _TR("Stop rec (F7)", "Стоп записи (F7)") : _TR("Record (F7)", "Запись (F7)"))) {
+        tlEnabled = !tlEnabled;
+        if (tlEnabled) { tlPlaying = false; timelapseClear(); }
+        debugLogAction("таймлапс", "запись %s (окно самописца)", tlEnabled ? "ВКЛЮЧЕНА" : "выключена");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tlPlaying ? _TR("Pause (F8)", "Пауза (F8)") : _TR("Play (F8)", "Просмотр (F8)"))) {
+        tlPlaying = !tlPlaying;
+        if (tlPlaying && timelapsePlayIndex() >= count - 1) timelapsePlayFromStart();
+        debugLogAction("таймлапс", "воспроизведение %s (окно самописца)", tlPlaying ? "СТАРТ" : "ПАУЗА");
+    }
+    ImGui::SameLine(); if (ImGui::Button("|<")) timelapsePlayFromStart();
+    ImGui::SameLine(); if (ImGui::Button(">|")) timelapsePlayFromEnd();
+    ImGui::SameLine(); ImGui::Checkbox(_TR("Loop", "По кругу"), &tlLoop);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::SliderFloat("##tlspeed", &tlSpeed, 0.1f, 32.0f, "%.1fx");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", _TR("Playback speed, 1x = real recording time",
+                                                             "Скорость просмотра, 1x = реальное время записи"));
+    ImGui::SameLine();
+    if (ImGui::Button(tlFullscreen ? _TR("Windowed", "В окно") : _TR("Fullscreen (F11)", "На всё окно (F11)"))) {
+        tlFullscreen = !tlFullscreen;
+        debugLogAction("таймлапс", "полноэкранный режим %s", tlFullscreen ? "включён" : "выключен");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Export CSV", "Экспорт CSV"))) {
+        g_lastTimelapsePath = timelapseExportCSV();
+        debugLogAction("таймлапс", "экспорт истории из окна самописца: %s",
+                       g_lastTimelapsePath.empty() ? "ОШИБКА" : g_lastTimelapsePath.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Report (F10)", "Отчёт (F10)"))) {
+        g_lastDebugReportPath = debugLogSaveReport();
+        debugLogAction("кнопка", "отладочный отчёт из окна самописца");
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox(_TR("Field", "Поле"), &tlShowField);
+
+    // ---------- Ползунок по всей ширине ----------
+    int idx = timelapsePlayIndex();
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    if (ImGui::SliderInt("##tlscrub", &idx, 0, count - 1, _TR("frame %d", "кадр %d")))
+        timelapseSetPlayIndex(idx);
+
     long long frameNo = f.frame;
-    ImGui::Text("%s %lld  |  %s %.2f s  |  %s  |  %s %.2f x",
+    ImGui::Text("%s %lld  |  %s %.2f s  |  %s  |  %s: %d / %lld  |  %s: %.1f s  |  %s %.1f",
                 _TR("sim frame", "кадр симуляции"), frameNo,
                 _TR("record time", "время записи"), f.time_s,
                 f.backendCuda ? "CUDA" : "CPU",
-                _TR("speed", "скорость"), tlSpeed);
-    ImGui::Text("%s %.1f  |  %s %.2f ms  |  LBM %s %d  |  %s %.5f  |  %s %.3f m/s",
-                _TR("FPS", "FPS"), f.fps, _TR("frame", "кадр"), f.frameMs,
-                _TR("step", "шаг"), f.lbmStep, _TR("rho", "rho"), f.lbmRho,
-                _TR("vmax", "vmax"), f.lbmVmax);
-    ImGui::Text("%s (%.3f; %.3f; %.3f) N  |  %s (%.3f; %.3f; %.3f) N  |  %s %.3f Nm",
-                _TR("Lift", "Подъёмная"), f.lift[0], f.lift[1], f.lift[2],
-                _TR("Drag", "Сопротивление"), f.drag[0], f.drag[1], f.drag[2],
-                _TR("Moment", "Момент"),
-                std::sqrt(f.moment[0]*f.moment[0] + f.moment[1]*f.moment[1] + f.moment[2]*f.moment[2]));
-    ImGui::Text("TKE %.3e  |  %s %.3e  |  %s %d  |  %s %d  |  %s %.2f/%.2f/%.2f ms",
-                f.lbmTke, _TR("residual", "остаток"), f.residualRho,
-                _TR("particles drawn", "частиц рисуется"), f.drawn,
-                _TR("NaN/Inf", "NaN/Inf"), f.nonfinite,
-                _TR("subsystems", "подсистемы"), f.lbmMs, f.partMs, f.forceMs);
-    if (f.nonfinite > 0)
-        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "%s",
-                           _TR("This frame had non-finite values: the physics was unstable here.",
-                               "В этом кадре были неконечные значения: физика здесь теряла устойчивость."));
+                _TR("in buffer", "в буфере"), count, timelapseFramesRecorded(),
+                _TR("duration", "длительность"), timelapseDurationSeconds(),
+                _TR("rec FPS", "частота записи"), timelapseRecordedFps());
 
     ImGui::Separator();
-    drawTLChart(_TR("FPS", "FPS"), tlValFps, IM_COL32(120, 220, 140, 255), 44.0f);
-    drawTLChart(_TR("frame time, ms", "время кадра, мс"), tlValFrameMs, IM_COL32(120, 190, 255, 255), 44.0f);
-    drawTLChart(_TR("LBM time, ms", "время LBM, мс"), tlValLbmMs, IM_COL32(190, 160, 255, 255), 44.0f);
-    drawTLChart(_TR("lift Y, N", "подъёмная Y, Н"), tlValLiftY, IM_COL32(255, 200, 110, 255), 44.0f);
-    drawTLChart(_TR("|drag|, N", "|сопротивление|, Н"), tlValDragLen, IM_COL32(255, 130, 110, 255), 44.0f);
-    drawTLChart(_TR("TKE", "TKE"), tlValTke, IM_COL32(160, 230, 220, 255), 40.0f);
-    drawTLChart(_TR("LBM residual (RMS drho)", "остаток LBM (RMS drho)"), tlValResidual, IM_COL32(230, 170, 220, 255), 40.0f);
-    drawTLChart(_TR("max velocity, m/s", "макс. скорость, м/с"), tlValVmax, IM_COL32(200, 220, 130, 255), 40.0f);
-    drawTLChart(_TR("particles drawn", "частиц рисуется"), tlValDrawn, IM_COL32(150, 180, 200, 255), 40.0f);
-    drawTLChart(_TR("NaN/Inf count", "счётчик NaN/Inf"), tlValNonFinite, IM_COL32(255, 90, 90, 255), 36.0f);
 
-    if (tlShowField) {
-        ImGui::Separator();
+    // ---------- Рабочая площадь: графики слева, поле давления справа ----------
+    const int   nCharts = 11;
+    const float readoutH = tlFullscreen ? 120.0f : 96.0f;
+    float body = ImGui::GetContentRegionAvail().y - readoutH;
+    if (body < 120.0f) body = 120.0f;
+    float totalW = ImGui::GetContentRegionAvail().x;
+    float chartsW = tlShowField ? totalW * 0.58f : totalW;
+    if (chartsW < 220.0f) chartsW = totalW;
+
+    // Высота одного графика — по доступной площади, а не фиксированная.
+    // На каждый график уходит chartH плюс строка подписи (~18 px), поэтому
+    // вычитаем её, иначе в низком окне последние графики обрезались.
+    float chartH = body / (float)nCharts - 18.0f;
+    if (chartH < 18.0f) chartH = 18.0f;
+    if (chartH > 150.0f) chartH = 150.0f;
+
+    // Прокрутку оставляем: если окно всё же ниже суммы графиков, пользователь
+    // сможет долистать, а не увидит обрезанный низ.
+    ImGui::BeginChild("##tlCharts", ImVec2(chartsW, body));
+    drawTLChart(_TR("FPS", "FPS"), tlValFps, IM_COL32(120, 220, 140, 255), chartH);
+    drawTLChart(_TR("frame time, ms", "время кадра, мс"), tlValFrameMs, IM_COL32(120, 190, 255, 255), chartH);
+    drawTLChart(_TR("LBM time, ms", "время LBM, мс"), tlValLbmMs, IM_COL32(190, 160, 255, 255), chartH);
+    drawTLChart(_TR("lift Y, N", "подъёмная Y, Н"), tlValLiftY, IM_COL32(255, 200, 110, 255), chartH);
+    drawTLChart(_TR("|drag|, N", "|сопротивление|, Н"), tlValDragLen, IM_COL32(255, 130, 110, 255), chartH);
+    drawTLChart(_TR("TKE, m2/s2", "TKE, м2/с2"), tlValTke, IM_COL32(160, 230, 220, 255), chartH);
+    drawTLChart(_TR("LBM residual (RMS drho)", "остаток LBM (RMS drho)"), tlValResidual, IM_COL32(230, 170, 220, 255), chartH);
+    drawTLChart(_TR("max velocity, m/s", "макс. скорость, м/с"), tlValVmax, IM_COL32(200, 220, 130, 255), chartH);
+    drawTLChart(_TR("particles drawn", "частиц рисуется"), tlValDrawn, IM_COL32(150, 180, 200, 255), chartH);
+    drawTLChart(_TR("NaN/Inf count", "счётчик NaN/Inf"), tlValNonFinite, IM_COL32(255, 90, 90, 255), chartH);
+    drawTLChart(_TR("LBM anomalies (neg/replaced populations)", "аномалии LBM (минус/замены популяций)"),
+                tlValLbmAnomaly, IM_COL32(255, 160, 60, 255), chartH);
+    ImGui::EndChild();
+
+    if (tlShowField && chartsW < totalW) {
+        ImGui::SameLine();
+        ImGui::BeginChild("##tlField", ImVec2(0, body), false);
         std::vector<unsigned char> field;
         float lo = -2.0f, hi = 2.0f;
         long long usedFrame = 0;
         if (timelapseFieldForFrame(frameNo, &field, &lo, &hi, &usedFrame)) {
-            ImGui::Text("%s %lld  |  Cp %.2f … %.2f  |  %s %d^3",
-                        _TR("field snapshot of frame", "снимок поля кадра"), usedFrame, lo, hi,
-                        _TR("grid", "сетка"), timelapseFieldRes());
-            float cell = 5.0f;
-            drawTLFieldSlice(field, lo, hi, 0, _TR("XY slice", "срез XY"), cell);
+            ImGui::Text("%s %lld  |  Cp %.2f … %.2f", _TR("field snapshot of frame", "снимок поля кадра"),
+                        usedFrame, lo, hi);
+            // размер ячейки подбираем по доступной площади: три среза в ряд
+            const int R = timelapseFieldRes();
+            float availW = ImGui::GetContentRegionAvail().x;
+            float availH = ImGui::GetContentRegionAvail().y - 24.0f;
+            float cell = (availW / 3.0f - 10.0f) / (float)R;
+            float cellH = (availH - 30.0f) / (float)R;
+            if (cellH < cell) cell = cellH;
+            if (cell < 2.0f) cell = 2.0f;
+            if (cell > 18.0f) cell = 18.0f;
+            drawTLFieldSlice(field, lo, hi, 0, _TR("XY", "XY"), cell);
             ImGui::SameLine();
-            drawTLFieldSlice(field, lo, hi, 1, _TR("XZ slice", "срез XZ"), cell);
+            drawTLFieldSlice(field, lo, hi, 1, _TR("XZ", "XZ"), cell);
             ImGui::SameLine();
-            drawTLFieldSlice(field, lo, hi, 2, _TR("YZ slice", "срез YZ"), cell);
-            ImGui::TextDisabled("%s", _TR("Grey cells are solid body or outside the computational domain.",
-                                          "Серые ячейки — твёрдое тело или вне расчётной области."));
+            drawTLFieldSlice(field, lo, hi, 2, _TR("YZ", "YZ"), cell);
+            ImGui::TextDisabled("%s", _TR("Grey cells: solid body or outside the domain.",
+                                          "Серые ячейки: твёрдое тело или вне расчётной области."));
         } else {
             ImGui::TextWrapped("%s", _TR("No field snapshot for this frame. Snapshots are taken every N frames (slider in the panel); N = 0 disables them.",
                                          "Для этого кадра нет снимка поля. Снимки делаются каждый N-й кадр (ползунок в панели); N = 0 отключает их."));
         }
+        ImGui::EndChild();
     }
 
-    ImGui::Separator();
-    if (ImGui::Button(_TR("Export history to CSV", "Экспорт истории в CSV"))) {
-        g_lastTimelapsePath = timelapseExportCSV();
-        debugLogAction("таймлапс", "экспорт истории из окна просмотра: %s",
-                       g_lastTimelapsePath.empty() ? "ОШИБКА" : g_lastTimelapsePath.c_str());
+    // ---------- Показания кадра под курсором: таблица вместо сплошного текста ----------
+    if (ImGui::BeginTable("##tlReadout", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        struct Cell { const char* name; char val[40]; };
+        Cell cells[12];
+        std::snprintf(cells[0].val, 40, "%.1f", f.fps);            cells[0].name = "FPS";
+        std::snprintf(cells[1].val, 40, "%.2f ms", f.frameMs);     cells[1].name = _TR("frame", "кадр");
+        std::snprintf(cells[2].val, 40, "%.2f ms", f.lbmMs);       cells[2].name = "LBM";
+        std::snprintf(cells[3].val, 40, "%d", f.lbmStep);          cells[3].name = _TR("LBM step", "шаг LBM");
+        std::snprintf(cells[4].val, 40, "%.5f", f.lbmRho);         cells[4].name = "rho";
+        std::snprintf(cells[5].val, 40, "%.3f", f.lbmVmax);        cells[5].name = _TR("vmax, m/s", "vmax, м/с");
+        std::snprintf(cells[6].val, 40, "%.3e", f.lbmTke);         cells[6].name = _TR("TKE", "TKE");
+        std::snprintf(cells[7].val, 40, "%.2e", f.residualRho);    cells[7].name = _TR("residual", "остаток");
+        std::snprintf(cells[8].val, 40, "%.3f N", f.lift[1]);      cells[8].name = _TR("lift Y", "подъёмная Y");
+        std::snprintf(cells[9].val, 40, "%.3f N",
+                      std::sqrt(f.drag[0]*f.drag[0] + f.drag[1]*f.drag[1] + f.drag[2]*f.drag[2]));
+        cells[9].name = _TR("|drag|", "|сопр.|");
+        std::snprintf(cells[10].val, 40, "%d", f.drawn);           cells[10].name = _TR("particles", "частиц");
+        std::snprintf(cells[11].val, 40, "%d", f.nonfinite);       cells[11].name = "NaN/Inf";
+        for (int row = 0; row < 2; ++row) {
+            ImGui::TableNextRow();
+            for (int k = 0; k < 6; ++k) {
+                const Cell& c = cells[row * 6 + k];
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s", c.name);
+                ImGui::SameLine(0.0f, 4.0f);
+                bool bad = (k == 5 && row == 1) && f.nonfinite > 0;
+                if (bad) ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "%s", c.val);
+                else     ImGui::TextUnformatted(c.val);
+            }
+        }
+        ImGui::EndTable();
     }
-    ImGui::SameLine();
-    if (ImGui::Button(_TR("Save debug report (F10)", "Сохранить отчёт (F10)"))) {
-        g_lastDebugReportPath = debugLogSaveReport();
-        debugLogAction("кнопка", "отладочный отчёт из окна таймлапса: %s",
-                       g_lastDebugReportPath.empty() ? "ОШИБКА" : g_lastDebugReportPath.c_str());
-    }
+    if (f.nonfinite > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "%s",
+                           _TR("This frame had non-finite values: the physics was unstable here.",
+                               "В этом кадре были неконечные значения: физика здесь теряла устойчивость."));
     if (!g_lastTimelapsePath.empty())
-        ImGui::TextWrapped("CSV: %s", g_lastTimelapsePath.c_str());
+        ImGui::TextDisabled("CSV: %s", g_lastTimelapsePath.c_str());
 
     ImGui::End();
 }
@@ -387,9 +492,13 @@ static void saveRendererSetting(const char* value) {
 // Панель управления — v1.19.0 GoGonam AoS.
 // =====================================================
 void drawUI() {
-ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Once);
-ImGui::SetNextWindowSize(ImVec2(540, 1150), ImGuiCond_Once);
-ImGui::Begin(_TR("Aeros Control v1.19.0 GoGonam AoS.", "Управление Aeros v1.19.0 GoGonam AoS."));
+// v1.27.0 — размер и позиция задаются один раз: ImGuiCond_Once при каждом
+// запуске возвращал окно в угол и к размеру 540x1150, игнорируя то, как
+// пользователь его расположил. Плюс масштаб шрифта для всей панели.
+ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+ImGui::SetNextWindowSize(ImVec2(640, (float)(display_h > 420 ? display_h - 40 : 720)), ImGuiCond_FirstUseEver);
+ImGui::Begin(_TR("Aeros Control v1.27.0 GoGonam AoS.", "Управление Aeros v1.27.0 GoGonam AoS."));
+if (uiScale > 0.5f) ImGui::SetWindowFontScale(glm::clamp(uiScale, 0.7f, 2.0f));
 
 ImGui::Text("%s: %.1f | %s: %.2f ms | v1.19.0 [%s]",
     _TR("FPS", "Кадров/с"), deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f,
@@ -415,6 +524,74 @@ if (!aeroLastScreenshotPath.empty()) ImGui::Text("%s: %s", _TR("Last Screenshot"
 if (!aeroLastCSVPath.empty()) ImGui::Text("%s: %s", _TR("Last CSV", "Последний CSV"), aeroLastCSVPath.c_str());
 ImGui::Separator();
 
+// ---------- v1.27.0 — быстрая панель: главное всегда под рукой ----------
+// Раньше за каждой из этих кнопок нужно было раскрывать свой раздел и искать её
+// в длинном списке; теперь они в одной строке под статусом.
+{
+    if (ImGui::Button(_TR("Model (F1)", "Модель (F1)"))) {
+        showModel = !showModel;
+        debugLogAction("кнопка", "показ модели: %s", showModel ? "да" : "нет");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Pressure (F2)", "Давление (F2)"))) {
+        showPressure = !showPressure;
+        if (showPressure) updateVertexColors();
+        debugLogAction("кнопка", "карта давления: %s", showPressure ? "да" : "нет");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Streamlines (F3)", "Линии (F3)"))) {
+        showStreamlines = !showStreamlines;
+        if (showStreamlines) computeStreamlines();
+        debugLogAction("кнопка", "линии тока: %s", showStreamlines ? "да" : "нет");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Particles (F4)", "Частицы (F4)"))) {
+        showParticles = !showParticles;
+        debugLogAction("кнопка", "частицы: %s", showParticles ? "да" : "нет");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Shot (F5)", "Кадр (F5)"))) aeroScreenshotRequested = true;
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("CSV (F6)", "CSV (F6)"))) aeroCSVExportRequested = true;
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Recorder (F7)", "Самописец (F7)"))) {
+        tlEnabled = !tlEnabled;
+        if (tlEnabled) { tlPlaying = false; timelapseClear(); tlShowWindow = true; }
+        debugLogAction("кнопка", "запись таймлапса: %s", tlEnabled ? "ВКЛ" : "ВЫКЛ");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Play (F8)", "Просмотр (F8)"))) {
+        if (timelapseFrameCount() > 0) { tlPlaying = !tlPlaying; tlShowWindow = true; }
+        else debugLogAction("кнопка", "просмотр таймлапса: записи ещё нет");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Full window (F11)", "На всё окно (F11)"))) {
+        tlFullscreen = !tlFullscreen;
+        if (tlFullscreen) tlShowWindow = true;
+        debugLogAction("кнопка", "самописец на всё окно: %s", tlFullscreen ? "ВКЛ" : "ВЫКЛ");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Journal (F9)", "Журнал (F9)"))) {
+        bool dbgOn = !debugLogEnabled();
+        debugLogSetEnabled(dbgOn);
+        debugLogSetPhysics(dbgOn);
+        debugLogSetOverlay(dbgOn);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Report (F10)", "Отчёт (F10)")))
+        g_lastDebugReportPath = debugLogSaveReport();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(96.0f);
+    if (ImGui::SliderFloat(_TR("UI scale", "Масштаб"), &uiScale, 0.8f, 1.8f, "%.2fx"))
+        debugLogAction("интерфейс", "масштаб шрифта панелей %.2f", uiScale);
+}
+ImGui::Separator();
+
+// ---------- v1.27.0 — вкладки вместо стены из 21 раздела ----------
+// Разделы сгруппированы по смыслу. Внутри вкладок остались те же раскрывающиеся
+// заголовки, поэтому ни одна настройка не потерялась и не переехала в другой код.
+if (ImGui::BeginTabBar("##aerosMainTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+if (ImGui::BeginTabItem(_TR("System & FPS", "Система и FPS"))) {
 // Language selector — always on top
 if (ImGui::CollapsingHeader(_TR("Language / Язык", "Язык / Language"), ImGuiTreeNodeFlags_DefaultOpen)) {
     int langIdx = (int)currentLanguage;
@@ -452,6 +629,18 @@ if (ImGui::CollapsingHeader(_TR("Performance v1.19.0", "Производител
         ImGui::Text("%s: [%.2f, %.2f] | MaxVel LB %.3f World %.2f m/s",
             _TR("Pressure", "Давление"), lbmPressureMin, lbmPressureMax, lbmMaxVelocityLB, lbmMaxVelocityWorld);
         ImGui::Text("%s: RMS drho %.3e | dUmax %.3e", _TR("Residual", "Остаток"), lbmResidualRho, lbmResidualU);
+        // v1.27.0 — аномалии решателя видны сразу: нули означают чистый расчёт,
+        // а рост появляется раньше, чем плотность выйдет за пределы 0.8..1.2.
+        if (lbmNegativePops > 0 || lbmBadPops > 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
+                               "%s: %lld | %s: %lld",
+                               _TR("negative populations", "отрицательных популяций"), lbmNegativePops,
+                               _TR("replaced (non-physical)", "заменено (нефизических)"), lbmBadPops);
+        else
+            ImGui::Text("%s: 0 | %s: 0", _TR("negative populations", "отрицательных популяций"),
+                        _TR("replaced (non-physical)", "заменено (нефизических)"));
+        ImGui::Text("%s: %.3e %s | Cs %.3f", _TR("TKE (m2/s2)", "TKE (м2/с2)"), lbmTKE,
+                    _TR("subgrid", "подсеточная"), lbmParams.smagorinskyC);
     }
     ImGui::Checkbox(_TR("Show Perf Graph", "Показывать график"), &aeroShowPerfGraph);
     ImGui::Checkbox(_TR("Show Memory Usage", "Показывать память"), &aeroShowMemoryUsage);
@@ -472,6 +661,9 @@ if (ImGui::CollapsingHeader(_TR("Performance v1.19.0", "Производител
     ImGui::BulletText("%s", _TR("Multilingual EN/RU + Cyrillic font support", "Мультиязычность EN/RU + поддержка кириллицы"));
 }
 
+ImGui::EndTabItem();
+}
+if (ImGui::BeginTabItem(_TR("Upscaling & Frame Gen", "Апскейл и генерация кадров"))) {
 if (ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.19.0 — Super Resolution", "FSR и Оптимизации v1.19.0 — Супер Разрешение"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %.2f ms | %s: %.2f ms | %s: %d tris culled",
         _TR("FSR", "ФСР"), perfFSRms,
@@ -605,6 +797,9 @@ if (ImGui::CollapsingHeader(_TR("Frame Generation v1.19.0 — Custom FG", "Ге�
     ImGui::BulletText("%s", _TR("Like DLSS FG but custom — no tensor cores needed", "Как DLSS FG но своё — без тензорных ядер"));
 }
 
+ImGui::EndTabItem();
+}
+if (ImGui::BeginTabItem(_TR("Aero, effects, Lite", "Аэро, эффекты, Lite"))) {
 if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 — Ultra Photo Mode", "Реалистичная Аэро v1.19.0 — Ультра Фото Режим"), ImGuiTreeNodeFlags_DefaultOpen)) {
     const char* visModesEn[] = {
         "Pressure Cp (NASCAR rainbow)",
@@ -1058,6 +1253,9 @@ if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra
     ImGui::Text("  Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2, ~20-30 MB, 1-2 GB RAM");
 }
 
+ImGui::EndTabItem();
+}
+if (ImGui::BeginTabItem(_TR("Renderer & flow", "Рендерер и поток"))) {
 if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %s", _TR("Current", "Текущий"), getRendererName());
     // v1.26.0 — статус Vulkan больше не врёт. Прежняя строка обещала
@@ -1215,6 +1413,9 @@ if (ImGui::CollapsingHeader(_TR("Atmosphere (ISA)", "Атмосфера (ISA)"),
     ImGui::Text("%s q: %.1f Pa | q*RefArea: %.1f N", _TR("Dynamic Pressure", "Динамическое давление"), q, q*aeroRefArea);
 }
 
+ImGui::EndTabItem();
+}
+if (ImGui::BeginTabItem(_TR("Objects & solver", "Объекты и решатель"))) {
 if (ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Частицы v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Particles", "Показывать частицы"), &showParticles);
     ImGui::SliderInt(_TR("Count", "Количество"), &numParticles, 100, 200000);
@@ -1492,6 +1693,9 @@ if (ImGui::CollapsingHeader(_TR("Compute & Export v1.19.0", "Вычислени�
         _TR("Shortcuts", "Горячие клавиши"));
 }
 
+ImGui::EndTabItem();
+}
+if (ImGui::BeginTabItem(_TR("Tests & debug", "Тесты и отладка"))) {
 if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+Realistic+New+Lang)", "Режим тестов v1.19.0 Ультра (Физика+Код+LBM+Опт+Реалистичность+Новое+Язык)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Enable Test Mode", "Включить тесты"), &testModeEnabled);
     ImGui::Checkbox(_TR("Continuous Validation", "Непрерывная проверка"), &testContinuous);
@@ -1678,6 +1882,10 @@ if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+R
         for (int i = shown - 1; i >= 0; --i)
             ImGui::TextUnformatted(debugLogRecent(i).c_str());
     }
+    ImGui::EndTabItem();
+}
+ImGui::EndTabBar();
+}   // v1.27.0 — конец блока вкладок
     ImGui::End();
 
     // Экранный оверлей журнала (включается галочкой или F9) — виден, даже когда
