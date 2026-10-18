@@ -165,13 +165,26 @@ jobs:
         run: |
           $out = cmd /c "cd aeros && call build.bat x64" 2>&1 | Out-String
           Write-Host $out
+          $cudaOut = $out
+
+          # Причина сбоя - всегда одной строкой. Многострочные аннотации GitHub
+          # отбрасывает (прежняя версия склеивала 30 строк через %0A, и в итоге
+          # при уходе сборки в CPU-fallback не было видно ни одной ошибки nvcc).
+          function Build-Reason([string]$text) {
+            $lines = @(($text -split "`r?`n") | Where-Object { $_.Trim() })
+            $errs = @($lines | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|nvcc|failed|cannot|не удалось" } | Select-Object -Last 10)
+            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 8) }
+            $m = ($errs -join " // ") -replace "\s+", " "
+            if ($m.Length -gt 700) { $m = $m.Substring($m.Length - 700) }
+            return $m
+          }
+
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path aeros\bin\main-x64.exe)) {
             Write-Host "[ci] CUDA build failed or no exe - CPU fallback"
             $out2 = cmd /c "cd aeros && call build-cpu.bat x64" 2>&1 | Out-String
             Write-Host $out2
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path aeros\bin\main-x64.exe)) {
-              $tail = (($out + $out2) -split "`r?`n") | Select-Object -Last 30
-              Write-Host ("::error::tail x64 build%0A" + ($tail -join "%0A"))
+              Write-Host ("::error::x64-build: " + (Build-Reason ($cudaOut + $out2)))
               throw "x64 build failed"
             }
           }
@@ -196,7 +209,10 @@ jobs:
           $fatbin = $raw.Contains("nv_fatbin")
           Write-Host "[ci] backend marker=$backend nv_fatbin=$fatbin"
           if ($backend -ne "CUDA") {
-            Write-Host "::error::x64 собран БЕЗ CUDA (маркер: $backend) - публикация остановлена"
+            # build.bat при сбое nvcc сам уходит в CPU-only и возвращает код 0,
+            # поэтому сюда попадаем с успешным, но "не тем" бинарем. Причина
+            # (текст ошибки nvcc) обязана попасть в аннотацию одной строкой.
+            Write-Host ("::error::x64 собран БЕЗ CUDA (маркер: $backend), публикация остановлена. Причина: " + (Build-Reason $cudaOut))
             throw "x64 build is CPU_ONLY (marker=$backend); CUDA release requires a successful nvcc build"
           }
           # cuobjdump - единственный достоверный способ узнать, какой GPU-код реально

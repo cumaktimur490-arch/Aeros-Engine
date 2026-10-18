@@ -521,6 +521,118 @@ __global__ void updateParticlesKernel(float3* pos, float3* col, int n,
 }
 
 // ============ Давление (с эффектом разрежения за кормой) ============
+// =====================================================
+// v1.26.0 — цветовая карта давления на устройстве.
+// Точная копия getRealisticPressureColor() из lbm.cpp: устройство не может
+// вызывать хост-функции, поэтому логика продублирована, но параметры
+// (диапазон Cp и номер схемы) приходят в FlowParams — значит CPU и GPU красят
+// одинаково при любом бэкенде. Определения обязаны стоять ДО pressureKernel:
+// nvcc, как и любой компилятор C++, не знает имён, объявленных ниже по файлу
+// (именно так в первой попытке v1.26.0 сорвалась сборка x64).
+// =====================================================
+__device__ inline float3 mixD(const float3& a, const float3& b, float k) {
+    return make_float3(a.x + (b.x - a.x) * k,
+                       a.y + (b.y - a.y) * k,
+                       a.z + (b.z - a.z) * k);
+}
+
+// Опорные цвета заданы явными ветвлениями, без локальных массивов и указателей:
+// массив с переменным индексом в device-коде уходит в локальную память, а
+// передача указателя на локальный массив в __device__-функцию — ровно тот случай,
+// на котором nvcc может отказаться компилировать файл. Арифметика здесь даёт те
+// же сегменты, что и rampColor() на хосте (4 опорных цвета = 3 равных отрезка,
+// 5 опорных цветов = 4 отрезка), поэтому цвета CPU и GPU совпадают.
+__device__ inline float3 coldRampD(float s, bool coolwarm) {
+    // s: 0 — нейтральный цвет (Cp = 0), 1 — самое сильное разрежение
+    const float3 n = make_float3(0.93f, 0.93f, 0.95f);
+    if (s <= 0.0f) return n;
+    if (s >= 1.0f) return coolwarm ? make_float3(0.09f, 0.15f, 0.58f)
+                                   : make_float3(0.03f, 0.10f, 0.60f);
+    if (coolwarm) {
+        const float3 a = make_float3(0.60f, 0.79f, 0.92f);
+        const float3 b = make_float3(0.26f, 0.45f, 0.80f);
+        const float3 c = make_float3(0.09f, 0.15f, 0.58f);
+        if (s < 0.3333333f) return mixD(n, a, s * 3.0f);
+        if (s < 0.6666667f) return mixD(a, b, (s - 0.3333333f) * 3.0f);
+        return mixD(b, c, (s - 0.6666667f) * 3.0f);
+    }
+    const float3 a = make_float3(0.55f, 0.82f, 0.94f);
+    const float3 b = make_float3(0.15f, 0.45f, 0.85f);
+    const float3 c = make_float3(0.03f, 0.10f, 0.60f);
+    if (s < 0.3333333f) return mixD(n, a, s * 3.0f);
+    if (s < 0.6666667f) return mixD(a, b, (s - 0.3333333f) * 3.0f);
+    return mixD(b, c, (s - 0.6666667f) * 3.0f);
+}
+
+__device__ inline float3 hotRampD(float s, bool coolwarm) {
+    // s: 0 — нейтральный цвет (Cp = 0), 1 — самое сильное сжатие
+    const float3 n = make_float3(0.93f, 0.93f, 0.95f);
+    if (s <= 0.0f) return n;
+    if (s >= 1.0f) return coolwarm ? make_float3(0.55f, 0.02f, 0.10f)
+                                   : make_float3(0.72f, 0.05f, 0.05f);
+    if (coolwarm) {
+        const float3 a = make_float3(0.96f, 0.70f, 0.60f);
+        const float3 b = make_float3(0.86f, 0.30f, 0.22f);
+        const float3 c = make_float3(0.55f, 0.02f, 0.10f);
+        if (s < 0.3333333f) return mixD(n, a, s * 3.0f);
+        if (s < 0.6666667f) return mixD(a, b, (s - 0.3333333f) * 3.0f);
+        return mixD(b, c, (s - 0.6666667f) * 3.0f);
+    }
+    const float3 a = make_float3(1.00f, 0.85f, 0.35f);
+    const float3 b = make_float3(0.96f, 0.45f, 0.10f);
+    const float3 c = make_float3(0.72f, 0.05f, 0.05f);
+    if (s < 0.3333333f) return mixD(n, a, s * 3.0f);
+    if (s < 0.6666667f) return mixD(a, b, (s - 0.3333333f) * 3.0f);
+    return mixD(b, c, (s - 0.6666667f) * 3.0f);
+}
+
+__device__ inline float3 viridisRampD(float t) {
+    const float3 c0 = make_float3(0.267f, 0.004f, 0.329f);
+    const float3 c1 = make_float3(0.229f, 0.322f, 0.545f);
+    const float3 c2 = make_float3(0.127f, 0.566f, 0.550f);
+    const float3 c3 = make_float3(0.550f, 0.790f, 0.350f);
+    const float3 c4 = make_float3(0.993f, 0.906f, 0.144f);
+    if (t <= 0.0f) return c0;
+    if (t >= 1.0f) return c4;
+    if (t < 0.25f) return mixD(c0, c1, t * 4.0f);
+    if (t < 0.50f) return mixD(c1, c2, (t - 0.25f) * 4.0f);
+    if (t < 0.75f) return mixD(c2, c3, (t - 0.50f) * 4.0f);
+    return mixD(c3, c4, (t - 0.75f) * 4.0f);
+}
+
+__device__ inline float3 plasmaRampD(float t) {
+    const float3 c0 = make_float3(0.050f, 0.030f, 0.528f);
+    const float3 c1 = make_float3(0.494f, 0.012f, 0.658f);
+    const float3 c2 = make_float3(0.798f, 0.280f, 0.470f);
+    const float3 c3 = make_float3(0.973f, 0.585f, 0.254f);
+    const float3 c4 = make_float3(0.940f, 0.975f, 0.131f);
+    if (t <= 0.0f) return c0;
+    if (t >= 1.0f) return c4;
+    if (t < 0.25f) return mixD(c0, c1, t * 4.0f);
+    if (t < 0.50f) return mixD(c1, c2, (t - 0.25f) * 4.0f);
+    if (t < 0.75f) return mixD(c2, c3, (t - 0.50f) * 4.0f);
+    return mixD(c3, c4, (t - 0.75f) * 4.0f);
+}
+
+__device__ inline float3 pressureColorD(float cp, float lo, float hi, int colorMap) {
+    if (!(cp == cp)) cp = 0.0f;                     // NaN
+    if (!(hi - lo > 1e-4f)) { lo = -2.0f; hi = 2.0f; }
+
+    if (colorMap == 1 || colorMap == 2) {
+        float t = (cp - lo) / (hi - lo);
+        t = fminf(fmaxf(t, 0.0f), 1.0f);
+        return (colorMap == 1) ? viridisRampD(t) : plasmaRampD(t);
+    }
+
+    const bool coolwarm = (colorMap == 3);
+    if (cp <= 0.0f) {
+        float s = (lo < -1e-6f) ? fminf(fmaxf(cp / lo, 0.0f), 1.0f) : 0.0f;
+        return coldRampD(s, coolwarm);
+    }
+    float s = (hi > 1e-6f) ? fminf(fmaxf(cp / hi, 0.0f), 1.0f) : 0.0f;
+    return hotRampD(s, coolwarm);
+}
+
 __global__ void pressureKernel(float3* verts, float3* nrms, float3* outCol,
                                 int n, FlowParams prm, float* dDist)
 {
@@ -554,73 +666,6 @@ __global__ void pressureKernel(float3* verts, float3* nrms, float3* outCol,
     if (cp > 2.0f) cp = 2.0f;
     if (cp < -4.0f) cp = -4.0f;
     outCol[i] = pressureColorD(cp, prm.cpLo, prm.cpHi, prm.colorMap);
-}
-
-// =====================================================
-// v1.26.0 — цветовая карта давления на устройстве.
-// Точная копия getRealisticPressureColor() из lbm.cpp: устройство не может
-// вызывать хост-функции, поэтому логика продублирована, но параметры
-// (диапазон Cp и номер схемы) приходят в FlowParams — значит CPU и GPU
-// красят одинаково при любом бэкенде.
-// =====================================================
-__device__ inline float3 rampColorD(float t, const float3* stops, int n) {
-    if (n <= 0) return make_float3(0.5f, 0.5f, 0.5f);
-    if (n == 1) return stops[0];
-    if (!(t > 0.0f)) return stops[0];
-    if (!(t < 1.0f)) return stops[n-1];
-    float x = t * (float)(n - 1);
-    int i = (int)x;
-    if (i >= n - 1) i = n - 2;
-    if (i < 0) i = 0;
-    float k = x - (float)i;
-    return make_float3(stops[i].x*(1.0f-k) + stops[i+1].x*k,
-                       stops[i].y*(1.0f-k) + stops[i+1].y*k,
-                       stops[i].z*(1.0f-k) + stops[i+1].z*k);
-}
-
-__device__ inline float3 pressureColorD(float cp, float lo, float hi, int colorMap) {
-    if (!(cp == cp)) cp = 0.0f;                    // NaN
-    if (!(hi - lo > 1e-4f)) { lo = -2.0f; hi = 2.0f; }
-
-    if (colorMap == 1 || colorMap == 2) {
-        const float3 viridis[5] = {
-            make_float3(0.267f, 0.004f, 0.329f), make_float3(0.229f, 0.322f, 0.545f),
-            make_float3(0.127f, 0.566f, 0.550f), make_float3(0.550f, 0.790f, 0.350f),
-            make_float3(0.993f, 0.906f, 0.144f)
-        };
-        const float3 plasma[5] = {
-            make_float3(0.050f, 0.030f, 0.528f), make_float3(0.494f, 0.012f, 0.658f),
-            make_float3(0.798f, 0.280f, 0.470f), make_float3(0.973f, 0.585f, 0.254f),
-            make_float3(0.940f, 0.975f, 0.131f)
-        };
-        float t = fminf(fmaxf((cp - lo) / (hi - lo), 0.0f), 1.0f);
-        return rampColorD(t, (colorMap == 1) ? viridis : plasma, 5);
-    }
-
-    const float3 neutral = make_float3(0.93f, 0.93f, 0.95f);
-    const float3 coldRainbow[4] = {
-        neutral, make_float3(0.55f, 0.82f, 0.94f),
-        make_float3(0.15f, 0.45f, 0.85f), make_float3(0.03f, 0.10f, 0.60f)
-    };
-    const float3 hotRainbow[4] = {
-        neutral, make_float3(1.00f, 0.85f, 0.35f),
-        make_float3(0.96f, 0.45f, 0.10f), make_float3(0.72f, 0.05f, 0.05f)
-    };
-    const float3 coolCold[4] = {
-        neutral, make_float3(0.60f, 0.79f, 0.92f),
-        make_float3(0.26f, 0.45f, 0.80f), make_float3(0.09f, 0.15f, 0.58f)
-    };
-    const float3 coolWarm[4] = {
-        neutral, make_float3(0.96f, 0.70f, 0.60f),
-        make_float3(0.86f, 0.30f, 0.22f), make_float3(0.55f, 0.02f, 0.10f)
-    };
-    const bool coolwarm = (colorMap == 3);
-    if (cp <= 0.0f) {
-        float s = (lo < -1e-6f) ? fminf(fmaxf(cp / lo, 0.0f), 1.0f) : 0.0f;
-        return rampColorD(s, coolwarm ? coolCold : coldRainbow, 4);
-    }
-    float s = (hi > 1e-6f) ? fminf(fmaxf(cp / hi, 0.0f), 1.0f) : 0.0f;
-    return rampColorD(s, coolwarm ? coolWarm : hotRainbow, 4);
 }
 
 // ============ Host API ============
