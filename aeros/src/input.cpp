@@ -212,6 +212,18 @@ void processInput(GLFWwindow* window) {
     }
     f11WasPressed = f11Pressed;
 
+    // F12 — v1.28.0 — скрыть/показать пристыкованные панели (навигатор, свойства,
+    // консоль): центр экрана остаётся чистым видом для скриншотов и видео.
+    static bool f12WasPressed = false;
+    bool f12Pressed = glfwGetKey(window, GLFW_KEY_F12) == GLFW_PRESS;
+    if (f12Pressed && !f12WasPressed) {
+        uiDocked = !uiDocked;
+        uiShowTree = uiDocked; uiShowProps = uiDocked; uiShowConsole = uiDocked;
+        debugLogAction("клавиша", "F12 — панели интерфейса: %s",
+                       uiDocked ? "ПОКАЗАНЫ" : "СКРЫТЫ");
+    }
+    f12WasPressed = f12Pressed;
+
     // F9 — режим отладки: включить/выключить журнал событий, действий и физики
     static bool f9WasPressed = false;
     bool f9Pressed = glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS;

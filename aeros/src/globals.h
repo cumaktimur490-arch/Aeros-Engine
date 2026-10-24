@@ -444,6 +444,18 @@ extern int   tlFieldEvery;     // снимать поле каждый N-й ка
 extern int   tlChartFrames;    // сколько кадров истории рисовать в графиках
 extern std::string g_lastTimelapsePath;  // куда сохранили историю (CSV)
 
+// --- v1.28.0 — компоновка интерфейса как в инженерных САПР/CFD-пакетах ---
+// Панели закреплены по краям экрана: дерево узлов расчёта слева, панель свойств
+// выбранного узла справа, консоль и мониторинг остатков внизу, 3D-вид в центре.
+extern bool uiDocked;        // закреплённая компоновка (F12 — скрыть/показать панели)
+extern bool uiShowTree;      // показывать дерево слева
+extern bool uiShowProps;     // показывать панель свойств справа
+extern bool uiShowConsole;   // показывать консоль и мониторинг внизу
+extern int  uiSelectedLeaf;  // выбранный узел дерева (панель свойств)
+extern int  uiTreeW;         // ширина дерева, px
+extern int  uiPropsW;        // ширина панели свойств, px
+extern int  uiBottomH;       // высота нижней полосы, px
+
 // --- v1.26.0 Карта давления: диапазон Cp ---
 extern bool  aeroCpAutoRange;  // брать диапазон из фактических данных, а не фиксированный
 extern float aeroCpMin;        // ручной диапазон (когда авто выключен)

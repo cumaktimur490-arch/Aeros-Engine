@@ -351,6 +351,16 @@ int   tlFieldEvery = 30;   // снимок поля — это 24^3 сэмпло
 int   tlChartFrames = 600;
 std::string g_lastTimelapsePath;
 
+// --- v1.28.0 — компоновка интерфейса (панели по краям экрана) ---
+bool uiDocked       = true;
+bool uiShowTree     = true;
+bool uiShowProps    = true;
+bool uiShowConsole  = true;
+int  uiSelectedLeaf = 9;    // «Поток и граничные условия» — стартовый узел
+int  uiTreeW        = 264;
+int  uiPropsW       = 470;
+int  uiBottomH      = 200;
+
 // --- v1.26.0 Карта давления ---
 bool  aeroCpAutoRange = true;
 float aeroCpMin = -2.0f;

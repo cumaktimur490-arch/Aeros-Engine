@@ -269,8 +269,17 @@ static void drawTimelapseWindow() {
         ImGui::SetNextWindowSize(ImVec2(W, H));
         flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
     } else {
-        ImGui::SetNextWindowSize(ImVec2(860.0f, 600.0f), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowPos(ImVec2(W > 900.0f ? W - 880.0f : 20.0f, 40.0f), ImGuiCond_FirstUseEver);
+        // v1.28.0 — в пристыкованной компоновке окно самописца встаёт в свободный
+        // центр между навигатором и панелью свойств, а не поверх них.
+        float sideL = uiShowTree  ? (float)uiTreeW  + 8.0f : 12.0f;
+        float sideR = uiShowProps ? (float)uiPropsW + 8.0f : 12.0f;
+        float botH  = uiShowConsole ? (float)uiBottomH + 8.0f : 12.0f;
+        float freeW = W - sideL - sideR;
+        float freeH = H - botH - 12.0f;
+        if (freeW < 320.0f) { sideL = 12.0f; freeW = W - 24.0f; }
+        if (freeH < 240.0f) freeH = 240.0f;
+        ImGui::SetNextWindowPos(ImVec2(sideL, 8.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(freeW, freeH), ImGuiCond_FirstUseEver);
     }
 
     if (!ImGui::Begin(title, &tlShowWindow, flags)) { ImGui::End(); return; }
@@ -489,16 +498,213 @@ static void saveRendererSetting(const char* value) {
 }
 
 // =====================================================
+// v1.28.0 — компоновка интерфейса как в инженерных CFD/САПР-пакетах
+// (ANSYS Fluent, STAR-CCM+, ParaView): панели закреплены по краям экрана,
+// 3D-вид остаётся в центре и ничем не перекрыт.
+//
+//   +-----------+---------------------------+---------------+
+//   | Навигатор |                           |   Свойства    |
+//   |  расчёта  |      3D-вид (viewport)    | выбранного    |
+//   |  (дерево) |                           |    узла       |
+//   +-----------+---------------------------+---------------+
+//   | Консоль (журнал)  |  Мониторинг сходимости  | статус  |
+//   +-----------------------------------------------+
+//
+// Разделы настроек не переписывались: каждый рисуется только когда выбран
+// соответствующий узел дерева, поэтому ни одна настройка не потерялась и не
+// сменила поведение. F12 скрывает/показывает панели — для скриншотов и видео.
+// =====================================================
+namespace {
+
+struct UiLeaf { int group; int id; const char* ru; const char* en; };
+
+static const char* const kUiGroupRu[] = {
+    "Расчёт", "Модели и среда", "Сетка и решатель", "Результаты",
+    "Мониторинг", "Вид", "Диагностика"
+};
+static const char* const kUiGroupEn[] = {
+    "Setup", "Models & medium", "Mesh & solver", "Results",
+    "Monitors", "View", "Diagnostics"
+};
+
+static const UiLeaf kUiLeaves[] = {
+    { 0,  1, "Общие и язык",                "General & language" },
+    { 0,  8, "Рендерер",                    "Renderer" },
+    { 0,  7, "Профиль качества (Lite)",     "Quality profile (Lite)" },
+    { 0,  2, "Производительность",          "Performance" },
+    { 1,  5, "Реалистичная аэродинамика",   "Realistic aero" },
+    { 1, 10, "Атмосфера (ISA)",             "Atmosphere (ISA)" },
+    { 1,  9, "Поток и граничные условия",   "Flow & boundary conditions" },
+    { 1,  3, "Апскейл (FSR)",               "Upscaling (FSR)" },
+    { 1,  4, "Генерация кадров",            "Frame generation" },
+    { 2, 14, "Воксельная сетка (коллизия)", "Voxel mesh (collision)" },
+    { 2, 16, "Решатель LBM",                "LBM solver" },
+    { 3, 13, "Давление и силы",             "Pressure & forces" },
+    { 3, 17, "Вычисления и экспорт",        "Compute & export" },
+    { 3, 11, "Частицы",                     "Particles" },
+    { 3, 12, "Линии тока",                  "Streamlines" },
+    { 3,  6, "Эффекты и визуализация",      "Effects & visualization" },
+    { 4, 19, "Самописец физики",            "Physics recorder" },
+    { 4, 18, "Режим тестов",                "Test mode" },
+    { 5, 15, "Отображение",                 "Display" },
+    { 6, 20, "Журнал и отладочный отчёт",   "Journal & debug report" },
+};
+static const int kUiLeafCount = (int)(sizeof(kUiLeaves) / sizeof(kUiLeaves[0]));
+
+static const char* uiLeafName(int id) {
+    for (int i = 0; i < kUiLeafCount; ++i)
+        if (kUiLeaves[i].id == id)
+            return (currentLanguage == Language::Russian) ? kUiLeaves[i].ru : kUiLeaves[i].en;
+    return (currentLanguage == Language::Russian) ? "не выбран" : "none";
+}
+
+// Побайтовый поиск подстроки: ASCII сравниваем без учёта регистра, кириллица в
+// UTF-8 — как есть (tolower по байтам UTF-8 работает неверно).
+static bool uiContains(const char* hay, const char* needle) {
+    if (!hay || !needle || !needle[0]) return true;
+    size_t nl = strlen(needle);
+    for (const char* p = hay; *p; ++p) {
+        size_t i = 0;
+        while (i < nl && p[i]) {
+            char a = p[i], b = needle[i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) break;
+            ++i;
+        }
+        if (i == nl) return true;
+    }
+    return false;
+}
+
+static void drawUiTree() {
+    static char filter[64] = {0};
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##uiTreeFilter", _TR("Search nodes…", "Поиск по узлам…"),
+                             filter, sizeof(filter));
+    ImGui::Separator();
+
+    int curGroup = -1;
+    bool groupOpen = false;
+    for (int i = 0; i < kUiLeafCount; ++i) {
+        const UiLeaf& lf = kUiLeaves[i];
+        const char* name = (currentLanguage == Language::Russian) ? lf.ru : lf.en;
+        if (filter[0] && !uiContains(name, filter) && !uiContains(lf.en, filter)) continue;
+
+        if (lf.group != curGroup) {
+            if (curGroup >= 0 && groupOpen) ImGui::TreePop();
+            curGroup = lf.group;
+            const char* gname = (currentLanguage == Language::Russian)
+                                    ? kUiGroupRu[curGroup] : kUiGroupEn[curGroup];
+            groupOpen = ImGui::TreeNodeEx(gname, ImGuiTreeNodeFlags_DefaultOpen |
+                                                 ImGuiTreeNodeFlags_SpanAvailWidth);
+        }
+        if (!groupOpen) continue;
+
+        ImGui::PushID(lf.id);
+        // В ImGui 1.92 флага SpanAvailWidth для Selectable больше нет: ширина
+        // задаётся размером (-1 = занять всю доступную ширину).
+        if (ImGui::Selectable(name, uiSelectedLeaf == lf.id, ImGuiSelectableFlags_None,
+                              ImVec2(-1.0f, 0.0f))) {
+            if (uiSelectedLeaf != lf.id) {
+                uiSelectedLeaf = lf.id;
+                debugLogAction("интерфейс", "выбран узел «%s»", name);
+            }
+        }
+        ImGui::PopID();
+    }
+    if (curGroup >= 0 && groupOpen) ImGui::TreePop();
+
+    ImGui::Separator();
+    if (ImGui::TreeNodeEx(_TR("Layout", "Компоновка"), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        ImGui::Checkbox(_TR("Navigator (left)", "Навигатор (слева)"), &uiShowTree);
+        ImGui::Checkbox(_TR("Properties (right)", "Свойства (справа)"), &uiShowProps);
+        ImGui::Checkbox(_TR("Console & monitor (bottom)", "Консоль и мониторинг (внизу)"), &uiShowConsole);
+        ImGui::SliderInt(_TR("Navigator width, px", "Ширина навигатора, px"), &uiTreeW, 180, 480);
+        ImGui::SliderInt(_TR("Properties width, px", "Ширина свойств, px"), &uiPropsW, 320, 900);
+        ImGui::SliderInt(_TR("Bottom height, px", "Высота нижней полосы, px"), &uiBottomH, 120, 520);
+        ImGui::SliderFloat(_TR("UI scale", "Масштаб интерфейса"), &uiScale, 0.8f, 1.8f, "%.2fx");
+        ImGui::TextDisabled("%s", _TR("F12 — hide/show all panels (clean viewport).",
+                                      "F12 — скрыть/показать все панели (чистый вид)."));
+        ImGui::TreePop();
+    }
+}
+
+// Строка состояния — как в решателях: итерация, остаток, бэкенд, сетка, силы, память.
+static void drawUiStatusBar() {
+    ImGui::Separator();
+    float q = 0.5f * airDensity * flowSpeed * flowSpeed;
+    float cpLo = aeroCpAutoRange ? g_cpLo : aeroCpMin;
+    float cpHi = aeroCpAutoRange ? g_cpHi : aeroCpMax;
+    if (q > 1e-6f) { cpLo /= q; cpHi /= q; }
+
+    ImGui::Text("%s %d | %s %.2e | %s | FPS %.1f (%.1f %s) | LBM %dx%dx%d | rho %.5f | vmax %.2f %s",
+                _TR("Iteration", "Итерация"), lbmCurrentStep,
+                _TR("residual", "остаток"), lbmResidualRho,
+                useCUDA ? "CUDA" : "CPU",
+                deltaTime > 1e-6f ? 1.0f / deltaTime : 0.0f, perfFrameMs, _TR("ms", "мс"),
+                lbmNx, lbmNy, lbmNz, lbmAvgRho, lbmMaxVelocityWorld, _TR("m/s", "м/с"));
+    ImGui::Text("Cp [%.2f; %.2f] | %s %.3f N | %s %.3f N | Re %.0f | TKE %.2e %s | %s %.1f MB | F12 — %s",
+                cpLo, cpHi,
+                _TR("lift", "подъёмная"), liftMagnitude,
+                _TR("drag", "сопротивление"), dragMagnitude,
+                aeroReNumber, lbmTKE, _TR("m2/s2", "м2/с2"),
+                _TR("memory", "память"),
+                (float)(g_vertices.size() * 4 + g_distanceField.size() * 4 +
+                        particlePositions.size() * 4) / 1048576.0f,
+                _TR("hide panels", "скрыть панели"));
+    if (lbmNegativePops > 0 || lbmBadPops > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "%s: %lld / %lld",
+                           _TR("solver anomalies (neg/replaced)", "аномалии решателя (минус/замены)"),
+                           lbmNegativePops, lbmBadPops);
+}
+
+} // namespace
+
+// =====================================================
 // Панель управления — v1.19.0 GoGonam AoS.
 // =====================================================
 void drawUI() {
-// v1.27.0 — размер и позиция задаются один раз: ImGuiCond_Once при каждом
-// запуске возвращал окно в угол и к размеру 540x1150, игнорируя то, как
-// пользователь его расположил. Плюс масштаб шрифта для всей панели.
-ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-ImGui::SetNextWindowSize(ImVec2(640, (float)(display_h > 420 ? display_h - 40 : 720)), ImGuiCond_FirstUseEver);
-ImGui::Begin(_TR("Aeros Control v1.27.0 GoGonam AoS.", "Управление Aeros v1.27.0 GoGonam AoS."));
-if (uiScale > 0.5f) ImGui::SetWindowFontScale(glm::clamp(uiScale, 0.7f, 2.0f));
+// =====================================================
+// v1.28.0 — панели закреплены по краям экрана, 3D-вид свободен в центре.
+// Позиция и размер задаются каждый кадр (как у пристыкованных панелей), а не
+// один раз: окна больше нельзя утащить на середину вида.
+// =====================================================
+const float W = (float)(display_w > 320 ? display_w : 800);
+const float H = (float)(display_h > 240 ? display_h : 600);
+const ImGuiWindowFlags dockFlags =
+    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+float bottomH = uiShowConsole ? (float)uiBottomH : 34.0f;
+if (bottomH > H * 0.6f) bottomH = H * 0.6f;
+float treeW  = (float)(uiTreeW  > 120 ? uiTreeW  : 264);
+float propsW = (float)(uiPropsW > 240 ? uiPropsW : 470);
+if (treeW + propsW > W * 0.85f) {          // на узком экране панели не должны съедать вид
+    float k = (W * 0.85f) / (treeW + propsW);
+    treeW *= k; propsW *= k;
+}
+const float uiFontScale = (uiScale > 0.5f) ? glm::clamp(uiScale, 0.7f, 2.0f) : 1.0f;
+
+// ---------- 1) НАВИГАТОР РАСЧЁТА — левый край ----------
+if (uiShowTree) {
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(treeW, H - bottomH));
+    if (ImGui::Begin(_TR("Simulation navigator", "Навигатор расчёта"), nullptr, dockFlags)) {
+        ImGui::SetWindowFontScale(uiFontScale);
+        drawUiTree();
+    }
+    ImGui::End();
+}
+
+// ---------- 2) СВОЙСТВА ВЫБРАННОГО УЗЛА — правый край ----------
+if (uiShowProps) {
+    char propsTitle[192];
+    std::snprintf(propsTitle, sizeof(propsTitle), "%s — %s",
+                  _TR("Properties", "Свойства"), uiLeafName(uiSelectedLeaf));
+    ImGui::SetNextWindowPos(ImVec2(W - propsW, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(propsW, H - bottomH));
+    if (ImGui::Begin(propsTitle, nullptr, dockFlags)) {
+    ImGui::SetWindowFontScale(uiFontScale);
 
 ImGui::Text("%s: %.1f | %s: %.2f ms | v1.19.0 [%s]",
     _TR("FPS", "Кадров/с"), deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f,
@@ -571,6 +777,12 @@ ImGui::Separator();
         debugLogAction("кнопка", "самописец на всё окно: %s", tlFullscreen ? "ВКЛ" : "ВЫКЛ");
     }
     ImGui::SameLine();
+    if (ImGui::Button(_TR("Panels (F12)", "Панели (F12)"))) {
+        uiDocked = !uiDocked;
+        uiShowTree = uiDocked; uiShowProps = uiDocked; uiShowConsole = uiDocked;
+        debugLogAction("кнопка", "панели интерфейса: %s", uiDocked ? "показаны" : "скрыты");
+    }
+    ImGui::SameLine();
     if (ImGui::Button(_TR("Journal (F9)", "Журнал (F9)"))) {
         bool dbgOn = !debugLogEnabled();
         debugLogSetEnabled(dbgOn);
@@ -587,13 +799,9 @@ ImGui::Separator();
 }
 ImGui::Separator();
 
-// ---------- v1.27.0 — вкладки вместо стены из 21 раздела ----------
-// Разделы сгруппированы по смыслу. Внутри вкладок остались те же раскрывающиеся
-// заголовки, поэтому ни одна настройка не потерялась и не переехала в другой код.
-if (ImGui::BeginTabBar("##aerosMainTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
-if (ImGui::BeginTabItem(_TR("System & FPS", "Система и FPS"))) {
+
 // Language selector — always on top
-if (ImGui::CollapsingHeader(_TR("Language / Язык", "Язык / Language"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 1 && ImGui::CollapsingHeader(_TR("Language / Язык", "Язык / Language"), ImGuiTreeNodeFlags_DefaultOpen)) {
     int langIdx = (int)currentLanguage;
     const char* langItems[] = {"English", "Русский"};
     if (ImGui::Combo(_TR("Language", "Язык"), &langIdx, langItems, 2)) {
@@ -608,7 +816,7 @@ if (ImGui::CollapsingHeader(_TR("Language / Язык", "Язык / Language"), I
         "Весь интерфейс поддерживает русский и английский. Переключайте язык в любой момент."));
 }
 
-if (ImGui::CollapsingHeader(_TR("Performance v1.19.0", "Производительность v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 2 && ImGui::CollapsingHeader(_TR("Performance v1.19.0", "Производительность v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %.2f ms (%.1f FPS) | LBM: %.2f ms",
         _TR("Frame", "Кадр"), perfFrameMs, perfFrameMs>1e-3f?1000.0f/perfFrameMs:0, perfLBMms);
     ImGui::Text("%s: %.2f ms | %s: %.2f ms | %s: %.2f ms",
@@ -661,10 +869,7 @@ if (ImGui::CollapsingHeader(_TR("Performance v1.19.0", "Производител
     ImGui::BulletText("%s", _TR("Multilingual EN/RU + Cyrillic font support", "Мультиязычность EN/RU + поддержка кириллицы"));
 }
 
-ImGui::EndTabItem();
-}
-if (ImGui::BeginTabItem(_TR("Upscaling & Frame Gen", "Апскейл и генерация кадров"))) {
-if (ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.19.0 — Super Resolution", "FSR и Оптимизации v1.19.0 — Супер Разрешение"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 3 && ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.19.0 — Super Resolution", "FSR и Оптимизации v1.19.0 — Супер Разрешение"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %.2f ms | %s: %.2f ms | %s: %d tris culled",
         _TR("FSR", "ФСР"), perfFSRms,
         _TR("Culling", "Отсечение"), perfCullingMs,
@@ -748,7 +953,7 @@ if (ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.19.0 — Super Resolutio
     ImGui::BulletText("%s", _TR("Dynamic LOD: less particles when far/slow", "Динамический LOD: меньше частиц вдали/при лагах"));
 }
 
-if (ImGui::CollapsingHeader(_TR("Frame Generation v1.19.0 — Custom FG", "Генерация кадров v1.19.0 — Собственная ГП"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 4 && ImGui::CollapsingHeader(_TR("Frame Generation v1.19.0 — Custom FG", "Генерация кадров v1.19.0 — Собственная ГП"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %.2f ms | Motion: %.2f ms | Interp: %.2f ms | Eff FPS: %.1f",
         _TR("FG", "ГП"), perfFGms, perfMotionMs, perfInterpMs, fgEffectiveFPS);
     ImGui::Text("%s: %d real + %d gen = %d total | %s: %s",
@@ -797,10 +1002,7 @@ if (ImGui::CollapsingHeader(_TR("Frame Generation v1.19.0 — Custom FG", "Ге�
     ImGui::BulletText("%s", _TR("Like DLSS FG but custom — no tensor cores needed", "Как DLSS FG но своё — без тензорных ядер"));
 }
 
-ImGui::EndTabItem();
-}
-if (ImGui::BeginTabItem(_TR("Aero, effects, Lite", "Аэро, эффекты, Lite"))) {
-if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 — Ultra Photo Mode", "Реалистичная Аэро v1.19.0 — Ультра Фото Режим"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 — Ultra Photo Mode", "Реалистичная Аэро v1.19.0 — Ультра Фото Режим"), ImGuiTreeNodeFlags_DefaultOpen)) {
     const char* visModesEn[] = {
         "Pressure Cp (NASCAR rainbow)",
         "Velocity |U| (UAV/Cybertruck)",
@@ -1074,7 +1276,7 @@ if (ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 — Ultra Photo Mode", "
     }
 }
 
-if (ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — Schlieren, Smoke, Shocks, Vortex, Flight", "Интересное v1.19.0 — Шлирен, Дым, Скачки, Вихри, Полет"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 6 && ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — Schlieren, Smoke, Shocks, Vortex, Flight", "Интересное v1.19.0 — Шлирен, Дым, Скачки, Вихри, Полет"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s", _TR("Real wind tunnel visualizations & flight dynamics", "Реальные визуализации из трубы и динамика полета"));
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Schlieren & Shadowgraph (real wind tunnel optics)", "Шлирен и теневой (реальная оптика трубы)"));
@@ -1170,7 +1372,7 @@ if (ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — Schlieren, Smoke, Shock
     ImGui::Checkbox(_TR("Show Temperature", "Показывать температуру"), &aeroShowTemperature);
 }
 
-if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra-Lite (NEW v1.20.1)", "Lite — Слабые устройства i3-3xxx / HD 4000 / Ultra-Lite (НОВОЕ v1.20.1)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 7 && ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra-Lite (NEW v1.20.1)", "Lite — Слабые устройства i3-3xxx / HD 4000 / Ultra-Lite (НОВОЕ v1.20.1)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s", getLiteInfoString());
     ImGui::Text("%s: %s", _TR("Lite Mode", "Lite режим"), isLiteMode() ? (isUltraLiteMode() ? "ULTRA-LITE Potato" : "ON — Optimized for weak devices") : "OFF — Full version");
     ImGui::Text("%s: %d", _TR("HW Threads", "Потоков CPU"), std::thread::hardware_concurrency());
@@ -1253,10 +1455,7 @@ if (ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra
     ImGui::Text("  Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2, ~20-30 MB, 1-2 GB RAM");
 }
 
-ImGui::EndTabItem();
-}
-if (ImGui::BeginTabItem(_TR("Renderer & flow", "Рендерер и поток"))) {
-if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 8 && ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %s", _TR("Current", "Текущий"), getRendererName());
     // v1.26.0 — статус Vulkan больше не врёт. Прежняя строка обещала
     // «Yes — Vulkan 1.3» по одному факту наличия vulkan-1.dll в системе, хотя
@@ -1320,7 +1519,7 @@ if (ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "�
     ImGui::BulletText("File dialog: zenity/kdialog or console fallback");
 }
 
-if (ImGui::CollapsingHeader(_TR("Flow", "Поток"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 9 && ImGui::CollapsingHeader(_TR("Flow", "Поток"), ImGuiTreeNodeFlags_DefaultOpen)) {
     const char* unitItemsEn[] = { "m/s", "km/h", "mph", "kts", "ft/s" };
     const char* unitItemsRu[] = { "м/с", "км/ч", "миль/ч", "узлы", "фут/с" };
     int unitIdx = (int)speedUnit;
@@ -1377,7 +1576,7 @@ if (ImGui::CollapsingHeader(_TR("Flow", "Поток"), ImGuiTreeNodeFlags_Defaul
     if (autoRotate) ImGui::SliderFloat(_TR("Rotate Speed", "Скорость вращения"), &aeroAutoRotateSpeed, 1.0f, 50.0f, "%.1f deg/s");
 }
 
-if (ImGui::CollapsingHeader(_TR("Atmosphere (ISA)", "Атмосфера (ISA)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 10 && ImGui::CollapsingHeader(_TR("Atmosphere (ISA)", "Атмосфера (ISA)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Use Real Air Density", "Использовать реальную плотность"), &useRealDensity);
     ImGui::Text("%s", _TR("Altitude affects drag/lift via rho", "Высота влияет на сопротивление/подъемную силу через rho"));
     ImGui::SliderFloat(_TR("Altitude (m)", "Высота (м)"), &altitude, 0.0f, 20000.0f, "%.0f m");
@@ -1413,10 +1612,7 @@ if (ImGui::CollapsingHeader(_TR("Atmosphere (ISA)", "Атмосфера (ISA)"),
     ImGui::Text("%s q: %.1f Pa | q*RefArea: %.1f N", _TR("Dynamic Pressure", "Динамическое давление"), q, q*aeroRefArea);
 }
 
-ImGui::EndTabItem();
-}
-if (ImGui::BeginTabItem(_TR("Objects & solver", "Объекты и решатель"))) {
-if (ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Частицы v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 11 && ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Частицы v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Particles", "Показывать частицы"), &showParticles);
     ImGui::SliderInt(_TR("Count", "Количество"), &numParticles, 100, 200000);
     if (ImGui::IsItemDeactivatedAfterEdit()) initParticles();
@@ -1430,7 +1626,7 @@ if (ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Частицы v1.19.0"), 
     ImGui::SameLine(); if (ImGui::Button("50000")) { numParticles=50000; initParticles(); }
 }
 
-if (ImGui::CollapsingHeader(_TR("Streamlines v1.19.0", "Линии тока v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 12 && ImGui::CollapsingHeader(_TR("Streamlines v1.19.0", "Линии тока v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Streamlines", "Показывать линии тока"), &showStreamlines);
     ImGui::SliderInt(_TR("Count##sl", "Количество##sl"), &numStreamlines, 4, 200);
     ImGui::SliderInt(_TR("Steps", "Шагов"), &streamlineSteps, 20, 1000);
@@ -1444,7 +1640,7 @@ if (ImGui::CollapsingHeader(_TR("Streamlines v1.19.0", "Линии тока v1.1
     ImGui::SameLine(); if (ImGui::Button(_TR("High (64)", "Много (64)"))) { numStreamlines=64; computeStreamlines(); }
 }
 
-if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.19.0 Realistic+", "Давление и Силы v1.19.0 Реалистично+"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 13 && ImGui::CollapsingHeader(_TR("Pressure & Forces v1.19.0 Realistic+", "Давление и Силы v1.19.0 Реалистично+"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Pressure Colors", "Показывать давление"), &showPressure);
     ImGui::Checkbox(_TR("Show Lift/Drag Vectors", "Показывать векторы Под/Сопр"), &showLiftDrag);
     ImGui::Checkbox(_TR("Show Color Legend", "Показывать легенду"), &showColorLegend);
@@ -1538,7 +1734,7 @@ if (ImGui::CollapsingHeader(_TR("Pressure & Forces v1.19.0 Realistic+", "Дав�
     }
 }
 
-if (ImGui::CollapsingHeader(_TR("Voxel Collision v1.19.0", "Воксельная коллизия v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 14 && ImGui::CollapsingHeader(_TR("Voxel Collision v1.19.0", "Воксельная коллизия v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Enable Voxel Collision", "Включить воксельную коллизию"), &useVoxelCollision);
     ImGui::SliderInt(_TR("Voxel Resolution", "Разрешение вокселей"), &voxelResolution, 16, 128);
     if (ImGui::Button(_TR("Rebuild Voxel Grid", "Перестроить воксели"))) {
@@ -1548,7 +1744,7 @@ if (ImGui::CollapsingHeader(_TR("Voxel Collision v1.19.0", "Воксельная
     ImGui::Text("%s: %dx%dx%d = %d %s | %.1f ms", _TR("Voxel", "Воксель"), g_voxNx, g_voxNy, g_voxNz, g_voxNx*g_voxNy*g_voxNz, _TR("cells", "ячеек"), perfVoxelMs);
 }
 
-if (ImGui::CollapsingHeader(_TR("Display v1.19.0", "Отображение v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 15 && ImGui::CollapsingHeader(_TR("Display v1.19.0", "Отображение v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Show Model", "Показывать модель"), &showModel);
     ImGui::Checkbox(_TR("Show Obstacle", "Показывать препятствие"), &showObstacle);
     if (showObstacle) {
@@ -1577,7 +1773,7 @@ if (ImGui::CollapsingHeader(_TR("Display v1.19.0", "Отображение v1.19
         _TR("Controls", "Управление"));
 }
 
-if (ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.19.0 Ultra+", "LBM - Решеточный Больцман v1.19.0 Ультра+"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.19.0 Ultra+", "LBM - Решеточный Больцман v1.19.0 Ультра+"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Enable LBM (High-Accuracy Physics)", "Включить LBM (Точная физика)"), &lbmParams.enabled);
     if (lbmParams.enabled) {
         ImGui::TextColored(ImVec4(0.2f,1,0.8f,1), "%s", _TR("LBM Active — Navier-Stokes, realistic as photos", "LBM Активен — Навье-Стокс, реалистично как на фото"));
@@ -1634,7 +1830,7 @@ if (ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann v1.19.0 Ultra+", "LBM -
     ImGui::BulletText("%s", _TR("Rainbow/Viridis/Parula/CoolWarm + EN/RU", "Радуга/Viridis/Parula/CoolWarm + EN/RU"));
 }
 
-if (ImGui::CollapsingHeader(_TR("Compute & Export v1.19.0", "Вычисления и Экспорт v1.19.0"))) {
+if (uiSelectedLeaf == 17 && ImGui::CollapsingHeader(_TR("Compute & Export v1.19.0", "Вычисления и Экспорт v1.19.0"))) {
     // v1.25.0 — выбор бэкенда пишется в журнал действий, а причина недоступности
     // CUDA показывается прямо здесь: раньше пользователь просто не понимал,
     // почему переключение на CUDA ничего не меняет.
@@ -1693,10 +1889,7 @@ if (ImGui::CollapsingHeader(_TR("Compute & Export v1.19.0", "Вычислени�
         _TR("Shortcuts", "Горячие клавиши"));
 }
 
-ImGui::EndTabItem();
-}
-if (ImGui::BeginTabItem(_TR("Tests & debug", "Тесты и отладка"))) {
-if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+Realistic+New+Lang)", "Режим тестов v1.19.0 Ультра (Физика+Код+LBM+Опт+Реалистичность+Новое+Язык)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+Realistic+New+Lang)", "Режим тестов v1.19.0 Ультра (Физика+Код+LBM+Опт+Реалистичность+Новое+Язык)"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox(_TR("Enable Test Mode", "Включить тесты"), &testModeEnabled);
     ImGui::Checkbox(_TR("Continuous Validation", "Непрерывная проверка"), &testContinuous);
     int realisticPassed = 0, realisticFailed = 0;
@@ -1800,9 +1993,9 @@ if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+R
     // v1.25.0 — Отладка и журнал: всё, что нужно, чтобы прислать
     // разработчику диагностику и понять, почему не работает CUDA.
     // ============================================================
-    drawTimelapsePanel();
+    if (uiSelectedLeaf == 19) drawTimelapsePanel();
 
-    if (ImGui::CollapsingHeader(_TR("Debug & Journal v1.25.0", "Отладка и журнал v1.25.0"))) {
+    if (uiSelectedLeaf == 20 && ImGui::CollapsingHeader(_TR("Debug & Journal v1.25.0", "Отладка и журнал v1.25.0"))) {
         ImGui::Text("%s", _TR("F9 — debug mode on/off, F10 — save report",
                               "F9 — включить/выключить отладку, F10 — сохранить отчёт"));
 
@@ -1882,15 +2075,67 @@ if (ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra (Physics+Code+LBM+Opt+R
         for (int i = shown - 1; i >= 0; --i)
             ImGui::TextUnformatted(debugLogRecent(i).c_str());
     }
-    ImGui::EndTabItem();
-}
-ImGui::EndTabBar();
-}   // v1.27.0 — конец блока вкладок
+    }
     ImGui::End();
+}   // v1.28.0 — конец панели свойств
+
+// ---------- 3) КОНСОЛЬ И МОНИТОРИНГ СХОДИМОСТИ — нижний край ----------
+// В инженерных пакетах это отдельная пристыкованная полоса: слева лог решателя,
+// справа кривые сходимости, внизу строка состояния с итерацией и остатками.
+{
+    ImGui::SetNextWindowPos(ImVec2(0.0f, H - bottomH));
+    ImGui::SetNextWindowSize(ImVec2(W, bottomH));
+    if (ImGui::Begin(_TR("Console & convergence monitor", "Консоль и мониторинг сходимости"),
+                     nullptr, dockFlags | ImGuiWindowFlags_NoScrollbar)) {
+        ImGui::SetWindowFontScale(uiFontScale);
+        float inner = ImGui::GetContentRegionAvail().y - 48.0f;   // запас под строку состояния
+        if (inner < 24.0f) inner = 24.0f;
+
+        if (uiShowConsole && inner > 40.0f) {
+            float consoleW = W * 0.44f;
+            if (consoleW < 220.0f) consoleW = W - 40.0f;
+            ImGui::BeginChild("##uiConsole", ImVec2(consoleW, inner));
+            ImGui::TextDisabled("%s", _TR("Console — journal of events and actions (F9 to record)",
+                                          "Консоль — журнал событий и действий (F9 — запись)"));
+            int nRec = debugLogRecentCount();
+            int maxLines = (int)((inner - 24.0f) / 16.0f);
+            if (maxLines > nRec) maxLines = nRec;
+            if (maxLines > 80) maxLines = 80;
+            for (int k = maxLines - 1; k >= 0; --k) {
+                std::string line = debugLogRecent(k);
+                ImVec4 col = ImVec4(0.82f, 0.84f, 0.86f, 1.0f);
+                if (line.find("[ERROR]") != std::string::npos)      col = ImVec4(1.00f, 0.35f, 0.25f, 1.0f);
+                else if (line.find("[WARN ") != std::string::npos)  col = ImVec4(1.00f, 0.75f, 0.25f, 1.0f);
+                else if (line.find("[ACTION]") != std::string::npos)col = ImVec4(0.55f, 0.85f, 1.00f, 1.0f);
+                else if (line.find("[PHYS") != std::string::npos)   col = ImVec4(0.65f, 0.90f, 0.70f, 1.0f);
+                ImGui::TextColored(col, "%s", line.c_str());
+            }
+            if (nRec == 0)
+                ImGui::TextDisabled("%s", _TR("Journal is empty — press F9 to start recording",
+                                              "Журнал пуст — нажмите F9, чтобы начать запись"));
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+            ImGui::BeginChild("##uiMonitor", ImVec2(0, inner));
+            ImGui::TextDisabled("%s", _TR("Convergence monitor — recorder history (F7 record, F8 play, F11 fullscreen)",
+                                          "Мониторинг сходимости — история самописца (F7 запись, F8 просмотр, F11 на всё окно)"));
+            float ch = (inner - 40.0f) / 3.0f;
+            if (ch < 16.0f) ch = 16.0f;
+            if (ch > 64.0f) ch = 64.0f;
+            drawTLChart(_TR("residual RMS drho", "остаток RMS drho"), tlValResidual, IM_COL32(230, 170, 220, 255), ch);
+            drawTLChart(_TR("lift Y, N", "подъёмная Y, Н"), tlValLiftY, IM_COL32(255, 200, 110, 255), ch);
+            drawTLChart(_TR("LBM anomalies", "аномалии LBM"), tlValLbmAnomaly, IM_COL32(255, 160, 60, 255), ch);
+            ImGui::EndChild();
+        }
+
+        drawUiStatusBar();
+    }
+    ImGui::End();
+}
 
     // Экранный оверлей журнала (включается галочкой или F9) — виден, даже когда
     // панель свёрнута: удобно снимать видео проблемы.
-    if (debugLogOverlayEnabled()) {
+    if (debugLogOverlayEnabled() && !(uiDocked && uiShowConsole)) {
         ImGui::SetNextWindowSize(ImVec2(760, 220), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowPos(ImVec2(12, (float)(display_h > 260 ? display_h - 260 : 12)), ImGuiCond_FirstUseEver);
         if (ImGui::Begin(_TR("Journal (F9)", "Журнал (F9)"), nullptr, ImGuiWindowFlags_NoCollapse)) {

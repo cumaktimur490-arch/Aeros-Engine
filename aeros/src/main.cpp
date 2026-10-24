@@ -190,6 +190,16 @@ bool saveSettings(const std::string& path) {
     // v1.27.0 — масштаб интерфейса: удобство панелей должно сохраняться между запусками
     f << "uiScale=" << uiScale << "\n";
     f << "tlFullscreen=" << (tlFullscreen ? 1 : 0) << "\n";
+    // v1.28.0 — компоновка панелей (навигатор / свойства / консоль) запоминается:
+    // инженер подгоняет её под свой монитор один раз и больше не трогает.
+    f << "uiDocked=" << (uiDocked ? 1 : 0) << "\n";
+    f << "uiShowTree=" << (uiShowTree ? 1 : 0) << "\n";
+    f << "uiShowProps=" << (uiShowProps ? 1 : 0) << "\n";
+    f << "uiShowConsole=" << (uiShowConsole ? 1 : 0) << "\n";
+    f << "uiSelectedLeaf=" << uiSelectedLeaf << "\n";
+    f << "uiTreeW=" << uiTreeW << "\n";
+    f << "uiPropsW=" << uiPropsW << "\n";
+    f << "uiBottomH=" << uiBottomH << "\n";
     return f.good();
 }
 
@@ -235,6 +245,26 @@ bool loadSettings(const std::string& path) {
                 if (uiScale > 1.8f) uiScale = 1.8f;
             }
             else if (key == "tlFullscreen") tlFullscreen = (std::stoi(val) != 0);
+            else if (key == "uiDocked") uiDocked = (std::stoi(val) != 0);
+            else if (key == "uiShowTree") uiShowTree = (std::stoi(val) != 0);
+            else if (key == "uiShowProps") uiShowProps = (std::stoi(val) != 0);
+            else if (key == "uiShowConsole") uiShowConsole = (std::stoi(val) != 0);
+            else if (key == "uiSelectedLeaf") {
+                int v = std::stoi(val);
+                uiSelectedLeaf = (v >= 1 && v <= 20) ? v : 9;
+            }
+            else if (key == "uiTreeW") {
+                int v = std::stoi(val);
+                uiTreeW = (v >= 150 && v <= 600) ? v : 264;
+            }
+            else if (key == "uiPropsW") {
+                int v = std::stoi(val);
+                uiPropsW = (v >= 240 && v <= 1200) ? v : 470;
+            }
+            else if (key == "uiBottomH") {
+                int v = std::stoi(val);
+                uiBottomH = (v >= 90 && v <= 700) ? v : 200;
+            }
         } catch (...) { /* ignore parse errors */ }
     }
     return true;
