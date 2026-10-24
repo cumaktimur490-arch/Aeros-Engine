@@ -1,0 +1,805 @@
+# PC-релиз AeroS Engine: как в прежних PC-версиях — установщики, апдейтеры
+# и портативные zip для x64 / x86 / arm64 + SHA256SUMS.
+# x64 собирается с CUDA (fallback — CPU), x86 и arm64 — CPU-сборки.
+# Версия читается из aeros/src/version.h и сверяется с тегом vX.Y.Z.
+name: PC Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+# Два параллельных прогона одного тега удаляли и пересоздавали бы один и тот же
+# релиз одновременно (гонка при загрузке ассетов). Прогон для тега — по одному.
+concurrency:
+  group: pc-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pc-release:
+    name: Windows x64/x86/arm64 (MSVC + CUDA + Inno)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint PowerShell (все .ps1 и все inline-блоки этого воркфлоу)
+        shell: pwsh
+        run: |
+          # Ошибка разбора PowerShell ломает шаг молча и лишь в самом конце долгой сборки,
+          # а логи шагов наружу не отдаются. Поэтому синтаксис проверяем сразу: Parser
+          # возвращает ошибки с номерами строк, мы дублируем их в аннотации ::error::.
+          $bad = 0
+          $files = @(Get-ChildItem -Path installer, tools -Filter *.ps1 -File -Recurse)
+          foreach ($file in $files) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $bad++
+              foreach ($e in $errors) {
+                Write-Host "::error::$($file.Name):$($e.Extent.StartLineNumber): $($e.Message)"
+              }
+            } else {
+              Write-Host "[lint] OK $($file.Name)"
+            }
+          }
+
+          # Inline-блоки run: | из этого же файла: вырезаем по отступу, заменяем
+          # выражения GitHub (dollar + двойная фигурная скобка) на плейсхолдер CIEXPR.
+          # Иначе парсер PowerShell увидит их как имя переменной в фигурных скобках.
+          # ВАЖНО: literal-последовательность выражения GitHub нельзя писать даже в
+          # комментарии - движок Actions подставляет её при чтении файла и прогон
+          # падает ещё до создания job'ов.
+          $wf = ".github/workflows/pc-release.yml"
+          $lines = @(Get-Content $wf)
+          $i = 0
+          $blocks = 0
+          while ($i -lt $lines.Count) {
+            if ($lines[$i] -match '^\s*run:\s*\|\s*$') {
+              # bash/cmd-блоки парсером PowerShell проверять нельзя - смотрим shell: шага
+              $shell = "pwsh"
+              for ($k = $i - 1; $k -ge 0 -and $k -ge $i - 4; $k--) {
+                if ($lines[$k] -match '^\s*shell:\s*(\S+)') { $shell = $Matches[1]; break }
+              }
+              if ($shell -ne "pwsh" -and $shell -ne "powershell") { $i++; continue }
+              $from = $i + 1
+              # Снимать нужно отступ СОДЕРЖИМОГО блока, а не самой строки run: (они
+              # отличаются на два пробела). Here-string в PowerShell требует, чтобы
+              # закрывающий кавычка-собака стоял в первой колонке, - иначе парсер
+              # сообщает про лишний пробел перед завершителем строки.
+              $first = $from
+              while ($first -lt $lines.Count -and $lines[$first].Trim() -eq "") { $first++ }
+              if ($first -ge $lines.Count) { $i = $first; continue }
+              $ci = $lines[$first].Length - $lines[$first].TrimStart().Length
+              $block = @()
+              $j = $from
+              while ($j -lt $lines.Count) {
+                if ($lines[$j].Trim() -eq "") { $block += ""; $j++; continue }
+                $cur = $lines[$j].Length - $lines[$j].TrimStart().Length
+                if ($cur -lt $ci) { break }
+                $block += $lines[$j].Substring($ci)
+                $j++
+              }
+              $blocks++
+              $text = [regex]::Replace(($block -join "`n"), '\$\{\{[^}]*\}\}', 'CIEXPR')
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errors)
+              if ($errors -and $errors.Count -gt 0) {
+                $bad++
+                foreach ($e in $errors) {
+                  $ln = $from + $e.Extent.StartLineNumber
+                  Write-Host "::error::pc-release.yml:$ln : inline pwsh: $($e.Message)"
+                }
+              }
+              $i = $j
+            } else { $i++ }
+          }
+          Write-Host "[lint] inline-блоков проверено: $blocks"
+          if ($bad -gt 0) { throw "PowerShell syntax errors in $bad source(s)" }
+          Write-Host "::notice::ps-lint: синтаксис $($files.Count) скриптов и $blocks inline-блоков в порядке"
+
+      - name: Read version from aeros/src/version.h
+        id: ver
+        shell: pwsh
+        run: |
+          $h = Get-Content aeros/src/version.h -Raw
+          if ($h -notmatch '#define AEROS_VERSION_STRING "([^"]+)"') { throw "AEROS_VERSION_STRING not found in aeros/src/version.h" }
+          $v = $Matches[1]
+          Write-Host "AEROS_VERSION = $v"
+          "version=$v" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Tag must match AEROS_VERSION
+        shell: pwsh
+        run: |
+          $ref = "$env:GITHUB_REF"
+          if ($ref -like 'refs/tags/*') {
+            $tag = $ref -replace '^refs/tags/',''
+            $want = "v${{ steps.ver.outputs.version }}"
+            if ($tag -ne $want) { throw "Tag '$tag' does not match AEROS_VERSION (expected '$want')" }
+            Write-Host "Tag OK: $tag"
+          }
+
+      - name: Setup MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.2.0'
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed" }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          "ISCC=$iscc" | Out-File -Append $env:GITHUB_ENV
+          Write-Host "ISCC: $iscc"
+
+      - name: Clean stale binaries (никаких прошлых exe в bin)
+        shell: pwsh
+        run: |
+          # Если в bin останется exe прошлой/чужой сборки, упаковка может положить его в релиз.
+          Get-ChildItem aeros\bin -Filter "main*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force -Verbose
+          Get-ChildItem aeros\bin -Filter "aeros-engine*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force -Verbose
+          Get-ChildItem aeros\bin -Filter "cudart*.dll" -ErrorAction SilentlyContinue | Remove-Item -Force -Verbose
+          Get-ChildItem aeros\bin | Format-Table Name, Length
+
+      - name: GLFW for x86 (prebuilt)
+        shell: pwsh
+        run: .\tools\get-glfw-x86.ps1
+
+      - name: GLFW for arm64 (from source)
+        shell: pwsh
+        run: .\tools\build-glfw-arm64.ps1 -Arch arm64
+
+      - name: Build x64 (CUDA, fallback CPU)
+        shell: pwsh
+        run: |
+          $out = cmd /c "cd aeros && call build.bat x64" 2>&1 | Out-String
+          Write-Host $out
+          $cudaOut = $out
+
+          # Причина сбоя - всегда одной строкой. Многострочные аннотации GitHub
+          # отбрасывает (прежняя версия склеивала 30 строк через %0A, и в итоге
+          # при уходе сборки в CPU-fallback не было видно ни одной ошибки nvcc).
+          function Build-Reason([string]$text) {
+            $lines = @(($text -split "`r?`n") | Where-Object { $_.Trim() })
+            $errs = @($lines | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|nvcc|failed|cannot|не удалось" } | Select-Object -Last 10)
+            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 8) }
+            $m = ($errs -join " // ") -replace "\s+", " "
+            if ($m.Length -gt 700) { $m = $m.Substring($m.Length - 700) }
+            return $m
+          }
+
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path aeros\bin\main-x64.exe)) {
+            Write-Host "[ci] CUDA build failed or no exe - CPU fallback"
+            $out2 = cmd /c "cd aeros && call build-cpu.bat x64" 2>&1 | Out-String
+            Write-Host $out2
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path aeros\bin\main-x64.exe)) {
+              Write-Host ("::error::x64-build: " + (Build-Reason ($cudaOut + $out2)))
+              throw "x64 build failed"
+            }
+          }
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $cudart = Get-ChildItem "$env:CUDA_PATH\bin\cudart64*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($cudart) { Copy-Item $cudart.FullName aeros\bin\ -Force; Write-Host "[ci] bundled $($cudart.Name)" }
+          Get-ChildItem aeros\bin\main*.exe | Format-Table Name, Length
+          $mach = PE-Machine "aeros\bin\main-x64.exe"
+          Write-Host "[ci] PE machine main-x64.exe = $mach (8664 = x64)"
+          if ($mach -ne "8664") { throw "main-x64.exe has wrong PE machine $mach (expected 8664)" }
+
+          # v1.25.0 - x64 обязан быть собран через nvcc. Маркер пишет сам build.bat:
+          # при отсутствии или сбое nvcc он уходил в CPU-only fallback, и в релизе
+          # CUDA молча не работала. Дополнительно смотрим секцию nv_fatbin в exe.
+          $marker = "aeros\bin\BUILD-BACKEND-x64.txt"
+          $backend = if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { "НЕТ-МАРКЕРА" }
+          $raw = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes("aeros\bin\main-x64.exe"))
+          $fatbin = $raw.Contains("nv_fatbin")
+          Write-Host "[ci] backend marker=$backend nv_fatbin=$fatbin"
+          if ($backend -ne "CUDA") {
+            # build.bat при сбое nvcc сам уходит в CPU-only и возвращает код 0,
+            # поэтому сюда попадаем с успешным, но "не тем" бинарем. Причина
+            # (текст ошибки nvcc) обязана попасть в аннотацию одной строкой.
+            Write-Host ("::error::x64 собран БЕЗ CUDA (маркер: $backend), публикация остановлена. Причина: " + (Build-Reason $cudaOut))
+            throw "x64 build is CPU_ONLY (marker=$backend); CUDA release requires a successful nvcc build"
+          }
+          # cuobjdump - единственный достоверный способ узнать, какой GPU-код реально
+          # лежит в exe. Без PTX видеокарты новее Turing получили бы ошибку 209.
+          # cuobjdump печатает список вида "PTX file  1: xxx.compute_75.ptx" и
+          # "ELF file  1: xxx.sm_75.cubin", поэтому считаем именно такие записи.
+          # Проверка информационная: жёсткий запрет публикации — маркер CUDA и
+          # секция nv_fatbin выше. Сюда же выводим начало вывода cuobjdump, чтобы
+          # при изменении формата это было видно без скачивания логов.
+          $cuobj = Join-Path $env:CUDA_PATH "bin\cuobjdump.exe"
+          $nPtx = -1; $nElf = -1; $archPtx = "?"; $archElf = "?"; $cuHead = "cuobjdump не найден"
+          if (Test-Path $cuobj) {
+            $ptxList = (& $cuobj --list-ptx "aeros\bin\main-x64.exe" *>&1 | Out-String)
+            $elfList = (& $cuobj --list-elf "aeros\bin\main-x64.exe" *>&1 | Out-String)
+            $nPtx = ([regex]::Matches($ptxList, "\.ptx")).Count
+            $nElf = ([regex]::Matches($elfList, "\.cubin")).Count
+            $archPtx = (@([regex]::Matches($ptxList, "(sm|compute)_\d+") | ForEach-Object { $_.Value } | Select-Object -Unique) -join "+")
+            $archElf = (@([regex]::Matches($elfList, "(sm|compute)_\d+") | ForEach-Object { $_.Value } | Select-Object -Unique) -join "+")
+            $cuHead = ((($ptxList + " | " + $elfList) -split "`r?`n" | Where-Object { $_.Trim() }) -join " / ") -replace "\s+", " "
+            if ($cuHead.Length -gt 300) { $cuHead = $cuHead.Substring(0, 300) }
+          }
+          Write-Host "[ci] gpu-code: ptx=$nPtx($archPtx) elf=$nElf($archElf)"
+          Write-Host "[ci] cuobjdump: $cuHead"
+          Write-Host "::notice::cuda-x64: marker=$backend fatbin=$fatbin ptx=$nPtx($archPtx) elf=$nElf($archElf)"
+          Write-Host "::notice::cuobjdump-x64: $cuHead"
+          if ($nPtx -eq 0 -and $nElf -eq 0) {
+            Write-Host "::error::cuobjdump не нашёл в main-x64.exe ни PTX, ни SASS: $cuHead"
+            throw "no GPU code found in main-x64.exe by cuobjdump"
+          }
+
+      - name: Setup MSVC x86
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Build x86 (CPU)
+        shell: pwsh
+        run: |
+          cl 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "CLBANNER: $_" }
+          function PE-Machine($path) {
+            if (-not (Test-Path $path)) { return "НЕТ-ФАЙЛА" }
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "НЕ-PE" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $out = cmd /c "cd aeros && call build-cpu.bat x86" 2>&1 | Out-String
+          Write-Host $out
+          $code = $LASTEXITCODE
+          $mach = PE-Machine "aeros\bin\main-x86.exe"
+          $marker = if (Test-Path "aeros\bin\BUILD-BACKEND-x86.txt") { (Get-Content "aeros\bin\BUILD-BACKEND-x86.txt" -Raw).Trim() } else { "НЕТ" }
+          Write-Host "[ci] x86: exit=$code PE=$mach marker=$marker"
+          Write-Host "::notice::build-x86: exit=$code PE=$mach marker=$marker"
+          if ($code -ne 0 -or $mach -ne "014C") {
+            $tail = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            $errs = @($tail | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|not found|не найден" } | Select-Object -Last 12)
+            if ($errs.Count -eq 0) { $errs = @($tail | Select-Object -Last 10) }
+            $m = ($errs -join " // ") -replace "\s+", " "
+            if ($m.Length -gt 900) { $m = $m.Substring($m.Length - 900) }
+            Write-Host "::error::x86: exit=$code PE=$mach :: $m"
+            throw "build-cpu.bat x86 failed (exit=$code, PE=$mach)"
+          }
+
+      - name: Setup MSVC arm64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Build arm64 (CPU)
+        shell: pwsh
+        run: |
+          cl 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "CLBANNER: $_" }
+          $out = cmd /c "cd aeros && call build-cpu.bat arm64" 2>&1 | Out-String
+          Write-Host $out
+          function PE-Machine($path) {
+            if (-not (Test-Path $path)) { return "НЕТ-ФАЙЛА" }
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "НЕ-PE" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $code = $LASTEXITCODE
+          $mach = PE-Machine "aeros\bin\main-arm64.exe"
+          $marker = if (Test-Path "aeros\bin\BUILD-BACKEND-arm64.txt") { (Get-Content "aeros\bin\BUILD-BACKEND-arm64.txt" -Raw).Trim() } else { "НЕТ" }
+          $glfwLib = Test-Path "libs\glfw\lib-vc2022-arm64\glfw3.lib"
+          Write-Host "[ci] arm64: exit=$code PE=$mach marker=$marker glfw3.lib(arm64)=$glfwLib"
+          Write-Host "::notice::build-arm64: exit=$code PE=$mach marker=$marker glfwlib=$glfwLib"
+          if ($code -ne 0 -or $mach -ne "AA64") {
+            $tail = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            $errs = @($tail | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|not found|не найден" } | Select-Object -Last 12)
+            if ($errs.Count -eq 0) { $errs = @($tail | Select-Object -Last 10) }
+            $m = ($errs -join " // ") -replace "\s+", " "
+            if ($m.Length -gt 900) { $m = $m.Substring($m.Length - 900) }
+            Write-Host "::error::arm64: exit=$code PE=$mach glfwlib=$glfwLib :: $m"
+            throw "build-cpu.bat arm64 failed (exit=$code, PE=$mach)"
+          }
+
+      - name: Build portable zips
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          # Логи шагов наружу не отдаются, поэтому всё важное дублируем в аннотации.
+          # Сначала — снимок aeros\bin: какие бинари/DLL реально лежат на диске
+          # и какой у них PE machine. Это единственный способ понять, чем именно
+          # недоволен упаковщик, без скачивания логов.
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "????" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $pre = @()
+          foreach ($n in @("main.exe","main-x64.exe","main-x86.exe","main-arm64.exe","glfw3.dll","glfw3-x86.dll","glfw3-arm64.dll")) {
+            $p = "aeros\bin\$n"
+            if (Test-Path $p) { $pre += "$n=$(PE-Machine $p)/$((Get-Item $p).Length)" } else { $pre += "$n=ABSENT" }
+          }
+          $pre += "stl=$(@(Get-ChildItem aeros\bin -Filter *.stl -File).Count)"
+          Write-Host "::notice::preflight-bin: $($pre -join ' ')"
+          $out = ""
+          $failed = $false
+          try {
+            $out = & .\installer\build-portable.ps1 -Version $v -Arch all -OutputDir release *>&1 | Out-String
+          } catch {
+            $failed = $true
+            $out += "`nEXCEPTION: " + $_.Exception.Message + "`n" + $_.ScriptStackTrace
+          }
+          Write-Host $out
+          Get-ChildItem release -ErrorAction SilentlyContinue | Format-Table Name, Length
+          $missing = @(@("x64","x86","arm64") | Where-Object { -not (Test-Path "release\Aeros-Engine-Portable-$_-v$v.zip") })
+          if ($failed -or $missing.Count -gt 0) {
+            # Полный текст - в сводку шага (её видно в UI), а наружу - максимум
+            # две короткие аннотации: пачку из 25 GitHub отбрасывает целиком.
+            if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## portable - вывод сборки`n$out" -Encoding utf8
+            }
+            $all = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            # Хвост вывода важнее всего: iscc и скрипты обрывают работу на первой
+            # ошибке, поэтому её текст всегда в последних строках.
+            $tail = @($all | Select-Object -Last 8)
+            $errs = @($all | Where-Object { $_ -match 'error|exception|failed|aborted|does not exist|not found|cannot|undefined|unexpected|missing|Column|::' } | Select-Object -Last 6)
+            if ($errs.Count -eq 0) { $errs = $tail }
+            $m1 = ($errs -join " // ") -replace '\s+', ' '
+            if ($m1.Length -gt 800) { $m1 = $m1.Substring($m1.Length - 800) }
+            $m2 = ($tail -join " // ") -replace '\s+', ' '
+            if ($m2.Length -gt 800) { $m2 = $m2.Substring($m2.Length - 800) }
+            Write-Host "::error::portable-reason: $m1"
+            Write-Host "::error::portable-tail: $m2"
+            throw "build-portable.ps1 failed (missing: $($missing -join ', '))"
+          }
+          Write-Host "::notice::portable: все 3 zip созданы (x64/x86/arm64), PE-контроль бинарей пройден"
+          Write-Host "[ci] all 3 portable zips present"
+
+      - name: Verify portable zips (PE machine внутри архива)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "????" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $expect = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }
+          $facts = @()
+          try {
+            foreach ($a in @("x64","x86","arm64")) {
+              $zip = "release\Aeros-Engine-Portable-$a-v$v.zip"
+              if (-not (Test-Path $zip)) { throw "нет $zip" }
+              $tmp = Join-Path $env:RUNNER_TEMP "zipcheck-$a"
+              if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+              Expand-Archive -Path $zip -DestinationPath $tmp -Force
+              $one = "$a"
+              foreach ($n in @("AerosEngine.exe","main.exe")) {
+                $exe = Join-Path $tmp $n
+                if (-not (Test-Path $exe)) { throw "$zip : внутри нет $n" }
+                $m = PE-Machine $exe
+                $one += " $n=$m"
+                Write-Host "[ci] $zip / $n = $m (ожидалось $($expect[$a]))"
+                if ($m -ne $expect[$a]) { throw "$zip : $n имеет PE machine $m вместо $($expect[$a])" }
+              }
+              $dlls = @(Get-ChildItem $tmp -Filter *.dll -File)
+              foreach ($d in $dlls) {
+                $m = PE-Machine $d.FullName
+                $one += " $($d.Name)=$m"
+                Write-Host "[ci] $zip / $($d.Name) = $m"
+                if ($m -ne $expect[$a]) { throw "$zip : $($d.Name) чужой архитектуры ($m вместо $($expect[$a]))" }
+              }
+              if ($dlls.Count -eq 0) { $one += " dll=none" }
+              $facts += $one
+              Remove-Item -Recurse -Force $tmp
+            }
+          } catch {
+            Write-Host "::error::zip-verify: $($_.Exception.Message)"
+            Write-Host "::error::zip-verify: проверено до сбоя: $($facts -join ' | ')"
+            throw "portable zip verification failed"
+          }
+          Write-Host "::notice::zip-verify: $($facts -join ' | ')"
+          Write-Host "[ci] портативные zip: архитектуры совпали"
+
+      - name: Build installers and updaters (iscc)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $out = ""
+          $failed = $false
+          try {
+            $out = & .\installer\build-installers.ps1 -Version $v -Arch all -Type all -ISCCPath "$env:ISCC" *>&1 | Out-String
+          } catch {
+            $failed = $true
+            $out += "`nEXCEPTION: " + $_.Exception.Message + "`n" + $_.ScriptStackTrace
+          }
+          Write-Host $out
+          # Успех = все 6 установщиков на месте
+          $missing = @()
+          foreach ($a in @("x64","x86","arm64")) {
+            foreach ($t in @("Setup","Update")) {
+              $f = "release\Aeros-Engine-$t-$a-v$v.exe"
+              if (-not (Test-Path $f)) { $missing += $f }
+            }
+          }
+          if ($failed -or $missing.Count -gt 0) {
+            # Полный текст - в сводку шага (её видно в UI), а наружу - максимум
+            # две короткие аннотации: пачку из 25 GitHub отбрасывает целиком.
+            if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## iscc - вывод сборки`n$out" -Encoding utf8
+            }
+            $all = @(($out -split "`r?`n") | Where-Object { $_.Trim() })
+            # Хвост вывода важнее всего: iscc и скрипты обрывают работу на первой
+            # ошибке, поэтому её текст всегда в последних строках.
+            $tail = @($all | Select-Object -Last 8)
+            $errs = @($all | Where-Object { $_ -match 'error|exception|failed|aborted|does not exist|not found|cannot|undefined|unexpected|missing|Column|::' } | Select-Object -Last 6)
+            if ($errs.Count -eq 0) { $errs = $tail }
+            $m1 = ($errs -join " // ") -replace '\s+', ' '
+            if ($m1.Length -gt 800) { $m1 = $m1.Substring($m1.Length - 800) }
+            $m2 = ($tail -join " // ") -replace '\s+', ' '
+            if ($m2.Length -gt 800) { $m2 = $m2.Substring($m2.Length - 800) }
+            Write-Host "::error::iscc-reason: $m1"
+            Write-Host "::error::iscc-tail: $m2"
+            throw "build-installers.ps1 failed (exit=$LASTEXITCODE, missing: $($missing -join ', '))"
+          }
+          Write-Host "::notice::iscc: все 6 установщиков собраны, PE-контроль бинарей пройден"
+          Write-Host "[ci] all 6 installers present"
+          Get-ChildItem release | Format-Table Name, Length
+
+      - name: Verify installers (тихая установка и PE-контроль установленного exe)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          function PE-Machine($path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            if ($b.Length -lt 64 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return "????" }
+            $pe = [BitConverter]::ToInt32($b, 60)
+            return [BitConverter]::ToUInt16($b, $pe + 4).ToString('X4')
+          }
+          $expect = @{ "x64" = "8664"; "x86" = "014C"; "arm64" = "AA64" }
+          $facts = @()
+          try {
+            # 1. Каждый установщик реально ставим и смотрим, ЧТО легло на диск.
+            #    Именно отсутствие такой проверки пропустило баг с Check: FileExists(...)
+            #    в [Files] — тогда на диск ложился arm64 exe и пользователь получал код 216.
+            foreach ($a in @("x64","x86","arm64")) {
+              $setupFile = "release\Aeros-Engine-Setup-$a-v$v.exe"
+              if (-not (Test-Path $setupFile)) { throw "нет $setupFile" }
+              $setup = (Resolve-Path $setupFile).Path
+              $dir = Join-Path $env:RUNNER_TEMP "install-test-$a"
+              if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+              New-Item -ItemType Directory -Path $dir | Out-Null
+              Write-Host "[ci] тихая установка: $setup -> $dir"
+              $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR=`"$dir`"" -Wait -PassThru
+              Write-Host "[ci] exit code = $($p.ExitCode)"
+              if ($p.ExitCode -ne 0) { throw "Setup-$a : установка завершилась с кодом $($p.ExitCode)" }
+
+              $exe = Join-Path $dir "main.exe"
+              if (-not (Test-Path $exe)) { throw "Setup-$a : после установки нет main.exe в $dir" }
+              $m = PE-Machine $exe
+              $one = "$a installed=$m"
+              Write-Host "[ci] установленный main.exe ($a): PE machine = $m (ожидалось $($expect[$a]))"
+              if ($m -ne $expect[$a]) {
+                throw "Setup-$a : установил main.exe с PE machine $m вместо $($expect[$a]) - пользователь получил бы CreateProcess код 216"
+              }
+              $dlls = @(Get-ChildItem $dir -Filter *.dll -File)
+              foreach ($d in $dlls) {
+                $dm = PE-Machine $d.FullName
+                $one += " $($d.Name)=$dm"
+                Write-Host "[ci] установленный $($d.Name): PE machine = $dm"
+                if ($dm -ne $expect[$a]) { throw "Setup-$a : $($d.Name) чужой архитектуры ($dm вместо $($expect[$a]))" }
+              }
+              if ($dlls.Count -eq 0) { $one += " dll=none" }
+              if (Test-Path (Join-Path $dir "ARCH-MISMATCH.txt")) {
+                throw "Setup-$a : собственный контроль установщика сообщил о несовпадении архитектуры"
+              }
+              $one += " mismatch=0"
+
+              $unins = Join-Path $dir "unins000.exe"
+              if (Test-Path $unins) {
+                $u = Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
+                $one += " uninstall=$($u.ExitCode)"
+                Write-Host "[ci] деинсталляция exit = $($u.ExitCode)"
+              }
+              Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+              $facts += $one
+            }
+
+            # 2. Апдейтер обязан обновить НАЙДЕННУЮ папку установки, а не папку по умолчанию
+            $dir = Join-Path $env:RUNNER_TEMP "update-test"
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+            $setup = (Resolve-Path "release\Aeros-Engine-Setup-x64-v$v.exe").Path
+            $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR=`"$dir`"" -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Setup-x64 (подготовка теста апдейтера) завершился с кодом $($p.ExitCode)" }
+            $upd = (Resolve-Path "release\Aeros-Engine-Update-x64-v$v.exe").Path
+            $q = Start-Process -FilePath $upd -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-" -Wait -PassThru
+            Write-Host "[ci] Update-x64 exit = $($q.ExitCode)"
+            if ($q.ExitCode -ne 0) { throw "Update-x64 завершился с кодом $($q.ExitCode)" }
+            if (-not (Test-Path (Join-Path $dir "update-info.txt"))) {
+              throw "Update-x64 не обновил найденную папку $dir - апдейтер ушёл в другую директорию"
+            }
+            $m = PE-Machine (Join-Path $dir "main.exe")
+            Write-Host "[ci] main.exe после апдейта: PE machine = $m"
+            if ($m -ne "8664") { throw "Update-x64 положил main.exe с PE machine $m вместо 8664" }
+            $defaultDir = Join-Path $env:LOCALAPPDATA "Programs\Aeros Engine"
+            if (Test-Path $defaultDir) { throw "Update-x64 создал копию в папке по умолчанию: $defaultDir" }
+            $facts += "update-x64 in-place=$m default-dir=none"
+            $unins = Join-Path $dir "unins000.exe"
+            if (Test-Path $unins) {
+              Start-Process -FilePath $unins -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru | Out-Null
+            }
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          } catch {
+            Write-Host "::error::install-verify: $($_.Exception.Message)"
+            Write-Host "::error::install-verify: проверено до сбоя: $($facts -join ' | ')"
+            throw "installer verification failed"
+          }
+          Write-Host "::notice::install-verify: $($facts -join ' | ')"
+          Write-Host "[ci] установщики кладут на диск exe своей архитектуры"
+
+      - name: Checksums and release README
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          Push-Location release
+          if (Test-Path SHA256SUMS.txt) { Remove-Item SHA256SUMS.txt -Force }
+          Get-ChildItem -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)" | Out-File -Append SHA256SUMS.txt -Encoding ascii
+          }
+          @"
+          AeroS Engine v$v — PC-релиз (Windows)
+
+          Установщики (рекомендуется):
+            Aeros-Engine-Setup-x64-v$v.exe    — 64-bit Windows 10/11 (Intel/AMD)
+            Aeros-Engine-Setup-x86-v$v.exe    — 32-bit Windows 10/11
+            Aeros-Engine-Setup-arm64-v$v.exe  — ARM64 Windows 10/11 (Snapdragon и т.п.)
+
+          Обновления (если программа уже установлена):
+            Aeros-Engine-Update-<arch>-v$v.exe — обновляет файлы в папке установки.
+
+          Портативные версии (без установки):
+            Aeros-Engine-Portable-<arch>-v$v.zip — распакуйте и запустите AerosEngine.exe / run.bat.
+
+          Запуск: после старта в диалоге выберите STL-модель (примеры — в папке models).
+          Управление: WASD — камера, Space/Shift — вверх/вниз, Ctrl — ускорение,
+          средняя кнопка мыши — вращение, колесо — зум, Esc — выход.
+
+          Если не запускается. Сообщения «Это приложение не удалось запустить на вашем ПК»
+          и «CreateProcess сбой; код 216» означают, что файл не подходит к архитектуре
+          вашей Windows. Проверьте: Параметры → Система → О программе → «Тип системы».
+          64-бит на Intel/AMD — Setup-x64; 32-бит — Setup-x86; ARM — Setup-arm64.
+          Установщик сам сверяет архитектуру установленного файла и при несовпадении
+          показывает понятное сообщение и создаёт ARCH-MISMATCH.txt в папке установки.
+
+          CUDA-ускорение работает на NVIDIA GPU (Turing и новее); без NVIDIA GPU,
+          при старом драйвере или на GPU старше Turing автоматически включается
+          CPU-бэкенд — причина всегда видна в панели «Отладка и журнал».
+
+          Интерфейс (v1.28.0) — как в инженерных CFD/САПР-пакетах, панели по краям экрана:
+            слева  — «Навигатор расчёта»: дерево из 20 узлов со строкой поиска;
+            справа — «Свойства» выбранного узла (все прежние настройки сохранены);
+            внизу  — «Консоль и мониторинг сходимости»: журнал событий, кривые
+                     сходимости и строка состояния (итерация, остаток, Cp, силы, Re, память);
+            в центре — свободный 3D-вид, его ничего не перекрывает.
+          F12 — скрыть/показать все панели (чистый вид для скриншотов и видео).
+          Ширина панелей, высота нижней полосы, видимость панелей и масштаб интерфейса
+          0.8x..1.8x настраиваются и сохраняются в aeros_settings.ini.
+          Самописец физики разворачивается на всё окно клавишей F11: 11 графиков истории
+          и тепловые срезы поля давления растягиваются по доступной площади, показания
+          кадра выводятся таблицей.
+
+          Режим вычислений — таймлапс физики (v1.26.0):
+            F7  — запись истории расчёта (кадры, силы, времена подсистем, NaN/Inf,
+                  сходимость LBM + снимки поля давления каждый 30-й кадр);
+            F8  — просмотр записи: графики и тепловые срезы поля, скорость 0.1x..32x.
+            История выгружается в logs\timelapse-<дата>.csv и входит в отладочный отчёт.
+            Ключи: --timelapse, --no-timelapse, --timelapse-capacity N,
+            --timelapse-field N, --timelapse-speed X.
+
+          Карта давления (v1.26.0): трилинейная интерполяция вместо «ближайшей ячейки»,
+          диапазон раскраски по фактическим данным (Cp = 0 всегда в центре шкалы),
+          все четыре цветовые схемы работают, CPU и CUDA красят одинаково, в панели
+          рисуется настоящая цветовая шкала с отметкой нуля.
+
+          Рендерер: программа всегда работает на OpenGL 3.3. Vulkan в этой версии не
+          реализован (интерфейс есть, отрисовка нет) — запрос --vulkan или
+          renderer=vulkan приводит к OpenGL и пишется в журнал.
+
+          Режим отладки (v1.25.0):
+            F9  — включить/выключить журнал событий, действий и физики;
+            F10 — сохранить отладочный отчёт Aeros-Debug-Report-<дата>.txt
+                  в папке программы (если она только для чтения — в
+                  %LOCALAPPDATA%\AerosEngine). Пришлите этот файл разработчику.
+            Журналы: logs\aeros-debug.log и logs\physics.csv в папке программы.
+            Если программа не запускается вовсе, выполните в папке программы:
+                  main.exe --save-report
+            — отчёт будет создан без запуска окна.
+
+          Контрольные суммы — в SHA256SUMS.txt.
+          "@ | Set-Content README.md -Encoding utf8
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          @"
+          # AeroS Engine v$v — PC-релиз (Windows x64 / x86 / arm64)
+
+          Движок визуализации обтекания 3D-моделей (C++17 / OpenGL 3.3 / CUDA / Dear ImGui).
+
+          ## 📦 Скачать
+          **Установщики (рекомендуется):**
+          - ``Aeros-Engine-Setup-x64-v$v.exe`` — 64-bit Windows 10/11 (Intel/AMD)
+          - ``Aeros-Engine-Setup-x86-v$v.exe`` — 32-bit Windows 10/11
+          - ``Aeros-Engine-Setup-arm64-v$v.exe`` — ARM64 Windows 10/11 (Snapdragon, Surface Pro X)
+
+          **Портативные версии (без установки):**
+          - ``Aeros-Engine-Portable-x64-v$v.zip`` / ``-x86`` / ``-arm64``
+
+          **Обновления (для уже установленной программы):**
+          - ``Aeros-Engine-Update-x64-v$v.exe`` / ``-x86`` / ``-arm64`` — обновляют файлы в папке установки.
+
+          ``SHA256SUMS.txt`` — контрольные суммы всех артефактов.
+
+          ## Установка и запуск
+          1. Скачайте установщик под вашу архитектуру (x64 — для большинства ПК) и запустите.
+          2. После установки — ярлыки в меню «Пуск» и на рабочем столе (опционально).
+          3. При старте выберите STL-модель; примеры — в папке ``models``.
+
+          Управление: WASD — полёт камеры, Space/Shift — вверх/вниз, Ctrl — ускорение, средняя кнопка мыши — вращение, колесо — зум, Esc — выход.
+
+          ## Что нового в v$v
+          - **Интерфейс переделан под инженерные CFD/САПР-пакеты: панели закреплены по краям экрана.** Слева — «Навигатор расчёта» (дерево из 7 групп и 20 узлов со строкой поиска по-русски и по-английски), справа — «Свойства» выбранного узла, внизу — «Консоль и мониторинг сходимости» (журнал с цветовой разметкой, три кривые сходимости самописца и строка состояния: итерация LBM, остаток RMS dρ, бэкенд CPU/CUDA, FPS, сетка, ρ, vmax, диапазон Cp, подъёмная сила, сопротивление, Re, TKE, память), в центре — свободный 3D-вид, который больше ничем не перекрыт. Все 20 прежних разделов сохранены дословно: ни одна настройка не потерялась и не изменила поведение, каждая просто открывается из своего узла дерева (вкладки v1.27.0 убраны). **F12** скрывает и показывает все панели — для скриншотов и записи видео. Компоновка настраивается и запоминается в ``aeros_settings.ini``: ширина навигатора, ширина свойств, высота нижней полосы, видимость каждой панели, выбранный узел и масштаб интерфейса 0.8x…1.8x. Панели больше нельзя утащить на середину вида, а на узком экране они автоматически сжимаются так, чтобы занимать не более 85% ширины. Быстрая строка кнопок сохранена: Модель (F1), Давление (F2), Линии (F3), Частицы (F4), Скриншот (F5), CSV (F6), Самописец (F7), Просмотр (F8), На всё окно (F11), Панели (F12), Журнал (F9), Отчёт (F10).
+          - **Самописец физики — на всё окно (F11).** В оконном режиме он встаёт в свободный центр между панелями, а не поверх них; на весь экран таймлапс разворачивается так: 11 графиков истории (FPS, время кадра и LBM, подъёмная, сопротивление, TKE, остаток сходимости, vmax, частицы, NaN/Inf, аномалии решателя) и три тепловых среза поля давления растягиваются по доступной площади, ползунок по кадрам — на всю ширину, показания кадра — таблицей 6×2 вместо сплошного текста.
+          - **Модель турбулентности Смагоринского заработала.** В формулу ``ν_t = (Cs·Δ)²·|S|`` подставлялся размер ячейки в метрах, тогда как ``|S|`` считается в решёточных единицах: из-за смешения единиц ν_t была на 2–4 порядка меньше, вклад в ``τ_eff`` составлял ~1e-5, и срывные режимы считались без подсеточной диссипации. Теперь Δ = 1, как в канонической записи.
+          - **TKE переведена в физические единицы.** Считалось ``Cs²·dx²·S²`` (метры × решёточные единицы, результат зажимался сверху единицей), поэтому режим визуализации «Turbulent KE» и значение ``lbmTKE`` в панели, CSV и отчёте были произвольными числами. Теперь ``k = (Cs·Δ·|S|)²`` в решёточных единицах с переводом в м²/с² квадратом масштаба скорости V∞/U0.
+          - **Убраны ограничения, ломавшие законы сохранения.** Обнуление отрицательных ``feq`` (при применяемом ограничении |u| ≤ 0.3 равновесная функция неотрицательна аналитически — худший случай даёт 0.37·w·ρ > 0, то есть ветвь срабатывала только на испорченных данных и нарушала равенство Σfeq = ρ), обнуление отрицательных ``f`` после столкновения (терялась масса ячейки) и подмена популяций при ``f < −0.2`` / ``f > 1.0`` (пороги задевали рабочие значения; расширены до заведомо нефизических −1…10). Вместо тихих подмен теперь считаются ``lbmNegativePops`` и ``lbmBadPops``: они видны в панели LBM, в самописце (график и колонки CSV) и в сводке отчёта, а ненулевые значения подсвечиваются.
+          - **Число Рейнольдса** считается с вязкостью по Сазерленду, как в остальном коде: прежняя зашитая 1.81e-5 Па·с давала Re, который не совпадал с тем, по которому считались коэффициенты трения (особенно на высоте, где температура и плотность другие).
+          - **Режим вычислений: таймлапс физики (F7 / F8).** Пишется кольцевая история расчёта — 39 величин на кадр (время, dt, FPS, бэкенд, частицы, линии тока, шаг LBM, rho, vmax, TKE, Reynolds, векторы подъёмной силы / сопротивления / момента, центр давления, времена шести подсистем, счётчик NaN/Inf, остаток сходимости LBM, диапазон Cp) — и снимки поля давления ``24^3`` каждый 30-й кадр (работают и без LBM). Отдельное окно показывает 10 графиков истории с курсором и три тепловых среза поля; скорость просмотра 0.1x…32x, где 1x — реальное время записи. Экспорт в ``logs/timelapse-<дата>.csv``, сводка — в отладочном отчёте F10. Фоновая история включена по умолчанию, поэтому к моменту сбоя запись уже есть. Ключи: ``--timelapse``, ``--no-timelapse``, ``--timelapse-capacity N``, ``--timelapse-field N``, ``--timelapse-speed X``.
+          - **Карта давления исправлена.** Давление берётся трилинейной интерполяцией, а не ближайшей ячейкой (карта была ступенчатой); диапазон раскраски считается по фактическим данным с отсечением выбросов и симметрией относительно нуля — раньше было зашито окно ``[-3, +1]``, в котором Cp = 0 попадал на 75% шкалы и рисовался оранжевым, а всё сжатие сливалось в красный. Схема расходящаяся: ноль — нейтральный серый, разрежение — синий, сжатие — жёлто-красный. Все четыре схемы теперь работают (прежде «Plasma» для давления игнорировалась). CPU и CUDA красят одинаково: диапазон и схема передаются в ``FlowParams`` и используются в ядре GPU. Вместо текстовой легенды, которая обещала «0 = жёлтый», рисуется настоящая шкала с отметкой нуля; диапазон можно задать вручную.
+          - **CUDA стала быстрее и честнее.** Постоянные буферы устройства вместо ``cudaMalloc``/``cudaFree`` на каждом кадре и одна синхронизация вместо двух; поле SDF проверяется на соответствие текущей сетке (иначе ядро читало память за пределами буфера) и освобождается при завершении; ошибки ``cudaMalloc``/``cudaMemcpy`` в ``setVoxelData`` больше не игнорируются. Проба бэкенда проверяет версию драйвера до запуска тестового ядра и сообщает «нужна ветка 580 и новее» вместо кода 35/36; добавлены подсказки для ``cudaErrorIllegalAddress``, ``LaunchTimeout``, ``LaunchOutOfResources``, ``Assert``, ``InvalidDevicePointer``.
+          - **Исправлены индексы ячеек в физике** (20+ мест): ``(int)`` вместо ``floor`` приводил к тому, что точка вне расчётной области читала ячейку у противоположного края — ложные столкновения частиц, неверное давление на границах, экстраполяция в трилинейной выборке дыма. Затронуты частицы, воксельная сетка и SDF, дым, все скалярные аксессоры LBM и device-функция ``sampleSDF`` в CUDA.
+          - **Силы больше не зависят от OpenMP.** Расчёт вклада треугольника был продублирован в ветках с OpenMP и без него, и ветки разошлись: без OpenMP не применялась поправка Кармана-Тсина на сжимаемость. Теперь тело одно. Векторы ``dragVector``/``liftVector`` пересчитываются после базового, индуктивного и волнового сопротивления и после экранного эффекта — раньше стрелки в 3D показывали меньшую силу, чем числа в панели и в CSV.
+          - **Сходимость LBM считается по существу** (RMS изменения плотности и изменение максимальной скорости за кадр), а не только по разнице средней кинетической энергии; мин/макс давления кэшируются за шаг решателя вместо двух полных проходов по всей сетке каждый кадр.
+          - **Частицы не «залипают» с NaN.** RK4 проверял на конечность только ``pos.x``, а путь Эйлера не проверял ничего: NaN в ``y``/``z`` или в скорости оставался в буфере вершин навсегда. Проверка NaN/Inf в журнале шла с шагом 97 и пропускала до 96/97 неконечных значений — теперь массивы до 300 тысяч элементов проверяются целиком.
+          - **Vulkan больше не ломает запуск.** Рендерер Vulkan в этой версии — заглушка, возвращавшая «успех» и ничего не рисовавшая, а ``isVulkanAvailable()`` отвечала «да» по факту наличия ``vulkan-1.dll`` (он есть почти на любом ПК). Окно создавалось без контекста OpenGL, пользователь получал чёрный экран, а выбор ``renderer=vulkan`` сохранялся в ``aeros_settings.ini`` и ломал каждый следующий запуск. Наличие загрузчика отделено от возможности рисовать, приложение всегда работает на OpenGL 3.3, запрос Vulkan логируется и попадает в отчёт. Кнопки выбора рендерера перезаписывают настройку вместо дописывания строки (прежде читалась первая запись в файле, поэтому повторный выбор молча не применялся).
+          - **Режим отладки (F9) и отладочный отчёт (F10).** Пишутся ``logs\aeros-debug.log`` (события, железо, бэкенд, все действия пользователя, ошибки) и ``logs\physics.csv`` (журнал физики по кадрам: dt, FPS, частицы, LBM, силы, времена подсистем, счётчик NaN/Inf). По F10 создаётся единый файл ``Aeros-Debug-Report-<дата>.txt`` — его достаточно прислать разработчику, чтобы проблему можно было разобрать удалённо.
+          - **Отчёт без запуска окна:** ``main.exe --save-report`` формирует отчёт и завершает работу. Это единственный способ прислать диагностику, если программа не стартует. Ключи ``--debug``, ``--debug-physics``, ``--debug-overlay``, ``--physics-every N``.
+          - **Диагностика CUDA вместо молчания.** При старте выполняется проба бэкенда: перечисляются устройства NVIDIA, читаются имя GPU, compute capability, память, версии драйвера и CUDA, и реально запускается тестовое ядро. Понятная по-русски причина показывается в панелях «Отладка и журнал» и «Вычисления и Экспорт» и входит в отчёт. Есть кнопка «Перепроверить CUDA».
+          - **Исправлен молчаливый сбой CUDA.** Раньше ошибка GPU печаталась в ``std::cerr``, которого в оконной сборке не существует, а расчёт продолжался с пустыми буферами. Теперь ошибка фиксируется, пишется в журнал, и движок в том же кадре переходит на CPU-бэкенд (счётчик таких переходов виден в UI и в отчёте).
+          - **Исправлена сборка CUDA-кода.** Вместо ``-arch=sm_75`` теперь ``-gencode arch=compute_75,code=[sm_75,compute_75]``: в exe кладутся и машинный код Turing, и PTX, который драйвер компилирует для более новых GPU (Ampere / Ada / Blackwell). CUDA runtime статически — дистрибутив CUDA для запуска не нужен.
+          - **CI больше не опубликует x64 без CUDA.** Скрипты сборки пишут маркер ``BUILD-BACKEND-<arch>.txt``, шаг сборки x64 требует маркер ``CUDA`` и останавливает публикацию при тихом уходе в CPU-only; в аннотацию выводятся признаки ``nv_fatbin``, PTX и sm_75 внутри exe.
+          - **Журналируются сбои запуска и физики:** GLFW/окно/GLAD/рендерер/ImGui/шейдеры/чтение STL; инициализация и сброс LBM, нехватка памяти на сетку, расходимость (rho вне 0.8..1.2), всплеск NaN/Inf, параметры вокселизации и загрузки модели.
+          - Полный набор PC-артефактов, как в прежних PC-версиях: Setup / Update / Portable для x64, x86 и arm64 (11 файлов, включая ``SHA256SUMS.txt`` и ``README.md``).
+          - Из v1.24.0 сохранено: бинарь строго своей архитектуры в каждом пакете, контроль PE-заголовка после тихой установки, ``ARCH-MISMATCH.txt``, апдейтер с путём из реестра, базовый набор инструкций SSE2.
+
+          ## Требования
+          - Windows 10/11, OpenGL 3.3; Visual C++ Redistributable 2022 (обычно уже стоит).
+          - CUDA-бэкенд — NVIDIA GPU с compute capability 7.5 и выше (Turing и новее) и драйвер, поддерживающий CUDA 13 (ветка 580 и новее). В остальных случаях автоматически включается CPU-бэкенд, а причина пишется в отладочный отчёт.
+          - x86- и arm64-сборки — только CPU-бэкенд (CUDA Toolkit 13 не выпускает 32-битные и arm64-Windows бинари такого рода).
+
+          ## Если что-то не так
+          Нажмите **F9** (журнал), воспроизведите проблему, нажмите **F10** (отчёт) и пришлите файл
+          ``Aeros-Debug-Report-<дата>.txt``. Если программа не запускается — выполните ``main.exe --save-report``.
+
+          ## Сборка из исходников
+          VS 2022 + CUDA Toolkit: ``aeros\build.bat`` (x64+CUDA), ``aeros\build-cpu.bat [x64|x86|arm64]`` (CPU);
+          установщики: ``installer\build-installers.ps1``, портативные: ``installer\build-portable.ps1`` (Inno Setup 6).
+          "@ | Set-Content -Encoding utf8 RELEASE_NOTES.md
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          # Порядок загрузки = порядок в списке ассетов: x64 первыми (самые частые),
+          # чтобы arm64/x86 не скачивали по ошибке
+          $order = @("Setup-x64","Update-x64","Portable-x64","Setup-x86","Update-x86","Portable-x86","Setup-arm64","Update-arm64","Portable-arm64","SHA256SUMS.txt","README.md")
+          $files = @()
+          foreach ($pat in $order) {
+            $f = Get-ChildItem release -File | Where-Object { $_.Name -like "*$pat*" } | Select-Object -First 1
+            if ($f) { $files += $f.FullName }
+          }
+          Write-Host "Assets (по порядку):"; $files | ForEach-Object { Write-Host "  $_" }
+          # Форма релиза фиксирована: Setup/Update/Portable x (x64/x86/arm64) + SHA256SUMS + README
+          if ($files.Count -ne 11) {
+            $flat = ($files | ForEach-Object { Split-Path $_ -Leaf }) -join ", "
+            Write-Host "::error::publish: найдено $($files.Count) ассетов вместо 11: $flat"
+            throw "в release/ не хватает артефактов: $($files.Count) из 11"
+          }
+          Write-Host "::notice::publish: 11 ассетов на месте, публикуем v$v"
+          $title = "AeroS Engine v$v — PC-релиз (Windows x64/x86/arm64: установщики, апдейтеры, портативные)"
+          $exists = gh release view "v$v" --json tagName --jq .tagName 2>$null
+          if ($LASTEXITCODE -eq 0 -and $exists) {
+            # пересоздаём, чтобы порядок ассетов обновился (clobber порядок не меняет)
+            Write-Host "Release v$v существует — пересоздаём с новым порядком ассетов"
+            gh release delete "v$v" --yes
+            gh release create "v$v" $files --title $title --notes-file RELEASE_NOTES.md
+          } else {
+            gh release create "v$v" $files --title $title --notes-file RELEASE_NOTES.md
+          }
+
+  # Быстрая проверка .iss отдельным job'ом, параллельно с десятиминутной сборкой.
+  # Настоящие бинари здесь не нужны: важны только синтаксис Pascal/ISPP и пути
+  # в [Files]. Заглушки создаются в checkout'е этого job'а и никуда не попадают.
+  iss-check:
+    name: Проверка .iss компилятором (параллельно со сборкой)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed" }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          "ISCC=$iscc" | Out-File -Append $env:GITHUB_ENV
+          Write-Host "::notice::iss-check-iscc: $iscc"
+
+      - name: Compile every .iss (заглушки вместо бинарей)
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          $iscc = $env:ISCC
+          # Заглушки: .iss ссылаются на бинари строго по имени. Содержимое файла
+          # компилятору не важно - он лишь проверяет, что путь существует.
+          $stub = Join-Path $env:RUNNER_TEMP "stub.bin"
+          Set-Content -Path $stub -Value ("STUB" * 4096) -NoNewline -Encoding ascii
+          foreach ($n in @("main-x64.exe","main-x86.exe","main-arm64.exe","main-lite-x64.exe","glfw3-x86.dll","glfw3-arm64.dll")) {
+            Copy-Item $stub -Destination (Join-Path "aeros\bin" $n) -Force
+          }
+          $tmpOut = Join-Path $env:RUNNER_TEMP "iss-out"
+          New-Item -ItemType Directory -Path $tmpOut -Force | Out-Null
+          $bad = 0
+          $facts = @()
+          Push-Location installer
+          try {
+            foreach ($iss in @(Get-ChildItem . -Filter *.iss -File | Sort-Object Name)) {
+              # common.iss - это include-файл без секции [Setup], компилировать его отдельно нельзя
+              if (-not (Select-String -Path $iss.Name -Pattern '^\[Setup\]' -Quiet)) {
+                Write-Host "[iss-check] пропущен include-файл $($iss.Name)"
+                $facts += "$($iss.Name)=include"
+                continue
+              }
+              $o = Join-Path $tmpOut $iss.BaseName
+              New-Item -ItemType Directory -Path $o -Force | Out-Null
+              $log = & $iscc "/O$o" "/DAppVersion=$v" $iss.Name *>&1 | Out-String
+              $code = $LASTEXITCODE
+              if ($code -ne 0) {
+                $bad++
+                $all = @(($log -split "`r?`n") | Where-Object { $_.Trim() })
+                # iscc обрывается на первой ошибке: текст сообщения лежит в хвосте вывода
+                $errs = @($all | Select-Object -Last 5)
+                $m = ($errs -join " // ") -replace '\s+', ' '
+                if ($m.Length -gt 600) { $m = $m.Substring($m.Length - 600) }
+                Write-Host "::error::iss-check: $($iss.Name) exit=$code : $m"
+                $facts += "$($iss.Name)=FAIL"
+              } else {
+                $facts += "$($iss.Name)=ok"
+                Write-Host "[iss-check] OK $($iss.Name)"
+              }
+            }
+          } finally {
+            Pop-Location
+          }
+          Write-Host "::notice::iss-check: $($facts -join ' ')"
+          if ($bad -gt 0) { throw "ISCC не скомпилировал $bad из $($facts.Count) скриптов .iss" }
