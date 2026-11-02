@@ -352,6 +352,9 @@ int   tlChartFrames = 600;
 std::string g_lastTimelapsePath;
 
 // --- v1.28.0 — компоновка интерфейса (панели по краям экрана) ---
+std::string aeroModelPath;        // v1.31.0 — путь к загруженной модели (STL)
+bool aeroExitRequested = false;   // v1.31.0 — «Файл → Выход» в главном меню
+
 bool uiDocked       = true;
 bool uiShowTree     = true;
 bool uiShowProps    = true;

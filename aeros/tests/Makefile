@@ -4,6 +4,7 @@
 #   make timelapse   только таймлапс физики (v1.26.0)
 #   make lbm         только прогон решателя LBM (v1.27.0)
 #   make physclock   только фиксированный такт физики (v1.29.0)
+#   make fem         только CAD/CAE: исследование, сетка МКЭ, решатели, компоновка (v1.31.0)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -13,8 +14,8 @@ CXXFLAGS := -std=c++17 -O1 -fopenmp -Wall -Wextra -Wno-unused-parameter $(INC)
 
 COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
-.PHONY: all timelapse lbm physclock clean
-all: timelapse lbm physclock
+.PHONY: all timelapse lbm physclock fem clean
+all: timelapse lbm physclock fem
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -31,5 +32,13 @@ physclock:
 	g++ $(CXXFLAGS) phys_clock_headless.cpp -o /tmp/aeros-test-physclock
 	/tmp/aeros-test-physclock
 
+# CAD/CAE-модули (study.h, fem_mesh.h, fem_solver.h, results_view.h, ui_layout.h)
+# намеренно header-only и не тянут OpenGL/GLFW/ImGui, поэтому тест линкуется без
+# единого .cpp движка: проверяются сами расчёты, а не обвязка.
+fem:
+	g++ $(CXXFLAGS) fem_headless.cpp -o /tmp/aeros-test-fem
+	/tmp/aeros-test-fem
+
 clean:
-	rm -f /tmp/aeros-test-timelapse /tmp/aeros-test-lbm /tmp/aeros-test-physclock
+	rm -f /tmp/aeros-test-timelapse /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
+	      /tmp/aeros-test-fem

@@ -32,7 +32,31 @@
 // приходится менять структуру OpenMP-цикла и дублировать его тело.
 static std::vector<float> s_cpPerVertex;
 
+// v1.31.0 — загрузка g_vertexColors в VBO без пересчёта (используется для
+// отображения полей МКЭ: см. cae_ui.h).
+bool caeColorOverride = false;
+
+void uploadVertexColorsToGPU() {
+    int numVerts = (int)(g_vertices.size() / 3);
+    if (numVerts == 0) return;
+    if (g_vertexColors.size() != (size_t)numVerts * 3) return;
+    if (modelVBO_colors == 0) {
+        glGenBuffers(1, &modelVBO_colors);
+        glBindVertexArray(modelVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
+        glBufferData(GL_ARRAY_BUFFER, g_vertexColors.size()*sizeof(float), g_vertexColors.data(), GL_DYNAMIC_DRAW);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+        glEnableVertexAttribArray(2);
+        glBindVertexArray(0);
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
+    }
+}
+
 void updateVertexColors() {
+    // поле результата МКЭ уже записано в g_vertexColors — только загружаем его
+    if (caeColorOverride) { uploadVertexColorsToGPU(); return; }
     updateFlowParams();
     int numVerts = (int)(g_vertices.size() / 3);
     if (numVerts == 0) return;

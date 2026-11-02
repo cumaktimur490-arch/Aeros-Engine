@@ -39,6 +39,7 @@
 #include "gl_utils.h"
 #include "input.h"
 #include "ui.h"
+#include "ui_layout.h"   // v1.31.0 — компоновка оболочки CAD/CAE (сохранение между запусками)
 #include "model.h"
 #include "stl_loader.h"
 #include "particles.h"
@@ -201,6 +202,10 @@ bool saveSettings(const std::string& path) {
     f << "uiTreeW=" << uiTreeW << "\n";
     f << "uiPropsW=" << uiPropsW << "\n";
     f << "uiBottomH=" << uiBottomH << "\n";
+    // v1.31.0 — компоновка оболочки CAD/CAE: рабочее пространство, активная
+    // вкладка, видимость панелей и их размеры. Ключи выше (uiShowTree/uiTreeW/...)
+    // продолжают писаться как зеркала, чтобы файл настроек читали и старые сборки.
+    uiLayoutWrite(f, uiLayoutState());
     // v1.29.0 — фиксированный такт физики (Гц), как в BeamNG.drive
     f << "physFixed=" << (physClock.fixed ? 1 : 0) << "\n";
     f << "physHz=" << physClock.hz << "\n";
@@ -220,7 +225,13 @@ bool loadSettings(const std::string& path) {
         std::string key = line.substr(0, pos);
         std::string val = line.substr(pos + 1);
         try {
-            if (key == "flowSpeed") flowSpeed = std::stof(val);
+            // v1.31.0 — ключи компоновки оболочки (включая устаревшие имена
+            // v1.28: uiDocked/uiShowTree/uiShowProps/uiShowConsole/uiTreeW/
+            // uiPropsW/uiBottomH/uiScale). Глобальные ui* флаги обновляются из
+            // этого состояния каждый кадр в drawUI(), поэтому старые настройки
+            // не теряются и не расходятся с новыми.
+            if (uiLayoutApplyValue(uiLayoutState(), key, val)) { /* принято */ }
+            else if (key == "flowSpeed") flowSpeed = std::stof(val);
             else if (key == "flowAzimuth") flowAzimuth = std::stof(val);
             else if (key == "flowElevation") flowElevation = std::stof(val);
             else if (key == "altitude") altitude = std::stof(val);
@@ -1096,6 +1107,7 @@ int main(int argc, char** argv) {
 #endif
     } else {
         g_debugModelPath = modelPath;
+        aeroModelPath = modelPath;   // v1.31.0 — исследование знает источник геометрии
         DBG_INFO("модель загружена: %s (вершин %d, габарит %.3f)",
                  modelPath.c_str(), modelVertexCount, maxDim);
         debugLogAction("загружена модель", "%s, вершин %d", modelPath.c_str(), modelVertexCount);
@@ -1154,6 +1166,12 @@ int main(int argc, char** argv) {
         }
 
         processInput(window);
+        // v1.31.0 — пункт главного меню «Файл → Выход»: закрываем окно штатно,
+        // тем же путём, что и Esc в processInput (сохранение настроек дальше по циклу).
+        if (aeroExitRequested) {
+            aeroExitRequested = false;
+            glfwSetWindowShouldClose(window, true);
+        }
         // v1.25.0 — пишем в журнал действия пользователя (изменения параметров)
         trackParamChangesForJournal();
         // Detect interaction for auto-rotate pause

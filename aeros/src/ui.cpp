@@ -27,6 +27,11 @@
 #include "flow_field.h"  // v1.30.0 — aeroCpNonFinite, airSutherlandViscosity
 #include "ui.h"
 #include "lang.h"
+// v1.31.0 — оболочка CAD/CAE: компоновка (ui_layout.h), закрепление панелей и
+// меню (ui_dock.h), исследование и решатели МКЭ (study.h, fem_*.h, results_view.h)
+// и редактор исследований (cae_ui.h). Модули разделены намеренно: оболочка окна,
+// модель исследования, сетка, решатели и просмотр результатов — разные файлы.
+#include "cae_ui.h"
 #include "fsr.h"
 #include "framegen.h"
 #include "interesting.h"
@@ -624,15 +629,33 @@ static void drawUiTree() {
 
     ImGui::Separator();
     if (ImGui::TreeNodeEx(_TR("Layout", "Компоновка"), ImGuiTreeNodeFlags_SpanAvailWidth)) {
-        ImGui::Checkbox(_TR("Navigator (left)", "Навигатор (слева)"), &uiShowTree);
-        ImGui::Checkbox(_TR("Properties (right)", "Свойства (справа)"), &uiShowProps);
-        ImGui::Checkbox(_TR("Console & monitor (bottom)", "Консоль и мониторинг (внизу)"), &uiShowConsole);
-        ImGui::SliderInt(_TR("Navigator width, px", "Ширина навигатора, px"), &uiTreeW, 180, 480);
-        ImGui::SliderInt(_TR("Properties width, px", "Ширина свойств, px"), &uiPropsW, 320, 900);
-        ImGui::SliderInt(_TR("Bottom height, px", "Высота нижней полосы, px"), &uiBottomH, 120, 520);
+        // v1.31.0 — те же переключатели, что и в главном меню «Вид»: состояние
+        // компоновки одно (ui_layout.h), поэтому значения не расходятся.
+        UiLayoutState& stl = uiLayoutState();
+        ImGui::Checkbox(_TR("Main menu (top)", "Главное меню (сверху)"), &stl.menuBar);
+        ImGui::Checkbox(_TR("Navigator (left)", "Навигатор (слева)"), &stl.treePanel);
+        ImGui::Checkbox(_TR("Properties (right)", "Свойства (справа)"), &stl.propsPanel);
+        ImGui::Checkbox(_TR("Console & monitor (bottom)", "Консоль и мониторинг (внизу)"), &stl.bottomPanel);
+        ImGui::Checkbox(_TR("Maximize viewport (Ctrl+M)", "Вид на всё окно (Ctrl+M)"), &stl.maximized);
+        ImGui::SliderFloat(_TR("Navigator width, px", "Ширина навигатора, px"), &stl.treeW,
+                           UiLayoutState::minTreeW(), UiLayoutState::maxTreeW(), "%.0f");
+        ImGui::SliderFloat(_TR("Properties width, px", "Ширина свойств, px"), &stl.propsW,
+                           UiLayoutState::minPropsW(), UiLayoutState::maxPropsW(), "%.0f");
+        ImGui::SliderFloat(_TR("Bottom height, px", "Высота нижней полосы, px"), &stl.bottomH,
+                           UiLayoutState::minBottomH(), UiLayoutState::maxBottomH(), "%.0f");
         ImGui::SliderFloat(_TR("UI scale", "Масштаб интерфейса"), &uiScale, 0.8f, 1.8f, "%.2fx");
+        stl.fontScale = uiScale;
+        ImGui::TextDisabled("%s", _TR("Panels are resized by dragging the dividers between them.",
+                                      "Размеры панелей меняются перетаскиванием разделителей между ними."));
         ImGui::TextDisabled("%s", _TR("F12 — hide/show all panels (clean viewport).",
                                       "F12 — скрыть/показать все панели (чистый вид)."));
+        ImGui::TextDisabled("%s", _TR("Layout and workspace are saved between runs.",
+                                      "Компоновка и рабочее пространство сохраняются между запусками."));
+        if (ImGui::Button(_TR("Reset layout", "Сбросить компоновку"))) {
+            stl = UiLayoutState();
+            uiScale = 1.0f;
+            debugLogAction("интерфейс", "компоновка сброшена к значениям по умолчанию");
+        }
         ImGui::TreePop();
     }
 }
@@ -704,43 +727,81 @@ static void drawUiStatusBar() {
 void drawUI() {
 // =====================================================
 // v1.28.0 — панели закреплены по краям экрана, 3D-вид свободен в центре.
-// Позиция и размер задаются каждый кадр (как у пристыкованных панелей), а не
-// один раз: окна больше нельзя утащить на середину вида.
+// v1.31.0 — оболочка профессиональной CAD/CAE-среды:
+//   * сверху — ГЛАВНОЕ МЕНЮ и команды;
+//   * слева  — дерево проекта/исследования;
+//   * в центре — 3D-вид;
+//   * справа — свойства ВЫБРАННОГО объекта или узла исследования;
+//   * внизу  — вкладки: сообщения, сходимость, графики, результаты, журнал;
+//   * у самого низа окна — ПОСТОЯННАЯ строка состояния.
+// Размеры панелей меняются перетаскиванием разделителей, панели сворачиваются,
+// 3D-вид временно разворачивается на всё окно (Ctrl+M), компоновка и текущее
+// рабочее пространство сохраняются между запусками.
+//
+// Dear ImGui в репозитории — 1.92.9b БЕЗ ветки docking (IMGUI_HAS_DOCK не
+// определён, ImGuiDockNode отсутствует) — проверено до выбора подхода. Поэтому
+// закрепление панелей реализовано кодом приложения: прямоугольники считает
+// ui_layout.h (проверено headless-тестом), окна по ним рисует ui_dock.h.
+// Свободно плавающих окон в оболочке не осталось: всплывают только меню и диалоги.
 // =====================================================
 const float W = (float)(display_w > 320 ? display_w : 800);
 const float H = (float)(display_h > 240 ? display_h : 600);
 const ImGuiWindowFlags dockFlags =
     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
-float bottomH = uiShowConsole ? (float)uiBottomH : 34.0f;
-if (bottomH > H * 0.6f) bottomH = H * 0.6f;
-float treeW  = (float)(uiTreeW  > 120 ? uiTreeW  : 264);
-float propsW = (float)(uiPropsW > 240 ? uiPropsW : 470);
-if (treeW + propsW > W * 0.85f) {          // на узком экране панели не должны съедать вид
-    float k = (W * 0.85f) / (treeW + propsW);
-    treeW *= k; propsW *= k;
-}
-const float uiFontScale = (uiScale > 0.5f) ? glm::clamp(uiScale, 0.7f, 2.0f) : 1.0f;
+(void)dockFlags;   // флаги теперь внутри ui_dock.h (uiDockPanelFlags)
 
-// ---------- 1) НАВИГАТОР РАСЧЁТА — левый край ----------
-if (uiShowTree) {
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(treeW, H - bottomH));
-    if (ImGui::Begin(_TR("Simulation navigator", "Навигатор расчёта"), nullptr, dockFlags)) {
-        ImGui::SetWindowFontScale(uiFontScale);
-        drawUiTree();
+UiLayoutState& uiSt = uiLayoutState();
+caeHandleShortcuts(uiSt);                       // Ctrl+M, Ctrl+1/2/3, Ctrl+Enter
+const UiLayoutRects L = uiLayoutCompute(uiSt, W, H);
+const float uiFontScale = glm::clamp(uiSt.fontScale, 0.7f, 2.0f);
+caeSyncLegacyLayout(uiSt);                      // прежние ui* флаги — зеркала
+
+// ---------- 0) ГЛАВНОЕ МЕНЮ — верхний край ----------
+if (L.menuVisible && L.menu.valid()) {
+    if (uiDockBeginMenuBar(L.menu, uiFontScale)) {
+        caeDrawMainMenu(uiSt);
+        uiDockEndMenuBar();
     }
-    ImGui::End();
 }
 
-// ---------- 2) СВОЙСТВА ВЫБРАННОГО УЗЛА — правый край ----------
-if (uiShowProps) {
+// ---------- 1) ДЕРЕВО ПРОЕКТА — левый край ----------
+// Содержимое зависит от рабочего пространства: «Модель» — прежний навигатор
+// расчёта (все его узлы сохранены), «Исследование» — дерево исследования,
+// «Результаты» — поля и инструменты просмотра.
+if (L.tree.valid()) {
+    char treeTitle[192];
+    std::snprintf(treeTitle, sizeof(treeTitle), "%s — %s",
+                  _TR("Project", "Проект"), uiWorkspaceName(uiSt.workspace));
+    const bool treeOpen = uiDockBeginPanel(treeTitle, L.tree, uiFontScale);
+    if (treeOpen) {
+        if (uiDockWorkspaceTabs(uiSt))
+            debugLogAction("интерфейс", "рабочее пространство: %s", uiWorkspaceName(uiSt.workspace));
+        ImGui::Separator();
+        ImGui::BeginChild("##treeBody", ImVec2(-1, -1), false);
+        if (uiSt.workspace == 1)      caeDrawStudyTree();
+        else if (uiSt.workspace == 2) caeDrawResultsTree();
+        else                          drawUiTree();
+        ImGui::EndChild();
+    }
+    uiDockEndPanel();
+}
+
+// ---------- 2) СВОЙСТВА ВЫБРАННОГО ОБЪЕКТА — правый край ----------
+if (L.props.valid()) {
     char propsTitle[192];
     std::snprintf(propsTitle, sizeof(propsTitle), "%s — %s",
-                  _TR("Properties", "Свойства"), uiLeafName(uiSelectedLeaf));
-    ImGui::SetNextWindowPos(ImVec2(W - propsW, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(propsW, H - bottomH));
-    if (ImGui::Begin(propsTitle, nullptr, dockFlags)) {
+                  _TR("Properties", "Свойства"),
+                  (uiSt.workspace == 1) ? caeStudySelName(caeView().studySel)
+                  : (uiSt.workspace == 2) ? caeResultSelName(caeView().resultSel)
+                  : uiLeafName(uiSelectedLeaf));
+    const bool propsOpen = uiDockBeginPanel(propsTitle, L.props, uiFontScale);
+    if (propsOpen && uiSt.workspace == 1) {
+        caeDrawStudyProps();
+    } else if (propsOpen && uiSt.workspace == 2) {
+        caeDrawResultsProps();
+    } else if (propsOpen) {
+    // ===== рабочее пространство «Модель»: прежняя панель аэродинамики =====
     ImGui::SetWindowFontScale(uiFontScale);
 
 ImGui::Text("%s: %.1f | %s: %.2f ms | v1.19.0 [%s]",
@@ -815,9 +876,10 @@ ImGui::Separator();
     }
     ImGui::SameLine();
     if (ImGui::Button(_TR("Panels (F12)", "Панели (F12)"))) {
-        uiDocked = !uiDocked;
-        uiShowTree = uiDocked; uiShowProps = uiDocked; uiShowConsole = uiDocked;
-        debugLogAction("кнопка", "панели интерфейса: %s", uiDocked ? "показаны" : "скрыты");
+        // состояние компоновки одно: прежние флаги обновятся из него в этом же кадре
+        uiLayoutState().panelsVisible = !uiLayoutState().panelsVisible;
+        debugLogAction("кнопка", "панели интерфейса: %s",
+                       uiLayoutState().panelsVisible ? "показаны" : "скрыты");
     }
     ImGui::SameLine();
     if (ImGui::Button(_TR("Journal (F9)", "Журнал (F9)"))) {
@@ -2089,7 +2151,10 @@ if (uiSelectedLeaf == 17 && ImGui::CollapsingHeader(_TR("Compute & Export v1.19.
         std::string p = openFileDialog();
         if (!p.empty()) {
             debugLogAction("выбрана модель", "%s", p.c_str());
-            if (loadModel(p)) DBG_INFO("модель загружена из UI: %s (вершин %d)", p.c_str(), modelVertexCount);
+            if (loadModel(p)) {
+                aeroModelPath = p;   // v1.31.0 — источник геометрии для исследования
+                DBG_INFO("модель загружена из UI: %s (вершин %d)", p.c_str(), modelVertexCount);
+            }
             else DBG_ERROR("не удалось загрузить модель из UI: %s", p.c_str());
         } else {
             debugLogAction("диалог выбора модели", "файл не выбран");
@@ -2311,62 +2376,133 @@ if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra
             ImGui::TextUnformatted(debugLogRecent(i).c_str());
     }
     }
-    ImGui::End();
-}   // v1.28.0 — конец панели свойств
+    // ===== конец панели «Модель» =====
+    uiDockEndPanel();
+}   // v1.31.0 — конец панели свойств
 
-// ---------- 3) КОНСОЛЬ И МОНИТОРИНГ СХОДИМОСТИ — нижний край ----------
-// В инженерных пакетах это отдельная пристыкованная полоса: слева лог решателя,
-// справа кривые сходимости, внизу строка состояния с итерацией и остатками.
-{
-    ImGui::SetNextWindowPos(ImVec2(0.0f, H - bottomH));
-    ImGui::SetNextWindowSize(ImVec2(W, bottomH));
-    if (ImGui::Begin(_TR("Console & convergence monitor", "Консоль и мониторинг сходимости"),
-                     nullptr, dockFlags | ImGuiWindowFlags_NoScrollbar)) {
-        ImGui::SetWindowFontScale(uiFontScale);
-        float inner = ImGui::GetContentRegionAvail().y - 48.0f;   // запас под строку состояния
-        if (inner < 24.0f) inner = 24.0f;
+// ---------- 3) НИЖНИЕ ВКЛАДКИ: сообщения / сходимость / графики / результаты / журнал ----------
+// В инженерных пакетах это отдельная пристыкованная полоса с вкладками: лог
+// решателя, кривые сходимости, графики результатов, таблица величин и журнал.
+// Всё, что было в v1.28 (консоль и мониторинг самописца), сохранено — просто
+// разложено по вкладкам, чтобы не мешать друг другу.
+if (L.bottom.valid()) {
+    const bool bottomOpen = uiDockBeginPanel(
+        _TR("Console & convergence monitor", "Консоль и мониторинг сходимости"),
+        L.bottom, uiFontScale);
+    if (bottomOpen) {
+        if (ImGui::BeginTabBar("##bottomTabs", ImGuiTabBarFlags_None)) {
+            for (int t = 0; t < UI_BOTTOM_TAB_COUNT; ++t) {
+                char tabId[96];
+                std::snprintf(tabId, sizeof(tabId), "%s##bt%d", uiBottomTabName(t), t);
+                const bool wantSel = (uiSt.bottomTab == t);
+                if (!ImGui::BeginTabItem(tabId, nullptr,
+                                         wantSel ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None))
+                    continue;
+                uiSt.bottomTab = t;
+                ImGui::BeginChild("##tabBody", ImVec2(-1, -1), false);
+                const ImVec2 avail = ImGui::GetContentRegionAvail();
 
-        if (uiShowConsole && inner > 40.0f) {
-            float consoleW = W * 0.44f;
-            if (consoleW < 220.0f) consoleW = W - 40.0f;
-            ImGui::BeginChild("##uiConsole", ImVec2(consoleW, inner));
-            ImGui::TextDisabled("%s", _TR("Console — journal of events and actions (F9 to record)",
-                                          "Консоль — журнал событий и действий (F9 — запись)"));
-            int nRec = debugLogRecentCount();
-            int maxLines = (int)((inner - 24.0f) / 16.0f);
-            if (maxLines > nRec) maxLines = nRec;
-            if (maxLines > 80) maxLines = 80;
-            for (int k = maxLines - 1; k >= 0; --k) {
-                std::string line = debugLogRecent(k);
-                ImVec4 col = ImVec4(0.82f, 0.84f, 0.86f, 1.0f);
-                if (line.find("[ERROR]") != std::string::npos)      col = ImVec4(1.00f, 0.35f, 0.25f, 1.0f);
-                else if (line.find("[WARN ") != std::string::npos)  col = ImVec4(1.00f, 0.75f, 0.25f, 1.0f);
-                else if (line.find("[ACTION]") != std::string::npos)col = ImVec4(0.55f, 0.85f, 1.00f, 1.0f);
-                else if (line.find("[PHYS") != std::string::npos)   col = ImVec4(0.65f, 0.90f, 0.70f, 1.0f);
-                ImGui::TextColored(col, "%s", line.c_str());
+                if (t == 0) {
+                    // --- СООБЩЕНИЯ: слева общий журнал движка, справа — исследование ---
+                    float consoleW = avail.x * 0.5f;
+                    if (consoleW < 200.0f) consoleW = avail.x;
+                    ImGui::BeginChild("##uiConsole", ImVec2(consoleW, avail.y), false);
+                    ImGui::TextDisabled("%s", _TR("Console — journal of events and actions (F9 to record)",
+                                                  "Консоль — журнал событий и действий (F9 — запись)"));
+                    int nRec = debugLogRecentCount();
+                    int maxLines = (int)((avail.y - 24.0f) / 16.0f);
+                    if (maxLines > nRec) maxLines = nRec;
+                    if (maxLines > 80) maxLines = 80;
+                    for (int k = maxLines - 1; k >= 0; --k) {
+                        std::string line = debugLogRecent(k);
+                        ImVec4 col = ImVec4(0.82f, 0.84f, 0.86f, 1.0f);
+                        if (line.find("[ERROR]") != std::string::npos)      col = ImVec4(1.00f, 0.35f, 0.25f, 1.0f);
+                        else if (line.find("[WARN ") != std::string::npos)  col = ImVec4(1.00f, 0.75f, 0.25f, 1.0f);
+                        else if (line.find("[ACTION]") != std::string::npos)col = ImVec4(0.55f, 0.85f, 1.00f, 1.0f);
+                        else if (line.find("[PHYS") != std::string::npos)   col = ImVec4(0.65f, 0.90f, 0.70f, 1.0f);
+                        ImGui::TextColored(col, "%s", line.c_str());
+                    }
+                    if (nRec == 0)
+                        ImGui::TextDisabled("%s", _TR("Journal is empty — press F9 to start recording",
+                                                      "Журнал пуст — нажмите F9, чтобы начать запись"));
+                    ImGui::EndChild();
+                    if (consoleW < avail.x) {
+                        ImGui::SameLine();
+                        ImGui::BeginChild("##caeConsole", ImVec2(0, avail.y), false);
+                        caeDrawBottomMessages();
+                        ImGui::EndChild();
+                    }
+                }
+                else if (t == 1) {
+                    // --- СХОДИМОСТЬ: кривые самописца слева, решатель МКЭ справа ---
+                    float monW = avail.x * 0.45f;
+                    if (monW < 200.0f) monW = avail.x;
+                    ImGui::BeginChild("##uiMonitor", ImVec2(monW, avail.y), false);
+                    ImGui::TextDisabled("%s", _TR("Convergence monitor — recorder history (F7 record, F8 play, F11 fullscreen)",
+                                                  "Мониторинг сходимости — история самописца (F7 запись, F8 просмотр, F11 на всё окно)"));
+                    float ch = (avail.y - 40.0f) / 3.0f;
+                    if (ch < 16.0f) ch = 16.0f;
+                    if (ch > 96.0f) ch = 96.0f;
+                    drawTLChart(_TR("residual RMS drho", "остаток RMS drho"), tlValResidual, IM_COL32(230, 170, 220, 255), ch);
+                    drawTLChart(_TR("lift Y, N", "подъёмная Y, Н"), tlValLiftY, IM_COL32(255, 200, 110, 255), ch);
+                    drawTLChart(_TR("LBM anomalies", "аномалии LBM"), tlValLbmAnomaly, IM_COL32(255, 160, 60, 255), ch);
+                    ImGui::EndChild();
+                    if (monW < avail.x) {
+                        ImGui::SameLine();
+                        ImGui::BeginChild("##caeConv", ImVec2(0, avail.y), false);
+                        caeDrawBottomConvergence();
+                        ImGui::EndChild();
+                    }
+                }
+                else if (t == 2) caeDrawBottomPlots();
+                else if (t == 3) caeDrawBottomResults();
+                else if (t == 4) {
+                    // --- ЖУРНАЛ: состояние файла журнала и последние записи ---
+                    ImGui::TextWrapped("%s: %s", _TR("Journal file", "Файл журнала"),
+                                       debugLogFilePath().empty() ? "(не открыт)" : debugLogFilePath().c_str());
+                    if (debugLogPhysicsEnabled())
+                        ImGui::TextWrapped("%s: %s", _TR("Physics journal", "Журнал физики"),
+                                           debugLogPhysicsFilePath().c_str());
+                    ImGui::Text("%s: %lld | %s: %d | %s: %s", _TR("Records", "Записей"), debugLogTotalCount(),
+                                _TR("Errors", "Ошибок"), debugLogErrorCount(),
+                                _TR("last report", "последний отчёт"),
+                                g_lastDebugReportPath.empty() ? "(не сохранялся)" : g_lastDebugReportPath.c_str());
+                    ImGui::Separator();
+                    int shown = debugLogRecentCount();
+                    if (shown > 40) shown = 40;
+                    for (int i = shown - 1; i >= 0; --i) {
+                        std::string line = debugLogRecent(i);
+                        ImVec4 col = ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
+                        if (line.find("[ERROR]") != std::string::npos) col = ImVec4(1.0f, 0.35f, 0.25f, 1.0f);
+                        else if (line.find("[WARN ") != std::string::npos) col = ImVec4(1.0f, 0.75f, 0.25f, 1.0f);
+                        else if (line.find("[ACTION]") != std::string::npos) col = ImVec4(0.55f, 0.85f, 1.0f, 1.0f);
+                        ImGui::TextColored(col, "%s", line.c_str());
+                    }
+                    if (shown == 0) ImGui::TextDisabled("%s", _TR("Journal is empty", "Журнал пуст"));
+                }
+
+                ImGui::EndChild();
+                ImGui::EndTabItem();
             }
-            if (nRec == 0)
-                ImGui::TextDisabled("%s", _TR("Journal is empty — press F9 to start recording",
-                                              "Журнал пуст — нажмите F9, чтобы начать запись"));
-            ImGui::EndChild();
-
-            ImGui::SameLine();
-            ImGui::BeginChild("##uiMonitor", ImVec2(0, inner));
-            ImGui::TextDisabled("%s", _TR("Convergence monitor — recorder history (F7 record, F8 play, F11 fullscreen)",
-                                          "Мониторинг сходимости — история самописца (F7 запись, F8 просмотр, F11 на всё окно)"));
-            float ch = (inner - 40.0f) / 3.0f;
-            if (ch < 16.0f) ch = 16.0f;
-            if (ch > 64.0f) ch = 64.0f;
-            drawTLChart(_TR("residual RMS drho", "остаток RMS drho"), tlValResidual, IM_COL32(230, 170, 220, 255), ch);
-            drawTLChart(_TR("lift Y, N", "подъёмная Y, Н"), tlValLiftY, IM_COL32(255, 200, 110, 255), ch);
-            drawTLChart(_TR("LBM anomalies", "аномалии LBM"), tlValLbmAnomaly, IM_COL32(255, 160, 60, 255), ch);
-            ImGui::EndChild();
+            ImGui::EndTabBar();
         }
-
-        drawUiStatusBar();
     }
-    ImGui::End();
+    uiDockEndPanel();
 }
+
+// ---------- 4) СТРОКА СОСТОЯНИЯ — постоянная полоса у самого низа окна ----------
+// Не сворачивается и не отключается: по требованию к оболочке САПР состояние
+// расчёта видно всегда, даже когда 3D-вид развёрнут на всё окно.
+if (L.status.valid()) {
+    if (uiDockBeginStatusBar(L.status, uiFontScale)) {
+        drawUiStatusBar();
+        caeDrawStatusBarCae(uiSt.workspace);
+        uiDockEndStatusBar();
+    }
+}
+
+// ---------- 5) РАЗДЕЛИТЕЛИ ПАНЕЛЕЙ — тянутся мышью, размеры сохраняются ----------
+uiDockDrawSplitters(uiSt, L);
 
     // Экранный оверлей журнала (включается галочкой или F9) — виден, даже когда
     // панель свёрнута: удобно снимать видео проблемы.

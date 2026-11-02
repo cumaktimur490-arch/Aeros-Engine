@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "globals.h"
+#include "ui_layout.h"   // v1.31.0 — F12 переключает состояние компоновки оболочки
 #include "input.h"
 #include "debug_log.h"
 #include "timelapse.h"   // v1.26.0 — таймлапс физики (F7/F8)
@@ -217,8 +218,12 @@ void processInput(GLFWwindow* window) {
     static bool f12WasPressed = false;
     bool f12Pressed = glfwGetKey(window, GLFW_KEY_F12) == GLFW_PRESS;
     if (f12Pressed && !f12WasPressed) {
-        uiDocked = !uiDocked;
-        uiShowTree = uiDocked; uiShowProps = uiDocked; uiShowConsole = uiDocked;
+        // v1.31.0 — состояние компоновки теперь одно (ui_layout.h); прежние
+        // глобальные флаги обновляются из него каждый кадр в drawUI().
+        UiLayoutState& stl = uiLayoutState();
+        stl.panelsVisible = !stl.panelsVisible;
+        uiDocked = stl.panelsVisible;
+        uiShowTree = stl.panelsVisible; uiShowProps = stl.panelsVisible; uiShowConsole = stl.panelsVisible;
         debugLogAction("клавиша", "F12 — панели интерфейса: %s",
                        uiDocked ? "ПОКАЗАНЫ" : "СКРЫТЫ");
     }
