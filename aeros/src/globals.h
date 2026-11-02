@@ -13,6 +13,7 @@
 #include "flow_params.h"
 #include "lang.h"
 #include "cuda_api.h"   // CudaBackendInfo — диагностика CUDA (v1.25.0)
+#include "phys_clock.h" // v1.29.0 — фиксированный такт физики (как в BeamNG.drive)
 
 // --- Окно ---
 extern const unsigned int SCR_WIDTH;
@@ -455,6 +456,10 @@ extern int  uiSelectedLeaf;  // выбранный узел дерева (пан
 extern int  uiTreeW;         // ширина дерева, px
 extern int  uiPropsW;        // ширина панели свойств, px
 extern int  uiBottomH;       // высота нижней полосы, px
+
+// v1.29.0 — тактовый генератор физики: частота тактов задаётся в Гц и не зависит
+// от частоты кадров (см. phys_clock.h — там же объяснение, зачем это нужно).
+extern PhysClock physClock;
 
 // --- v1.26.0 Карта давления: диапазон Cp ---
 extern bool  aeroCpAutoRange;  // брать диапазон из фактических данных, а не фиксированный

@@ -65,7 +65,17 @@ void resetLBM();
 void shutdownLBM();
 
 void stepLBMCPU(int steps = 1);
-void updateLBM(float deltaTime);
+// v1.29.0 — forceSteps: сколько шагов решётки сделать. >=0 задаёт число шагов
+// явно (это путь фиксированного такта физики), -1 означает прежнее поведение —
+// по lbmParams.stepsPerFrame с адаптацией к длине кадра.
+void updateLBM(float deltaTime, int forceSteps = -1);
+
+// v1.29.0 — сколько ФИЗИЧЕСКИХ секунд занимает один шаг решётки LBM.
+// В решёточных единицах c = Δx/Δt = 1, поэтому Δt = Δx_физ / velScale, где
+// velScale = flowSpeed / |u_LB| — тот же масштаб скорости, что внутри шага
+// решателя (из него считаются скорости в м/с и TKE в м²/с²). Возвращает 0, если
+// решатель не инициализирован или масштаб не определён.
+float lbmLatticeDtWorld();
 
 glm::vec3 getLBMVelocityWorld(const glm::vec3& worldPos);
 float getLBMDensityWorld(const glm::vec3& worldPos);

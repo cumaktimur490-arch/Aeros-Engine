@@ -40,6 +40,7 @@ float g_cpLo = -2.0f, g_cpHi = 2.0f;
 float lbmPressureMin = 0.0f, lbmPressureMax = 0.0f;
 float lbmResidualRho = 0.0f, lbmResidualU = 0.0f;
 long long lbmNegativePops = 0, lbmBadPops = 0;   // v1.27.0
+PhysClock physClock;                             // v1.29.0 — фиксированный такт физики
 std::string g_lastTimelapsePath;
 
 LBMParams lbmParams;
@@ -154,10 +155,36 @@ int main() {
             if (line.compare(0, 3, "idx") == 0) headerOk = true;
         }
         check(headerOk, "в CSV есть строка заголовка");
+        // v1.29.0 — колонок стало 47 (добавились 6 полей такта физики). Проверяем,
+        // что ЧИСЛО ПОЛЕЙ в строке данных совпадает с заголовком: это ловит расхождение
+        // между форматной строкой snprintf и списком аргументов — ошибку, которую
+        // компилятор видит не всегда, а в CSV она превращается в «поехавшие» колонки.
+        {
+            std::ifstream in2(csv.c_str());
+            std::string hdrLine, dataLine;
+            while (std::getline(in2, hdrLine)) {
+                if (hdrLine.compare(0, 3, "idx") == 0) {
+                    if (std::getline(in2, dataLine)) break;
+                }
+            }
+            auto countFields = [](const std::string& t) {
+                int c = 1;
+                for (char ch : t) if (ch == ',') ++c;
+                return c;
+            };
+            int nh = countFields(hdrLine), nd = countFields(dataLine);
+            check(nh == 47, "в заголовке CSV 47 колонок (получилось " + std::to_string(nh) + ")");
+            check(nd == nh, "в строке данных столько же полей, сколько в заголовке ("
+                            + std::to_string(nd) + " против " + std::to_string(nh) + ")");
+            check(hdrLine.find("phys_hz") != std::string::npos &&
+                  hdrLine.find("phys_time_scale") != std::string::npos,
+                  "в заголовке есть колонки такта физики");
+        }
         check(lines == 100 + 3, "в CSV 100 строк данных + заголовок + 2 комментария (получилось " + std::to_string(lines) + ")");
     }
     std::string sum = timelapseSummary();
     check(sum.find("Кадров в буфере: 100") != std::string::npos, "сводка содержит число кадров");
+    check(sum.find("Такт физики") != std::string::npos, "сводка содержит статистику такта физики (v1.29.0)");
     check(sum.find("nan") == std::string::npos && sum.find("inf") == std::string::npos,
           "в сводке нет nan/inf");
     check(sum.find("ВНИМАНИЕ: в записи есть кадры с неконечными значениями") != std::string::npos,

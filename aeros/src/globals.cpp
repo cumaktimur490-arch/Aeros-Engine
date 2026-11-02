@@ -361,6 +361,12 @@ int  uiTreeW        = 264;
 int  uiPropsW       = 470;
 int  uiBottomH      = 200;
 
+// v1.29.0 — фиксированный такт физики. 240 Гц по умолчанию: заметно выше
+// герцовки обычного монитора (60/144), но посильно для решателя на сетке 24^3.
+// Значения можно менять в панели «Такт физики», в aeros_settings.ini и ключами
+// --physics-hz / --physics-substeps / --no-fixed-physics.
+PhysClock physClock;
+
 // --- v1.26.0 Карта давления ---
 bool  aeroCpAutoRange = true;
 float aeroCpMin = -2.0f;

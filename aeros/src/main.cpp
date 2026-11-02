@@ -200,6 +200,11 @@ bool saveSettings(const std::string& path) {
     f << "uiTreeW=" << uiTreeW << "\n";
     f << "uiPropsW=" << uiPropsW << "\n";
     f << "uiBottomH=" << uiBottomH << "\n";
+    // v1.29.0 — фиксированный такт физики (Гц), как в BeamNG.drive
+    f << "physFixed=" << (physClock.fixed ? 1 : 0) << "\n";
+    f << "physHz=" << physClock.hz << "\n";
+    f << "physMaxSubsteps=" << physClock.maxSubsteps << "\n";
+    f << "physParticleSubsteps=" << physClock.particleSubsteps << "\n";
     return f.good();
 }
 
@@ -251,7 +256,9 @@ bool loadSettings(const std::string& path) {
             else if (key == "uiShowConsole") uiShowConsole = (std::stoi(val) != 0);
             else if (key == "uiSelectedLeaf") {
                 int v = std::stoi(val);
-                uiSelectedLeaf = (v >= 1 && v <= 20) ? v : 9;
+                // v1.29.0 — узлов стало 21 (добавлен «Такт физики»); при мусоре
+                // в файле возвращаем прежний узел по умолчанию, а не случайный.
+                uiSelectedLeaf = (v >= 1 && v <= 21) ? v : 9;
             }
             else if (key == "uiTreeW") {
                 int v = std::stoi(val);
@@ -260,6 +267,19 @@ bool loadSettings(const std::string& path) {
             else if (key == "uiPropsW") {
                 int v = std::stoi(val);
                 uiPropsW = (v >= 240 && v <= 1200) ? v : 470;
+            }
+            else if (key == "physFixed") physClock.fixed = (std::stoi(val) != 0);
+            else if (key == "physHz") {
+                float v = std::stof(val);
+                if (std::isfinite(v) && v >= 1.0f && v <= 5000.0f) physClock.hz = v;
+            }
+            else if (key == "physMaxSubsteps") {
+                int v = std::stoi(val);
+                physClock.maxSubsteps = (v >= 1 && v <= 4096) ? v : 64;
+            }
+            else if (key == "physParticleSubsteps") {
+                int v = std::stoi(val);
+                physClock.particleSubsteps = (v >= 1 && v <= 64) ? v : 8;
             }
             else if (key == "uiBottomH") {
                 int v = std::stoi(val);
@@ -344,6 +364,27 @@ static void collectDebugFacts() {
                   lbmParams.enabled ? "включён" : "выключен", lbmNx, lbmNy, lbmNz,
                   lbmCurrentStep, lbmParams.stepsPerFrame);
     debugLogAddFact("Физика", "LBM", buf);
+    // v1.29.0 — с какой частотой на самом деле считалась физика. Это первое, что
+    // нужно знать при жалобе «на моём ПК обтекание развивается быстрее/медленнее»:
+    // до 1.29.0 частота физики была равна частоте кадров.
+    {
+        float lat = (lbmParams.enabled && lbmInitialized) ? lbmLatticeDtWorld() : 0.0f;
+        std::snprintf(buf, sizeof(buf),
+                      "%s, %.0f Гц (факт %.1f Гц), во сколько раз выше кадров: %.2f, тактов на кадр: %d, "
+                      "предел на кадр: %d, подшагов частиц: %d",
+                      physClock.fixed ? "фиксированный такт" : "покадровый режим",
+                      physClock.hz, physClock.achievedHz, physClock.displayRatio,
+                      physClock.ticks, physClock.maxSubsteps, physClock.particleSubsteps);
+        debugLogAddFact("Физика", "Такт физики", buf);
+        std::snprintf(buf, sizeof(buf),
+                      "шаг решётки %.4f мс, шагов решётки на кадр %d (всего %lld), модельное время %.3f с, "
+                      "темп к учтённому времени %.4f, к настоящим часам %.4f, пропущено %.3f с%s",
+                      lat * 1000.0f, physClock.latticeSteps, physClock.totalLatticeSteps,
+                      physClock.simTime, physClock.timeScale, physClock.wallScale,
+                      physClock.droppedTime,
+                      physClock.saturated ? ", ОТСТАВАНИЕ (не успеваем)" : "");
+        debugLogAddFact("Физика", "Модельное время", buf);
+    }
     std::snprintf(buf, sizeof(buf), "rho %.5f, vmax %.4f м/с, TKE %.5f, Re %.1f, сходимость %s",
                   lbmAvgRho, lbmMaxVelocityWorld, lbmTKE, lbmReynolds,
                   lbmConverged ? "достигнута" : "нет");
@@ -554,6 +595,11 @@ int main(int argc, char** argv) {
     int   cliTLCap     = 0;              // ёмкость буфера, кадров
     int   cliTLField   = -1;             // снимок поля каждый N-й кадр (0 = не снимать)
     float cliTLSpeed   = 0.0f;           // скорость воспроизведения
+    // v1.29.0 — ключи фиксированного такта физики (как в BeamNG.drive)
+    bool  cliPhysFixed    = false;       // --fixed-physics
+    bool  cliPhysNoFixed  = false;       // --no-fixed-physics (прежний покадровый режим)
+    float cliPhysHz       = 0.0f;        // --physics-hz N
+    int   cliPhysSubsteps = 0;           // --physics-substeps N
     for (int i=1; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--vulkan" || arg == "-vulkan" || arg == "--vk") {
@@ -572,6 +618,14 @@ int main(int argc, char** argv) {
             cliOverlay = true;
         } else if (arg == "--physics-every" && i+1 < argc) {
             cliPhysicsEvery = std::atoi(argv[++i]);
+        } else if (arg == "--fixed-physics") {
+            cliPhysFixed = true;
+        } else if (arg == "--no-fixed-physics") {
+            cliPhysNoFixed = true;
+        } else if (arg == "--physics-hz" && i+1 < argc) {
+            cliPhysHz = (float)std::atof(argv[++i]);
+        } else if (arg == "--physics-substeps" && i+1 < argc) {
+            cliPhysSubsteps = std::atoi(argv[++i]);
         } else if (arg == "--timelapse") {
             cliTimelapse = true;
         } else if (arg == "--no-timelapse") {
@@ -721,6 +775,25 @@ int main(int argc, char** argv) {
         loadSettings("aeros_settings.ini");
         std::cout << "[Settings] Loaded aeros_settings.ini if exists" << std::endl;
     }
+
+    // v1.29.0 — ключи такта физики применяем ПОСЛЕ ini: командная строка важнее
+    // сохранённых настроек (иначе --physics-hz молча перекрывался файлом).
+    if (cliPhysFixed)   physClock.fixed = true;
+    if (cliPhysNoFixed) physClock.fixed = false;
+    if (cliPhysHz > 0.5f) {
+        physClock.hz = cliPhysHz;
+        if (physClock.hz < 1.0f) physClock.hz = 1.0f;
+        if (physClock.hz > 5000.0f) physClock.hz = 5000.0f;
+    }
+    if (cliPhysSubsteps > 0) {
+        physClock.maxSubsteps = cliPhysSubsteps;
+        if (physClock.maxSubsteps > 4096) physClock.maxSubsteps = 4096;
+    }
+    physClock.sanitize();
+    DBG_INFO("такт физики: %s, %.0f Гц, предел %d тактов на кадр (%s)",
+             physClock.fixed ? "фиксированный" : "покадровый (как до v1.29.0)",
+             physClock.hz, physClock.maxSubsteps,
+             physClock.fixed ? "не зависит от герцовки монитора" : "частота физики = частоте кадров");
 
     // Settings file can override renderer if CLI is Auto
     if (requestedAPI == RendererAPI::Auto) {
@@ -1079,9 +1152,40 @@ int main(int argc, char** argv) {
         auto frameStart = std::chrono::high_resolution_clock::now();
 
         auto tLBM0 = std::chrono::high_resolution_clock::now();
+        // =====================================================
+        // v1.29.0 — ФИКСИРОВАННЫЙ ТАКТ ФИЗИКИ (как в BeamNG.drive).
+        // Частота тактов задаётся в Гц (physClock.hz) и не зависит от частоты
+        // кадров: на кадр в 60 Гц при 240 Гц физики приходится 4 такта, а шаги
+        // решётки LBM считаются по накопленному МОДЕЛЬНОМУ времени. Раньше за кадр
+        // делалось stepsPerFrame шагов решётки, то есть на мониторе 144 Гц одно и
+        // то же обтекание развивалось в 2.4 раза быстрее, чем на 60 Гц, — результат
+        // зависел от железа. Теперь не зависит.
+        // =====================================================
+        const float fpsNow = (deltaTime > 1e-6f) ? 1.0f / deltaTime : 0.0f;
+        const float latticeDt = (lbmParams.enabled && lbmInitialized) ? lbmLatticeDtWorld() : 0.0f;
+        int lbmStepsThisFrame = -1;   // -1 = «как раньше», по stepsPerFrame
+        const int physTicks = physClock.advance(deltaTime, latticeDt, fpsNow, &lbmStepsThisFrame);
+        const float simDtFrame = physClock.frameSimDt();   // модельных секунд за кадр
+
+        // Если физика упирается в предел тактов, модельное время начинает отставать
+        // от реального (как slow motion в BeamNG). Это видно в панели и в строке
+        // состояния, но пользователь может и не смотреть туда — пишем в журнал один
+        // раз за эпизод, с причиной и советом.
+        static bool s_physSatWarned = false;
+        if (physClock.fixed && physClock.saturated && !s_physSatWarned) {
+            s_physSatWarned = true;
+            DBG_WARN("физика не успевает за реальным временем: %d тактов (предел %d), "
+                     "модельное время идёт в %.3f× реального — уменьшите частоту тактов "
+                     "или нагрузку (сетка, частицы)",
+                     physTicks, physClock.maxSubsteps, physClock.timeScale);
+        } else if (!physClock.saturated) {
+            s_physSatWarned = false;
+        }
+
         if (lbmParams.enabled) {
-            // v1.9.0 adaptive LBM stepping
-            if (aeroAdaptiveLBM) {
+            // v1.9.0 adaptive LBM stepping — только в прежнем покадровом режиме:
+            // при фиксированном такте он менял бы частоту физики за спиной пользователя.
+            if (!physClock.fixed && aeroAdaptiveLBM) {
                 // Adjust steps based on frame time
                 if (perfFrameMs > 33.0f && lbmParams.stepsPerFrame > 1) {
                     lbmParams.stepsPerFrame = std::max(1, lbmParams.stepsPerFrame - 1);
@@ -1089,13 +1193,25 @@ int main(int argc, char** argv) {
                     lbmParams.stepsPerFrame++;
                 }
             }
-            updateLBM(deltaTime);
+            updateLBM(physClock.tickDt, lbmStepsThisFrame);
         }
         auto tLBM1 = std::chrono::high_resolution_clock::now();
         perfLBMms = std::chrono::duration<float, std::milli>(tLBM1-tLBM0).count();
 
         auto tPart0 = std::chrono::high_resolution_clock::now();
-        if (showParticles) updateParticles(deltaTime);
+        if (showParticles) {
+            if (physClock.fixed) {
+                // Адвекция частиц идёт тем же фиксированным шагом: много маленьких
+                // подшагов вместо одного большого (просадка кадра больше не даёт
+                // «прыжок» частиц через половину расчётной области).
+                const float dtPart = physClock.particleDt();
+                const int nPart = physClock.partSteps;
+                if (nPart > 0 && dtPart > 0.0f)
+                    for (int k = 0; k < nPart; ++k) updateParticles(dtPart);
+            } else {
+                updateParticles(deltaTime);
+            }
+        }
         auto tPart1 = std::chrono::high_resolution_clock::now();
         perfParticlesMs = std::chrono::duration<float, std::milli>(tPart1-tPart0).count();
 
@@ -1106,7 +1222,12 @@ int main(int argc, char** argv) {
         updateLiftDragArrows();
         // v1.19.0 Flight dynamics — обновляем после расчета сил
         if (aeroFlightMode) {
-            updateFlightDynamics(deltaTime, liftVector, dragVector, momentVector, centerOfPressure);
+            // v1.29.0 — динамика полёта интегрируется на модельном времени такта,
+            // а не на deltaTime кадра: при фиксированном такте это тот же шаг, что
+            // у решателя и частиц, поэтому 6DOF не «ускоряется» на быстром мониторе.
+            const float dtFlight = physClock.fixed ? simDtFrame : deltaTime;
+            if (dtFlight > 0.0f)
+                updateFlightDynamics(dtFlight, liftVector, dragVector, momentVector, centerOfPressure);
         }
         auto tForce1 = std::chrono::high_resolution_clock::now();
         perfForcesMs = std::chrono::duration<float, std::milli>(tForce1-tForce0).count();

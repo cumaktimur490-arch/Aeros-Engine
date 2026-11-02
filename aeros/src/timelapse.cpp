@@ -282,6 +282,13 @@ void timelapseRecordFrame(long long frameNumber, float timeSeconds) {
     f.badPops     = lbmBadPops;
     f.cpLo      = fin(g_cpLo);
     f.cpHi      = fin(g_cpHi);
+    // v1.29.0 — как именно тактовала физика на этом кадре
+    f.physHz         = fin(physClock.hz);
+    f.physAchievedHz = fin(physClock.achievedHz);
+    f.physTicks      = physClock.ticks;
+    f.physLbmSteps   = physClock.latticeSteps;
+    f.physSimTime    = (float)(std::isfinite(physClock.simTime) ? physClock.simTime : 0.0);
+    f.physTimeScale  = fin(physClock.timeScale);
     // Проверка устойчивости (NaN/Inf). Шаг 97, как в журнале физики v1.25.0,
     // пропускал до 96/97 неконечных значений: единичный NaN в позициях частиц
     // почти никогда не попадал в выборку, а именно он означает, что расчёт
@@ -482,18 +489,20 @@ const char* timelapseCsvHeader() {
            "lift_x,lift_y,lift_z,drag_x,drag_y,drag_z,moment_x,moment_y,moment_z,"
            "cop_x,cop_y,cop_z,frame_ms,lbm_ms,particles_ms,forces_ms,streamlines_ms,"
            "voxel_ms,nonfinite,residual_rho,residual_u,cp_lo,cp_hi,"
-           "lbm_neg_pops,lbm_bad_pops,has_field";
+           "lbm_neg_pops,lbm_bad_pops,has_field,"
+           "phys_hz,phys_achieved_hz,phys_ticks,phys_lbm_steps,phys_sim_time,phys_time_scale";
 }
 
 void timelapseCsvRow(const TLFrame& f, std::string* out) {
     if (!out) return;
-    char buf[1024];
+    char buf[1536];   // v1.29.0 — 47 колонок: прежних 1024 стало впритык
     std::snprintf(buf, sizeof(buf),
                   "%lld,%.6f,%.4f,%.3f,%s,%d,%d,%d,%d,%d,"
                   "%.6f,%.6f,%.6f,%.6f,%.3f,"
                   "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
                   "%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
-                  "%d,%.3e,%.3e,%.4f,%.4f,%lld,%lld,%d",
+                  "%d,%.3e,%.3e,%.4f,%.4f,%lld,%lld,%d,"
+                  "%.2f,%.2f,%d,%d,%.6f,%.4f",
                   f.frame, f.time_s, f.dt_ms, f.fps, f.backendCuda ? "CUDA" : "CPU",
                   f.particles, f.drawn, f.streamlines, f.slVerts, f.lbmStep,
                   f.lbmRho, f.lbmVmax, f.lbmTke, f.reynolds,
@@ -503,7 +512,9 @@ void timelapseCsvRow(const TLFrame& f, std::string* out) {
                   f.cop[0], f.cop[1], f.cop[2],
                   f.frameMs, f.lbmMs, f.partMs, f.forceMs, f.streamMs, f.voxelMs,
                   f.nonfinite, f.residualRho, f.residualU, f.cpLo, f.cpHi,
-                  f.negPops, f.badPops, f.fieldFrameNo ? 1 : 0);
+                  f.negPops, f.badPops, f.fieldFrameNo ? 1 : 0,
+                  f.physHz, f.physAchievedHz, f.physTicks, f.physLbmSteps,
+                  f.physSimTime, f.physTimeScale);
     *out = buf;
 }
 
@@ -556,6 +567,9 @@ std::string timelapseSummary() {
     double liftSum = 0, dragSum = 0;
     long long nonfiniteFrames = 0, nonfiniteTotal = 0, cudaFrames = 0, fieldFrames = 0;
     long long negPopsTotal = 0, badPopsTotal = 0, negPopsFrames = 0;
+    // v1.29.0 — как тактовала физика за всю запись
+    long long ticksTotal = 0, lbmStepsTotal = 0, saturatedFrames = 0;
+    float hzTarget = 0.0f, hzMin = 1e30f, hzMax = 0.0f, tsMin = 1e30f, tsMax = 0.0f;
     int n = 0;
     for (int i = 0; i < g_count; ++i) {
         TLFrame f;
@@ -584,6 +598,18 @@ std::string timelapseSummary() {
         if (f.negPops > 0 || f.badPops > 0) ++negPopsFrames;
         if (f.backendCuda) ++cudaFrames;
         if (f.fieldFrameNo) ++fieldFrames;
+        ticksTotal    += f.physTicks;
+        lbmStepsTotal += f.physLbmSteps;
+        if (f.physHz > 0.5f) hzTarget = f.physHz;      // последнее заданное значение
+        if (f.physAchievedHz > 0.5f) {
+            if (f.physAchievedHz < hzMin) hzMin = f.physAchievedHz;
+            if (f.physAchievedHz > hzMax) hzMax = f.physAchievedHz;
+        }
+        if (f.physTimeScale > 0.0f) {
+            if (f.physTimeScale < tsMin) tsMin = f.physTimeScale;
+            if (f.physTimeScale > tsMax) tsMax = f.physTimeScale;
+            if (f.physTimeScale < 0.995f) ++saturatedFrames;
+        }
     }
     if (n <= 0) return std::string("таймлапс: записи нет\n");
     TLFrame first, last;
@@ -622,6 +648,21 @@ std::string timelapseSummary() {
                   "Аномалии решателя LBM: отрицательных популяций %lld, заменённых нефизических %lld, кадров с аномалиями %lld\n",
                   negPopsTotal, badPopsTotal, negPopsFrames);
     s += buf;
+    if (hzMin > hzMax) { hzMin = hzMax = 0.0f; }
+    if (tsMin > tsMax) { tsMin = tsMax = 0.0f; }
+    std::snprintf(buf, sizeof(buf),
+                  "Такт физики (v1.29.0): задано %.0f Гц, фактически %.0f..%.0f Гц | тактов за запись %lld (сред %.2f на кадр), "
+                  "шагов решётки %lld (сред %.2f на кадр)\n",
+                  hzTarget, hzMin, hzMax, ticksTotal, n > 0 ? (double)ticksTotal / n : 0.0,
+                  lbmStepsTotal, n > 0 ? (double)lbmStepsTotal / n : 0.0);
+    s += buf;
+    std::snprintf(buf, sizeof(buf),
+                  "Модельное время: %.3f с (в конце записи), отношение к реальному %.4f..%.4f | кадров с отставанием %lld из %d\n",
+                  last.physSimTime, tsMin, tsMax, saturatedFrames, n);
+    s += buf;
+    if (saturatedFrames > 0)
+        s += "ВНИМАНИЕ: физика не успевала за реальным временем (модельное время шло медленнее) — "
+             "уменьшите частоту тактов или размер сетки/число частиц.\n";
     if (nonfiniteFrames > 0)
         s += "ВНИМАНИЕ: в записи есть кадры с неконечными значениями — физика теряла устойчивость.\n";
     if (negPopsTotal > 0 || badPopsTotal > 0)

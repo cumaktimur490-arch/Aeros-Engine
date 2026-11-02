@@ -704,11 +704,24 @@ bool testLBMPerformance() {
     if (!lbmInitialized) { logTest("  SKIP: LBM not initialized"); return true; }
 
     int total = lbmNx*lbmNy*lbmNz;
+    // v1.29.0 — при фиксированном такте физики шагов за кадр делается столько,
+    // сколько набралось по модельному времени, а не stepsPerFrame.
+    int stepsDone = (physClock.fixed && physClock.latticeSteps > 0)
+                        ? physClock.latticeSteps : lbmParams.stepsPerFrame;
+    if (stepsDone < 1) stepsDone = 1;
     float mlups = 0.0f;
     if (lbmTimeMs > 1e-6f) {
-        mlups = (total * lbmParams.stepsPerFrame) / (lbmTimeMs * 1000.0f);
+        mlups = (total * stepsDone) / (lbmTimeMs * 1000.0f);
     }
-    logTest("  Cells: " + std::to_string(total) + " | Steps/frame: " + std::to_string(lbmParams.stepsPerFrame) + " | Time: " + std::to_string(lbmTimeMs) + " ms | MLUPS: " + std::to_string(mlups));
+    logTest("  Cells: " + std::to_string(total) + " | Steps/frame: " + std::to_string(stepsDone)
+            + " (setting " + std::to_string(lbmParams.stepsPerFrame) + ")"
+            + " | Time: " + std::to_string(lbmTimeMs) + " ms | MLUPS: " + std::to_string(mlups));
+    logTest("  Physics clock: " + std::string(physClock.fixed ? "fixed " : "per-frame ")
+            + std::to_string((int)physClock.hz) + " Hz | ticks/frame "
+            + std::to_string(physClock.ticks) + " | achieved "
+            + std::to_string((int)physClock.achievedHz) + " Hz | sim time "
+            + std::to_string(physClock.simTime) + " s | wall scale "
+            + std::to_string(physClock.wallScale) + "x");
     logTest("  OpenMP threads: " + std::to_string(perfOpenMPThreads) + " | Frame: " + std::to_string(perfFrameMs) + " ms");
 
     if (lbmTimeMs > 100.0f) logTestWarn("  WARN: LBM step time >100ms — may drop FPS");

@@ -64,6 +64,16 @@ struct TLFrame {
     float cpLo;               // нижняя граница диапазона карты давления
     float cpHi;               // верхняя граница диапазона карты давления
     long long fieldFrameNo;   // номер кадра, для которого есть снимок поля (0 = нет)
+    // v1.29.0 — фиксированный такт физики: без этих полей по записи нельзя
+    // понять, с какой частотой на самом деле считалась физика и не отставало ли
+    // модельное время от реального (именно это объясняет «разную скорость
+    // обтекания» на разных машинах в версиях до 1.29.0).
+    float physHz;             // целевая частота тактов физики, Гц
+    float physAchievedHz;     // фактическая частота тактов на этом кадре, Гц
+    int   physTicks;          // сколько тактов физики пришлось на кадр
+    int   physLbmSteps;       // сколько шагов решётки LBM они дали
+    float physSimTime;        // накопленное модельное время, с
+    float physTimeScale;      // simTime/realTime: 1.0 = идём в реальном времени
 
     TLFrame()
         : frame(0), time_s(0), dt_ms(0), fps(0), backendCuda(0), particles(0),
@@ -71,7 +81,9 @@ struct TLFrame {
           lbmTke(0), reynolds(0), frameMs(0), lbmMs(0), partMs(0), forceMs(0),
           streamMs(0), voxelMs(0), nonfinite(0), residualRho(0), residualU(0),
           negPops(0), badPops(0),
-          cpLo(0), cpHi(0), fieldFrameNo(0) {
+          cpLo(0), cpHi(0), fieldFrameNo(0),
+          physHz(0), physAchievedHz(0), physTicks(0), physLbmSteps(0),
+          physSimTime(0), physTimeScale(1.0f) {
         lift[0]=lift[1]=lift[2]=0; drag[0]=drag[1]=drag[2]=0;
         moment[0]=moment[1]=moment[2]=0; cop[0]=cop[1]=cop[2]=0;
     }

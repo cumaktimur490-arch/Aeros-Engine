@@ -1138,7 +1138,30 @@ void stepLBMCPU(int steps) {
     lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
 }
 
-void updateLBM(float deltaTime) {
+// v1.29.0 — сколько ФИЗИЧЕСКИХ секунд занимает один шаг решётки.
+// Формула та же, что и масштаб скорости внутри stepLBMCPU (velScale = flowSpeed /
+// |u_LB|): в решёточных единицах c = Δx/Δt = 1, значит Δt_физ = Δx_физ / velScale.
+// Это единственная «правильная» длительность шага явного LBM — уменьшить её можно
+// только измельчением сетки, поэтому тактовый генератор считает шаги решётки по
+// накопленному модельному времени, а не по кадрам.
+float lbmLatticeDtWorld() {
+    if (!lbmInitialized) return 0.0f;
+    float dx = lbmCellSizeX;
+    if (!std::isfinite(dx) || dx <= 0.0f) return 0.0f;
+    float inUx, inUy, inUz;
+    computeInletVelocityLB(inUx, inUy, inUz);
+    float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
+    if (!std::isfinite(U0mag) || U0mag < 1e-6f) U0mag = 0.08f;
+    float velScale = flowSpeed / U0mag;
+    if (!std::isfinite(velScale) || velScale > 1000.0f) velScale = 20.0f;
+    if (velScale < 0.01f) velScale = 0.01f;
+    float dt = dx / velScale;
+    if (!std::isfinite(dt) || dt <= 0.0f) return 0.0f;
+    if (dt > 1.0f) dt = 1.0f;   // защита от вырожденной сетки: шаг не длиннее секунды
+    return dt;
+}
+
+void updateLBM(float deltaTime, int forceSteps) {
     if (!lbmParams.enabled) return;
     if (!lbmInitialized) { initLBM(); return; }
     if (lbmNx != g_voxNx || lbmNy != g_voxNy || lbmNz != g_voxNz) {
@@ -1150,10 +1173,21 @@ void updateLBM(float deltaTime) {
         }
         return;
     }
-    int steps = lbmParams.stepsPerFrame;
-    if (steps <= 0) steps = 1;
-    if (steps > 50) steps = 50;
-    if (deltaTime > 0.02f) steps = std::min(steps*2, 50);
+    int steps;
+    if (forceSteps >= 0) {
+        // v1.29.0 — число шагов пришло из тактового генератора: оно посчитано по
+        // модельному времени, поэтому результат больше не зависит от герцовки
+        // монитора и от просадок кадров. 0 — законный ответ: за этот кадр
+        // модельное время ещё не накопилось на целый шаг решётки.
+        steps = forceSteps;
+        if (steps > 64) steps = 64;
+    } else {
+        steps = lbmParams.stepsPerFrame;
+        if (steps <= 0) steps = 1;
+        if (steps > 50) steps = 50;
+        if (deltaTime > 0.02f) steps = std::min(steps*2, 50);
+    }
+    if (steps <= 0) return;
     stepLBMCPU(steps);
     if (lbmCurrentStep % 30 == 0) computeLBMVorticityAndQ();
 }

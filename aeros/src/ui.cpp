@@ -56,6 +56,9 @@ float tlValNonFinite(const TLFrame& f){ return (float)f.nonfinite; }
 // v1.27.0 — суммарные аномалии решателя LBM: отрицательные популяции и значения,
 // которые пришлось заменить как нефизические. Нуль — расчёт чистый.
 float tlValLbmAnomaly(const TLFrame& f) { return (float)(f.negPops + f.badPops); }
+// v1.29.0 — фактическая частота тактов физики. По этому графику видно, держится ли
+// заданный режим и в каком месте расчёт начал отставать от реального времени.
+float tlValPhysHz(const TLFrame& f)   { return f.physAchievedHz; }
 
 // График истории: окно из tlChartFrames кадров, заканчивающееся на курсоре.
 void drawTLChart(const char* label, float (*get)(const TLFrame&), ImU32 color, float height) {
@@ -353,7 +356,7 @@ static void drawTimelapseWindow() {
     ImGui::Separator();
 
     // ---------- Рабочая площадь: графики слева, поле давления справа ----------
-    const int   nCharts = 11;
+    const int   nCharts = 12;   // v1.29.0 — добавлен график такта физики
     const float readoutH = tlFullscreen ? 120.0f : 96.0f;
     float body = ImGui::GetContentRegionAvail().y - readoutH;
     if (body < 120.0f) body = 120.0f;
@@ -383,6 +386,8 @@ static void drawTimelapseWindow() {
     drawTLChart(_TR("NaN/Inf count", "счётчик NaN/Inf"), tlValNonFinite, IM_COL32(255, 90, 90, 255), chartH);
     drawTLChart(_TR("LBM anomalies (neg/replaced populations)", "аномалии LBM (минус/замены популяций)"),
                 tlValLbmAnomaly, IM_COL32(255, 160, 60, 255), chartH);
+    drawTLChart(_TR("physics tick rate, Hz", "частота тактов физики, Гц"),
+                tlValPhysHz, IM_COL32(130, 200, 255, 255), chartH);
     ImGui::EndChild();
 
     if (tlShowField && chartsW < totalW) {
@@ -539,6 +544,7 @@ static const UiLeaf kUiLeaves[] = {
     { 1,  4, "Генерация кадров",            "Frame generation" },
     { 2, 14, "Воксельная сетка (коллизия)", "Voxel mesh (collision)" },
     { 2, 16, "Решатель LBM",                "LBM solver" },
+    { 2, 21, "Такт физики (Гц)",            "Physics rate (Hz)" },
     { 3, 13, "Давление и силы",             "Pressure & forces" },
     { 3, 17, "Вычисления и экспорт",        "Compute & export" },
     { 3, 11, "Частицы",                     "Particles" },
@@ -653,6 +659,31 @@ static void drawUiStatusBar() {
                 (float)(g_vertices.size() * 4 + g_distanceField.size() * 4 +
                         particlePositions.size() * 4) / 1048576.0f,
                 _TR("hide panels", "скрыть панели"));
+    // v1.29.0 — с какой частотой на самом деле тактуется физика и не отстаёт ли
+    // модельное время от реального. Это главные числа режима «физика быстрее
+    // герцовки»: displayRatio показывает, во сколько раз тактов больше, чем кадров.
+    if (physClock.fixed) {
+        const float stepsPerTick = (physClock.ticks > 0)
+            ? (float)physClock.latticeSteps / (float)physClock.ticks : 0.0f;
+        ImGui::Text("%s %.0f %s (%s %.1f) — %.2fx %s | %s %d | %s %.3f | %s %.3f %s = %.4fx %s",
+                    _TR("physics rate", "такт физики"), physClock.hz, _TR("Hz", "Гц"),
+                    _TR("actual", "факт"), physClock.achievedHz,
+                    physClock.displayRatio, _TR("of frame rate", "от частоты кадров"),
+                    _TR("ticks/frame", "тактов/кадр"), physClock.ticks,
+                    _TR("lattice steps/tick", "шагов решётки/такт"), stepsPerTick,
+                    _TR("sim time", "модельное время"), physClock.simTime, _TR("s", "с"),
+                    // wallScale — против НАСТОЯЩИХ часов: учитывает сознательно
+                    // пропущенное время (alt-tab, упор в предел тактов).
+                    physClock.wallScale, _TR("of real", "реального"));
+        if (physClock.droppedTime > 0.05)
+            ImGui::Text("%s %.2f %s", _TR("skipped real time", "пропущено реального времени"),
+                        physClock.droppedTime, _TR("s (long frames / tick limit)",
+                                                   "с (длинные кадры / предел тактов)"));
+        if (physClock.saturated)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s",
+                _TR("Physics is LAGGING behind real time (tick limit reached) — lower the rate or the load",
+                    "Физика ОТСТАЁТ от реального времени (достигнут предел тактов) — уменьшите частоту или нагрузку"));
+    }
     if (lbmNegativePops > 0 || lbmBadPops > 0)
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "%s: %lld / %lld",
                            _TR("solver anomalies (neg/replaced)", "аномалии решателя (минус/замены)"),
@@ -826,9 +857,16 @@ if (uiSelectedLeaf == 2 && ImGui::CollapsingHeader(_TR("Performance v1.19.0", "�
     ImGui::Text("%s: %.2f ms", _TR("Voxel", "Воксель"), perfVoxelMs);
     if (lbmInitialized) {
         int total = lbmNx*lbmNy*lbmNz;
-        float mlups = (total * lbmParams.stepsPerFrame) / (lbmTimeMs > 0 ? lbmTimeMs : 1.0f) / 1000.0f;
-        ImGui::Text("LBM: %d %s | %.2f MLUPS | %.1f ms/step | TKE %.4f",
-            total, _TR("cells", "ячеек"), mlups, lbmTimeMs, lbmTKE);
+        // v1.29.0 — при фиксированном такте решатель делает НЕ stepsPerFrame шагов,
+        // а столько, сколько набралось по модельному времени (physClock.latticeSteps).
+        // Считать MLUPS по stepsPerFrame значило показывать выдуманную производительность.
+        int stepsDone = (physClock.fixed && physClock.latticeSteps > 0)
+                            ? physClock.latticeSteps : lbmParams.stepsPerFrame;
+        if (stepsDone < 1) stepsDone = 1;
+        float mlups = (total * stepsDone) / (lbmTimeMs > 0 ? lbmTimeMs : 1.0f) / 1000.0f;
+        ImGui::Text("LBM: %d %s | %.2f MLUPS (%d %s) | %.1f ms | TKE %.4f",
+            total, _TR("cells", "ячеек"), mlups, stepsDone,
+            _TR("steps/frame", "шагов/кадр"), lbmTimeMs, lbmTKE);
         ImGui::Text("Re: %.0f | Conv: %.2e | %s: %d | %s",
             lbmReynolds, lbmConvergence, _TR("Steps", "Шагов"), lbmCurrentStep, lbmConverged?_TR("YES","ДА"):_TR("NO","НЕТ"));
         // v1.26.0: мин/макс давления считаются один раз за шаг решателя (lbm.cpp),
@@ -1780,7 +1818,17 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     } else {
         ImGui::TextColored(ImVec4(1,0.8f,0.2f,1), "%s", _TR("Using potential flow + wake (legacy)", "Используется потенциальный поток + след (старый)"));
     }
-    ImGui::SliderInt(_TR("Steps per Frame", "Шагов за кадр"), &lbmParams.stepsPerFrame, 1, 50);
+    if (physClock.fixed) {
+        // v1.29.0 — при фиксированном такте число шагов решётки задаёт тактовый
+        // генератор (по модельному времени), поэтому этот ползунок не действует.
+        // Не прячем его: он снова заработает, если такт выключить.
+        ImGui::TextDisabled("%s", _TR("Steps per frame is set by the physics rate node",
+                                      "Число шагов за кадр задаётся тактом физики (узел «Такт физики»)"));
+        ImGui::SliderInt(_TR("Steps per Frame (inactive)", "Шагов за кадр (не действует)"),
+                         &lbmParams.stepsPerFrame, 1, 50);
+    } else {
+        ImGui::SliderInt(_TR("Steps per Frame", "Шагов за кадр"), &lbmParams.stepsPerFrame, 1, 50);
+    }
     ImGui::SliderFloat(_TR("Tau (relaxation)", "Тау (релаксация)"), &lbmParams.tau, 0.51f, 1.5f, "%.3f");
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (!std::isfinite(lbmParams.tau) || lbmParams.tau < 0.51f) lbmParams.tau = 0.6f;
@@ -1828,6 +1876,155 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     ImGui::BulletText("%s", _TR("Mach + Helicity + Total Pressure", "Мах + Спиральность + Полное давление"));
     ImGui::BulletText("%s", _TR("Adaptive stepping + stability checks", "Адаптивные шаги + проверки стабильности"));
     ImGui::BulletText("%s", _TR("Rainbow/Viridis/Parula/CoolWarm + EN/RU", "Радуга/Viridis/Parula/CoolWarm + EN/RU"));
+}
+
+// =====================================================
+// v1.29.0 — ТАКТ ФИЗИКИ: физика считается со своей частотой в Гц, а не
+// «один раз на кадр», как в BeamNG.drive (там 2000 Гц физики при рендере 60 к/с).
+// =====================================================
+if (uiSelectedLeaf == 21 && ImGui::CollapsingHeader(_TR("Physics rate & fixed timestep (v1.29.0)",
+                                                        "Такт физики и фиксированный шаг (v1.29.0)"),
+                                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::TextWrapped("%s", _TR(
+        "Physics ticks at a fixed rate, independent of the frame rate: the higher the Hz, the smaller "
+        "the integration step and the more accurate and stable the solution. The flow field advances by "
+        "SIMULATED time, so it no longer develops faster on a 144 Hz monitor than on 60 Hz.",
+        "Физика тактуется с постоянной частотой, независимо от частоты кадров: чем выше Гц, тем меньше "
+        "шаг интегрирования и тем точнее и устойчивее решение. Поле течёт по МОДЕЛЬНОМУ времени, поэтому "
+        "обтекание больше не развивается быстрее на мониторе 144 Гц, чем на 60 Гц."));
+
+    if (ImGui::Checkbox(_TR("Fixed physics timestep", "Фиксированный такт физики"), &physClock.fixed)) {
+        physClock.reset();
+        debugLogAction("такт физики", "%s", physClock.fixed
+            ? "фиксированный (частота не зависит от кадров)"
+            : "покадровый (как до v1.29.0: частота физики = частоте кадров)");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", physClock.fixed ? _TR("on", "вкл") : _TR("off", "выкл"));
+
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderFloat(_TR("Physics rate, Hz", "Частота физики, Гц"), &physClock.hz,
+                           30.0f, 2000.0f, "%.0f Hz")) {
+        physClock.sanitize();
+        debugLogAction("такт физики", "частота %.0f Гц", physClock.hz);
+    }
+
+    // Готовые режимы — как пресеты частоты в игровых движках
+    ImGui::Text("%s", _TR("Presets:", "Готовые режимы:"));
+    struct HzPreset { const char* ru; const char* en; float hz; };
+    static const HzPreset kPresets[] = {
+        { "60 Гц — как монитор",      "60 Hz — display rate",     60.0f   },
+        { "240 Гц — точный расчёт",   "240 Hz — accurate",        240.0f  },
+        { "500 Гц",                   "500 Hz",                   500.0f  },
+        { "1000 Гц",                  "1000 Hz",                  1000.0f },
+        { "2000 Гц — как BeamNG",     "2000 Hz — like BeamNG",    2000.0f },
+    };
+    for (int i = 0; i < (int)(sizeof(kPresets)/sizeof(kPresets[0])); ++i) {
+        if (i > 0) ImGui::SameLine();
+        const char* label = (currentLanguage == Language::Russian) ? kPresets[i].ru : kPresets[i].en;
+        if (ImGui::SmallButton(label)) {
+            physClock.hz = kPresets[i].hz;
+            physClock.sanitize();
+            debugLogAction("такт физики", "пресет %s", label);
+        }
+    }
+
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderInt(_TR("Max ticks per frame", "Предел тактов на кадр"),
+                         &physClock.maxSubsteps, 1, 512)) {
+        physClock.sanitize();
+        debugLogAction("такт физики", "предел тактов на кадр %d", physClock.maxSubsteps);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", _TR("(protection against freeze after a long frame)",
+                                  "(защита от «догонялок» после длинного кадра)"));
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderInt(_TR("Particle substeps per frame", "Подшагов частиц на кадр"),
+                         &physClock.particleSubsteps, 1, 64)) {
+        physClock.sanitize();
+        debugLogAction("такт физики", "подшагов частиц на кадр %d", physClock.particleSubsteps);
+    }
+
+    ImGui::Separator();
+    ImGui::Text("%s", _TR("Live measurement", "Живые измерения"));
+    if (ImGui::BeginTable("##physClockTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        const float lat = (lbmParams.enabled && lbmInitialized) ? lbmLatticeDtWorld() : 0.0f;
+        const float stepsPerTick = (physClock.ticks > 0)
+            ? (float)physClock.latticeSteps / (float)physClock.ticks : 0.0f;
+        struct Row { const char* ru; const char* en; char val[64]; };
+        Row rows[] = {
+            { "Целевая частота тактов",        "Target tick rate",       "" },
+            { "Фактическая частота",           "Achieved rate",          "" },
+            { "Во сколько раз выше кадров",    "Times above frame rate", "" },
+            { "Тактов физики на кадр",         "Ticks per frame",        "" },
+            { "Длительность такта",            "Tick duration",          "" },
+            { "Шаг решётки LBM",               "LBM lattice step",       "" },
+            { "Шагов решётки на такт",         "Lattice steps per tick", "" },
+            { "Всего шагов решётки",           "Total lattice steps",    "" },
+            { "Подшагов частиц на кадр",       "Particle substeps",      "" },
+            { "Модельное время",               "Simulated time",         "" },
+            { "Темп к учтённому времени",      "Rate vs accounted time", "" },
+            { "Темп к настоящим часам",        "Rate vs wall clock",     "" },
+            { "Пропущено реального времени",   "Real time skipped",      "" },
+        };
+        std::snprintf(rows[0].val,  sizeof(rows[0].val),  "%.0f Hz", physClock.hz);
+        std::snprintf(rows[1].val,  sizeof(rows[1].val),  "%.1f Hz", physClock.achievedHz);
+        std::snprintf(rows[2].val,  sizeof(rows[2].val),  "%.2fx (FPS %.1f)", physClock.displayRatio,
+                      deltaTime > 1e-6f ? 1.0f / deltaTime : 0.0f);
+        std::snprintf(rows[3].val,  sizeof(rows[3].val),  "%d / %d", physClock.ticks, physClock.maxSubsteps);
+        std::snprintf(rows[4].val,  sizeof(rows[4].val),  "%.3f ms", physClock.tickDt * 1000.0f);
+        if (lat > 0.0f) std::snprintf(rows[5].val, sizeof(rows[5].val), "%.3f ms", lat * 1000.0f);
+        else            std::snprintf(rows[5].val, sizeof(rows[5].val), "%s", _TR("solver off", "решатель выключен"));
+        std::snprintf(rows[6].val,  sizeof(rows[6].val),  "%.3f", stepsPerTick);
+        std::snprintf(rows[7].val,  sizeof(rows[7].val),  "%lld", physClock.totalLatticeSteps);
+        std::snprintf(rows[8].val,  sizeof(rows[8].val),  "%d x %.3f ms", physClock.partSteps,
+                      physClock.particleDt() * 1000.0f);
+        std::snprintf(rows[9].val,  sizeof(rows[9].val),  "%.3f s", physClock.simTime);
+        std::snprintf(rows[10].val, sizeof(rows[10].val), "%.4fx", physClock.timeScale);
+        std::snprintf(rows[11].val, sizeof(rows[11].val), "%.4fx%s", physClock.wallScale,
+                      physClock.saturated ? " (!)" : "");
+        std::snprintf(rows[12].val, sizeof(rows[12].val), "%.3f s", physClock.droppedTime);
+        const int nRows = (int)(sizeof(rows)/sizeof(rows[0]));
+        for (int i = 0; i < nRows; ++i) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%s", (currentLanguage == Language::Russian) ? rows[i].ru : rows[i].en);
+            ImGui::TableSetColumnIndex(1);
+            if (i == 11 && physClock.saturated) ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", rows[i].val);
+            else                                ImGui::Text("%s", rows[i].val);
+        }
+        ImGui::EndTable();
+    }
+
+    if (!physClock.fixed) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", _TR(
+            "Per-frame mode: the physics rate equals the frame rate, and the solver does stepsPerFrame "
+            "lattice steps per frame — the flow develops at different speeds on different machines.",
+            "Покадровый режим: частота физики равна частоте кадров, а решатель делает stepsPerFrame шагов "
+            "решётки за кадр — на разных машинах обтекание развивается с разной скоростью."));
+    } else if (physClock.saturated) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", _TR(
+            "Not keeping up: simulated time lags behind real time. Lower the rate, the grid size or the "
+            "particle count — the step itself stays fixed, so the solution does not break.",
+            "Не успеваем: модельное время отстаёт от реального. Уменьшите частоту, размер сетки или число "
+            "частиц — сам шаг остаётся фиксированным, поэтому решение не «рвётся»."));
+    } else {
+        ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f), "%s", _TR(
+            "Keeping up: simulated time matches real time, the step is constant.",
+            "Успеваем: модельное время совпадает с реальным, шаг постоянный."));
+    }
+    ImGui::TextWrapped("%s", _TR(
+        "In this mode the adaptive stepsPerFrame tuning is disabled: it used to change the physics rate "
+        "behind your back depending on the frame time.",
+        "В этом режиме автоподбор stepsPerFrame отключён: раньше он менял частоту физики за спиной "
+        "пользователя в зависимости от времени кадра."));
+    ImGui::TextWrapped("%s", _TR(
+        "Note: an explicit LBM lattice step has a fixed physical duration (cell size / velocity scale) — "
+        "it cannot be shortened by raising the tick rate, only by refining the grid. The tick rate sets how "
+        "often particles, flight dynamics and forces are integrated and how those lattice steps are scheduled.",
+        "Важно: длительность шага решётки явного LBM фиксирована (размер ячейки / масштаб скорости) — "
+        "поднять частоту тактов значит чаще интегрировать частицы, динамику полёта и силы и точнее "
+        "планировать шаги решётки, но не сделать сам шаг решётки короче. Короче шаг — только мельче сетка."));
 }
 
 if (uiSelectedLeaf == 17 && ImGui::CollapsingHeader(_TR("Compute & Export v1.19.0", "Вычисления и Экспорт v1.19.0"))) {
