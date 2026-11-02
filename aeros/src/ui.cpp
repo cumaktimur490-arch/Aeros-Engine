@@ -24,6 +24,7 @@
 #include "test_mode.h"
 #include "lbm.h"
 #include "forces.h"
+#include "flow_field.h"  // v1.30.0 — aeroCpNonFinite, airSutherlandViscosity
 #include "ui.h"
 #include "lang.h"
 #include "fsr.h"
@@ -684,10 +685,15 @@ static void drawUiStatusBar() {
                 _TR("Physics is LAGGING behind real time (tick limit reached) — lower the rate or the load",
                     "Физика ОТСТАЁТ от реального времени (достигнут предел тактов) — уменьшите частоту или нагрузку"));
     }
-    if (lbmNegativePops > 0 || lbmBadPops > 0)
-        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "%s: %lld / %lld",
+    // v1.30.0 — диагностика стала полнее: видно не только испорченные популяции,
+    // но и всё, что раньше подменялось молча (плотность вне диапазона, неконечные
+    // плотность/давление, срабатывание ограничителя |u| < 0.3, неконечный Cp).
+    if (lbmNegativePops > 0 || lbmBadPops > 0 || lbmRhoOutOfRange > 0 || lbmRhoNonFinite > 0 ||
+        lbmULimited > 0 || lbmPressureNonFinite > 0 || aeroCpNonFinite > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "%s: %lld / %lld | rho %lld+%lld | |u| %lld | p %lld | Cp %lld",
                            _TR("solver anomalies (neg/replaced)", "аномалии решателя (минус/замены)"),
-                           lbmNegativePops, lbmBadPops);
+                           lbmNegativePops, lbmBadPops, lbmRhoOutOfRange, lbmRhoNonFinite,
+                           lbmULimited, lbmPressureNonFinite, aeroCpNonFinite);
 }
 
 } // namespace
@@ -885,6 +891,21 @@ if (uiSelectedLeaf == 2 && ImGui::CollapsingHeader(_TR("Performance v1.19.0", "�
         else
             ImGui::Text("%s: 0 | %s: 0", _TR("negative populations", "отрицательных популяций"),
                         _TR("replaced (non-physical)", "заменено (нефизических)"));
+        // v1.30.0 — явная диагностика вместо тихой подмены. Раньше плотность
+        // молча обрезалась до [0.8; 1.2] внутри равновесных популяций, а давление
+        // — по скоростному напору; теперь данных это не касается, а каждое
+        // вмешательство решателя видно по счётчикам:
+        ImGui::Text("%s: %s %lld | %s %lld | %s %lld | %s %lld | %s %lld",
+                    _TR("Diagnostics per step", "Диагностика за шаг"),
+                    _TR("rho out of [0.5;1.5]", "rho вне [0.5;1.5]"), lbmRhoOutOfRange,
+                    _TR("rho NaN", "rho NaN"), lbmRhoNonFinite,
+                    _TR("|u|>0.3 limited", "|u|>0.3 ограничено"), lbmULimited,
+                    _TR("p NaN", "p NaN"), lbmPressureNonFinite,
+                    _TR("Cp NaN (triangles)", "Cp NaN (треугольников)"), aeroCpNonFinite);
+        if (lbmInertSettings()[0] != 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.3f, 1.0f), "%s: %s",
+                               _TR("Settings without effect", "Настройки без эффекта"),
+                               lbmInertSettings());
         ImGui::Text("%s: %.3e %s | Cs %.3f", _TR("TKE (m2/s2)", "TKE (м2/с2)"), lbmTKE,
                     _TR("subgrid", "подсеточная"), lbmParams.smagorinskyC);
     }
@@ -1166,7 +1187,7 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         lbmParams.stepsPerFrame = 5;
         lbmParams.tau = 0.55f;
         lbmParams.useTurbulence = true;
-        lbmParams.useZouHeBC = true;
+        lbmParams.useZouHeBC = false;   // v1.30.0 — не реализовано, пресет это больше не обещает
         lbmParams.useConvectiveOutlet = true;
         lbmParams.inletTurbulence = 0.02f;
         aeroAdaptiveLBM = true;
@@ -1238,7 +1259,7 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
     ImGui::SameLine();
     if (ImGui::Button(_TR("Enable Realistic LBM", "Включить реалистичный LBM"))) {
         lbmParams.enabled = true;
-        lbmParams.useZouHeBC = true;
+        lbmParams.useZouHeBC = false;   // v1.30.0 — схемы Zou/He в решателе нет, кнопка это больше не обещает
         lbmParams.useConvectiveOutlet = true;
         lbmParams.useTurbulence = true;
         lbmParams.inletTurbulence = 0.02f;
@@ -1841,9 +1862,21 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     ImGui::Checkbox(_TR("Smagorinsky LES Turbulence", "Турбулентность Smagorinsky LES"), &lbmParams.useTurbulence);
     if (lbmParams.useTurbulence) ImGui::SliderFloat(_TR("Smagorinsky C", "Константа Smagorinsky"), &lbmParams.smagorinskyC, 0.01f, 0.3f, "%.3f");
     ImGui::Checkbox(_TR("Adaptive Stepping (NEW v1.9.0)", "Адаптивные шаги (НОВОЕ v1.9.0)"), &aeroAdaptiveLBM);
-    ImGui::Checkbox(_TR("MRT (High Re stability)", "MRT (стабильность при высоком Re)"), &lbmParams.useMRT);
-    ImGui::Checkbox(_TR("Regularized LBM (stability)", "Регуляризованный LBM (стабильность)"), &lbmParams.useRegularized);
-    ImGui::Checkbox(_TR("Zou/He Inlet BC (accurate)", "Граничные условия Zou/He (точные)"), &lbmParams.useZouHeBC);
+    // v1.30.0 — честность настроек. В lbm.cpp нет ни одного чтения
+    // lbmParams.useMRT, useRegularized и useZouHeBC: коллизия везде BGK (tau),
+    // вход задаётся равновесными популяциями, а не схемой Zou/He, и регуляризации
+    // неравновесной части нет. Переключатели больше не делают вид, что работают:
+    // они заблокированы (значение из файла настроек видно, но не меняется) и
+    // подписаны как неподдерживаемые. Реализация потребовала бы новых алгоритмов
+    // коллизии и граничных условий, а их нельзя менять без тестов на сохранение
+    // массы и устойчивость — это отдельная работа, а не правка галочки.
+    ImGui::BeginDisabled(true);
+    ImGui::Checkbox(_TR("MRT (High Re stability) - NOT IMPLEMENTED", "MRT (стабильность при высоком Re) - НЕ РЕАЛИЗОВАНО"), &lbmParams.useMRT);
+    ImGui::Checkbox(_TR("Regularized LBM (stability) - NOT IMPLEMENTED", "Регуляризованный LBM (стабильность) - НЕ РЕАЛИЗОВАНО"), &lbmParams.useRegularized);
+    ImGui::Checkbox(_TR("Zou/He Inlet BC (accurate) - NOT IMPLEMENTED", "Граничные условия Zou/He (точные) - НЕ РЕАЛИЗОВАНО"), &lbmParams.useZouHeBC);
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", _TR("Inlet: equilibrium populations, outlet: convective/bounce-back, collision: BGK with Smagorinsky",
+                                  "Вход: равновесные популяции, выход: конвективный/bounce-back, коллизия: BGK со Смагоринским"));
     ImGui::Checkbox(_TR("Convective Outlet", "Конвективный выход"), &lbmParams.useConvectiveOutlet);
     ImGui::SliderFloat(_TR("Inlet Turbulence", "Турбулентность на входе"), &lbmParams.inletTurbulence, 0.0f, 0.1f, "%.3f");
     ImGui::Checkbox(_TR("Ground (for cars)", "Земля (для авто)"), &lbmParams.useGround);
@@ -1869,10 +1902,15 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     if (ImGui::Button("Step 10")) { stepLBMCPU(10); }
     ImGui::SameLine(); if (ImGui::Button("Step 100")) { stepLBMCPU(100); }
     ImGui::SameLine(); if (ImGui::Button("Step 500")) { stepLBMCPU(500); }
-    ImGui::SameLine(); if (ImGui::Button(_TR("Compute Vort/Q/TKE", "Вычислить вихрь/Q/TKE"))) { computeLBMVorticityAndQ(); }
+    // ИСПРАВЛЕНО: постобработка считает вихрь, Q-критерий и тензор деформации.
+    // TKE она БОЛЬШЕ НЕ ТРОГАЕТ — её даёт модель Смагоринского в шаге соударений
+    // (м2/с2), а прежняя надпись вводила в заблуждение.
+    ImGui::SameLine(); if (ImGui::Button(_TR("Compute Vort/Q/Strain", "Вычислить вихрь/Q/деформацию"))) { computeLBMVorticityAndQ(); }
     ImGui::Separator();
     ImGui::Text("%s v1.19.0:", _TR("Realistic features", "Реалистичные фичи"));
-    ImGui::BulletText("%s", _TR("Zou/He inlet + convective outlet + ground", "Вход Zou/He + конвективный выход + земля"));
+    // ИСПРАВЛЕНО: пункт обещал «Вход Zou/He», которого в решателе никогда не было.
+    ImGui::BulletText("%s", _TR("Equilibrium inlet + convective outlet + ground (Zou/He NOT implemented)",
+                                "Равновесный вход + конвективный выход + земля (Zou/He НЕ реализован)"));
     ImGui::BulletText("%s", _TR("Mach + Helicity + Total Pressure", "Мах + Спиральность + Полное давление"));
     ImGui::BulletText("%s", _TR("Adaptive stepping + stability checks", "Адаптивные шаги + проверки стабильности"));
     ImGui::BulletText("%s", _TR("Rainbow/Viridis/Parula/CoolWarm + EN/RU", "Радуга/Viridis/Parula/CoolWarm + EN/RU"));

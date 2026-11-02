@@ -89,7 +89,12 @@ void updateVertexColors() {
                 else cp /= beta;
             }
 
-            cp = aeroClampCp(cp);
+            // ИСПРАВЛЕНО: cp больше не обрезается до [-4; 2] ни для статистики,
+            // ни для цвета. s_cpPerVertex читают aeroUpdateCpRange (авто-масштаб
+            // карты давления по квантилям) и экспорт, поэтому обрезанные значения
+            // сжимали видимый диапазон и прятали настоящие экстремумы; а цвет
+            // ограничивает диапазон сам — внутри getRealisticPressureColor.
+            if (!std::isfinite(cp)) cp = 0.0f;
             if (!s_cpPerVertex.empty()) s_cpPerVertex[i] = cp;
 
             glm::vec3 col;
@@ -260,7 +265,12 @@ void updateVertexColors() {
                 // Давление падает к корме из-за вязкости и отрыва — эмпирика
                 cp -= 0.28f * w * w;
             }
-            cp = aeroClampCp(cp);
+            // ИСПРАВЛЕНО: cp больше не обрезается до [-4; 2] ни для статистики,
+            // ни для цвета. s_cpPerVertex читают aeroUpdateCpRange (авто-масштаб
+            // карты давления по квантилям) и экспорт, поэтому обрезанные значения
+            // сжимали видимый диапазон и прятали настоящие экстремумы; а цвет
+            // ограничивает диапазон сам — внутри getRealisticPressureColor.
+            if (!std::isfinite(cp)) cp = 0.0f;
             if (!s_cpPerVertex.empty()) s_cpPerVertex[i] = cp;
 
             glm::vec3 col;
@@ -400,8 +410,10 @@ void computeLiftDrag() {
         float frontal;
         float baseArea;
         float baseForce;
+        long long cpBad;   // треугольников с неконечным Cp — явная диагностика
         TriAccum() : force(0.0f), cpSum(0.0f), moment(0.0f), area(0.0f),
-                     pressSum(0.0f), frontal(0.0f), baseArea(0.0f), baseForce(0.0f) {}
+                     pressSum(0.0f), frontal(0.0f), baseArea(0.0f), baseForce(0.0f),
+                     cpBad(0) {}
     };
     const float machInf = vinf / (speedOfSound + 1e-6f);
     const bool  doCompressibility = (aeroMachEffects && machInf > 0.3f && machInf < 0.85f);
@@ -440,7 +452,18 @@ void computeLiftDrag() {
             float speed2 = glm::dot(vel,vel);
             cp = 1.0f - speed2 / (vinf*vinf);
         }
-        cp = aeroClampCp(cp);
+        // ИСПРАВЛЕНО: здесь стояло `cp = aeroClampCp(cp)` — Cp обрезался до
+        // [-4; 2] ПЕРЕД умножением на скоростной напор, и сила давления
+        //   pressureForce = -cp * q * n * area
+        // считалась по подменённому значению. На режимах с большими перепадами
+        // (передняя кромка, отрывной след, решатель LBM с настоящим p) это
+        // систематически занижало подъёмную силу, лоб и момент, а легенда карты
+        // давления не соответствовала расчёту. Физический Cp больше не
+        // ограничивается: для картинки диапазон режет сама карта цвета
+        // (pressureColorInRange -> glm::clamp), а силы берут настоящее значение.
+        // Неконечный Cp — признак развала расчёта: такой треугольник не даёт
+        // вклада в силу и учитывается в aeroCpNonFinite (панель сил, отчёт).
+        if (!std::isfinite(cp)) { a.cpBad++; cp = 0.0f; }
 
         // Давление — сила
         glm::vec3 pressureForce = -cp * q * n * area;
@@ -493,6 +516,7 @@ void computeLiftDrag() {
         a.area += area;
     };
 
+    long long cpBadTotal = 0;   // сколько треугольников дали неконечный Cp
     #ifdef _OPENMP
     #pragma omp parallel
     {
@@ -509,6 +533,7 @@ void computeLiftDrag() {
             frontalAreaCalc   += local.frontal;
             baseAreaCalc      += local.baseArea;
             baseForceCalc     += local.baseForce;
+            cpBadTotal        += local.cpBad;
         }
     }
     #else
@@ -523,8 +548,11 @@ void computeLiftDrag() {
         frontalAreaCalc   += acc.frontal;
         baseAreaCalc      += acc.baseArea;
         baseForceCalc     += acc.baseForce;
+        cpBadTotal        += acc.cpBad;
     }
     #endif
+
+    aeroCpNonFinite = cpBadTotal;   // диагностика вместо тихой подмены
 
     if (!std::isfinite(totalForce.x)) totalForce = glm::vec3(0);
 

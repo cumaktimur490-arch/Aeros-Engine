@@ -32,6 +32,11 @@ float lbmConvergence = 0.0f;
 // отрицательные значения и сколько было заменено как нефизические. Нули — норма.
 long long lbmNegativePops = 0;
 long long lbmBadPops = 0;
+// Явная диагностика вместо тихой подмены данных (v1.30.0):
+long long lbmRhoOutOfRange = 0;   // плотностей вне [0.5; 1.5] — расходимость
+long long lbmRhoNonFinite  = 0;   // плотностей NaN/Inf
+long long lbmULimited      = 0;   // ячеек, где сработал ограничитель |u| < 0.3
+long long lbmPressureNonFinite = 0; // неконечных значений давления за шаг
 float lbmTimeMs = 0.0f;
 float lbmTKE = 0.0f;
 
@@ -83,10 +88,22 @@ inline int fIdx(int cell, int q) { return cell*Q + q; }
 // v1.11.0 Physics Fix — корректное равновесие без костылей
 // =====================================================
 inline float computeEquilibriumFast(int qi, float rho, float ux, float uy, float uz, float usqr) {
+    // ИСПРАВЛЕНО: здесь стоял `rho = glm::clamp(rho, 0.8f, 1.2f)` с комментарием
+    // «без потери физики». Потеря была: равновесные популяции обязаны давать
+    //   sum_i feq_i       = rho        (масса)
+    //   sum_i feq_i * c_i = rho * u    (импульс)
+    // а с подменой rho сумма feq соответствовала НЕ плотности ячейки, а обрезанной
+    // величине. Каждый шаг столкновения после этого добавлял/отнимал массу там,
+    // где плотность выходила за [0.8; 1.2], то есть давление p = rho0*cs2*(rho-1)
+    // и суммарная масса поля искажались молча. Корректная плотность больше не
+    // ограничивается; невалидная (NaN/Inf) по-прежнему заменяется единицей, но
+    // теперь это видно по счётчику lbmRhoNonFinite (см. шаг столкновений).
     if (!std::isfinite(rho)) rho = 1.0f;
-    rho = glm::clamp(rho, 0.8f, 1.2f); // мягкий clamp для стабильности, без потери физики
 
-    // Ограничиваем usqr для стабильности, но сохраняем направление
+    // Ограничиваем usqr для стабильности, но сохраняем направление.
+    // Это не подмена данных, а требование устойчивости явного LBM: при |u| >= 0.3
+    // (Ma_LB ~ 0.52) равновесная функция может стать отрицательной и схема
+    // расходится. Факт срабатывания считается в lbmULimited.
     if (usqr > 0.09f) { // |u| < 0.3 в решеточных единицах — предел стабильности
         float scale = sqrtf(0.09f / usqr);
         ux *= scale; uy *= scale; uz *= scale;
@@ -170,6 +187,43 @@ glm::vec3 rampColor(float t, const glm::vec3* stops, int n) {
     return c;
 }
 } // namespace
+
+// v1.30.0 — сумма и импульс равновесных популяций: вынесено из тела решателя,
+// чтобы сохранение массы и импульса можно было проверить headless-тестом.
+bool lbmEquilibriumMoments(float rho, float ux, float uy, float uz,
+                           float* sumFeq, float* momX, float* momY, float* momZ) {
+    if (!sumFeq || !momX || !momY || !momZ) return false;
+    if (!std::isfinite(rho) || !std::isfinite(ux) || !std::isfinite(uy) || !std::isfinite(uz)) return false;
+    float usqr = ux*ux + uy*uy + uz*uz;
+    float m = 0.0f, px = 0.0f, py = 0.0f, pz = 0.0f;
+    const int numDirs = (int)(sizeof(c) / sizeof(c[0]));   // D3Q19 = 19
+    for (int qi = 0; qi < numDirs; ++qi) {
+        float feq = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
+        if (!std::isfinite(feq)) return false;
+        m  += feq;
+        px += feq * c[qi][0];
+        py += feq * c[qi][1];
+        pz += feq * c[qi][2];
+    }
+    *sumFeq = m; *momX = px; *momY = py; *momZ = pz;
+    return true;
+}
+
+// v1.30.0 — какие из показанных в UI настроек решателя не реализованы.
+const char* lbmInertSettings() {
+    static char buf[192];
+    buf[0] = 0;
+    auto add = [&](const char* name, bool on) {
+        if (!on) return;
+        size_t n = strlen(buf);
+        if (n > 0 && n + 2 < sizeof(buf)) { buf[n] = ','; buf[n+1] = ' '; n += 2; }
+        snprintf(buf + n, sizeof(buf) - n, "%s", name);
+    };
+    add("useMRT",         lbmParams.useMRT);         // коллизия BGK, MRT не реализован
+    add("useZouHeBC",     lbmParams.useZouHeBC);     // вход bounce-back + равновесие, Zou/He нет
+    add("useRegularized", lbmParams.useRegularized); // регуляризации популяций нет
+    return buf;
+}
 
 glm::vec3 pressureColorInRange(float cp, float lo, float hi) {
     if (!std::isfinite(cp)) cp = 0.0f;
@@ -487,14 +541,13 @@ void initLBM() {
         }
     }
 
-    // v1.19.0 Physics Logic Fix — Sutherland + tau из объекта, не домена
-    float T = airTemperature + 273.15f;
-    if (!std::isfinite(T) || T < 50.0f) T = 288.15f;
-    const float T0 = 273.15f;
-    const float S = 110.4f;
-    const float mu0 = 1.716e-5f;
-    float muSuth = mu0 * powf(T/T0, 1.5f) * (T0+S)/(T+S);
-    if (!std::isfinite(muSuth) || muSuth < 1e-6f) muSuth = 1.81e-5f;
+    // v1.19.0 Physics Logic Fix — Sutherland + tau из объекта, не домена.
+    // ИСПРАВЛЕНО: airTemperature уже в кельвинах (atmosphere.h), а здесь к ней
+    // прибавлялось 273.15 — температура удваивалась по шкале Цельсия, вязкость
+    // получалась на 58% больше (2.82e-5 вместо 1.79e-5 при 288.15 K), отсюда
+    // заниженный RePhys, завышенная nuPhys и другой tau решателя. Теперь формула
+    // одна на весь проект — airSutherlandViscosity() в flow_field.h.
+    float muSuth = airSutherlandViscosity(airTemperature);
 
     float L = maxDim;
     if (L < 1e-6f) L = 1.0f;
@@ -626,9 +679,14 @@ void stepLBMCPU(int steps) {
         // подменялись, и потеря устойчивости была не видна ни в UI, ни в отчёте.
         long long negPops = 0;      // популяций ушло в отрицательные значения
         long long badPops = 0;      // значений вне физического диапазона / NaN
+        // Явная диагностика вместо тихой подмены: сколько ячеек вышло за диапазон
+        // плотности, который раньше молча обрезался в computeEquilibriumFast,
+        // сколько плотностей оказалось неконечными и сколько раз сработал
+        // ограничитель |u| < 0.3.
+        long long rhoOut = 0, rhoNonFin = 0, uLim = 0;
 
         #ifdef _OPENMP
-        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount,negPops,badPops) reduction(max:maxVelGlobal)
+        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount,negPops,badPops,rhoOut,rhoNonFin,uLim) reduction(max:maxVelGlobal)
         {
             #pragma omp for nowait
         #endif
@@ -655,7 +713,12 @@ void stepLBMCPU(int steps) {
                 uy += fi * (float)c[qi][1];
                 uz += fi * (float)c[qi][2];
             }
-            if (rho < 0.5f || rho > 1.5f || !std::isfinite(rho)) { rho = 1.0f; nanCount++; }
+            // Защита от РАСХОДИМОСТИ (не от «некрасивой» плотности): за пределами
+            // [0.5; 1.5] либо неконечное значение — это уже развалившийся расчёт,
+            // продолжать с ним нельзя. Подмена считается явно и видна в панели,
+            // в журнале и в отладочном отчёте, а не происходит молча.
+            if (!std::isfinite(rho)) { rhoNonFin++; nanCount++; rho = 1.0f; }
+            else if (rho < 0.5f || rho > 1.5f) { rhoOut++; nanCount++; rho = 1.0f; }
             float invRho = 1.0f / rho;
             ux *= invRho; uy *= invRho; uz *= invRho;
             if (!std::isfinite(ux)) { ux = 0; uy = 0; uz = 0; nanCount++; }
@@ -761,6 +824,7 @@ void stepLBMCPU(int steps) {
 
             float usqr = ux*ux + uy*uy + uz*uz;
             if (usqr > 0.09f) {
+                uLim++;   // ограничение |u| < 0.3 сработало — это уже видно в диагностике
                 float scale = sqrtf(0.09f / usqr);
                 ux *= scale; uy *= scale; uz *= scale;
                 usqr = ux*ux + uy*uy + uz*uz;
@@ -1010,6 +1074,9 @@ void stepLBMCPU(int steps) {
 
         lbmNegativePops = negPops;
         lbmBadPops = badPops;
+        lbmRhoOutOfRange = rhoOut;
+        lbmRhoNonFinite  = rhoNonFin;
+        lbmULimited      = uLim;
         lbmConvergence = std::fabs(lbmAvgKineticEnergy - prevKinetic);
         prevKinetic = lbmAvgKineticEnergy;
         lbmConverged = (lbmConvergence < lbmParams.convergenceThreshold);
@@ -1057,8 +1124,9 @@ void stepLBMCPU(int steps) {
         char* solidPtr2 = lbmIsSolid.data();
         char* groundPtr2 = lbmIsGround.data();
         float rho0 = airDensity; // физическая плотность для масштабирования давления
+        long long pBad = 0;      // неконечных значений давления — явная диагностика
         #ifdef _OPENMP
-        #pragma omp parallel for
+        #pragma omp parallel for reduction(+:pBad)
         #endif
         for (int cell = 0; cell < total; ++cell) {
             if (solidPtr2[cell] || groundPtr2[cell]) {
@@ -1075,13 +1143,26 @@ void stepLBMCPU(int steps) {
                 // v1.11.0: корректное давление p = rho0 * cs2*(rho-1) * scale^2
                 float pLat = cs2 * (rho - 1.0f);
                 float pPhys = pLat * scale * scale * rho0;
-                if (!std::isfinite(pPhys)) pPhys = 0;
-                // Ограничиваем физически разумными значениями: |p| < 0.5*q
-                float q = 0.5f * rho0 * flowSpeed*flowSpeed;
-                if (fabsf(pPhys) > q) pPhys = glm::clamp(pPhys, -q, q);
+                // Неконечное значение — признак развалившегося расчёта. Оно
+                // подменяется нулём, но не молча: счётчик lbmPressureNonFinite
+                // виден в панели решателя, в журнале и в отладочном отчёте.
+                if (!std::isfinite(pPhys)) { pBad++; pPhys = 0.0f; }
+                // ИСПРАВЛЕНО: здесь стояло
+                //   float q = 0.5f*rho0*flowSpeed*flowSpeed;
+                //   if (fabsf(pPhys) > q) pPhys = glm::clamp(pPhys, -q, q);
+                // — ФИЗИЧЕСКОЕ поле давления обрезалось по скоростному напору
+                // (комментарий обещал 0.5*q, а код резал по q). lbmPressure читают
+                // силы (forces.cpp), трассировка давления, экспорт CSV, самописец и
+                // карта давления, поэтому на точках торможения и в следе вместо
+                // посчитанного перепада выдавался потолок ±q: Cp на теле становился
+                // ровно ±1.0, а сила давления систематически занижалась. Данные
+                // больше не ограничиваются; диапазон для КАРТИНКИ режет сама карта
+                // цвета (pressureColorInRange -> glm::clamp), а авто-масштаб
+                // aeroUpdateCpRange берёт квантили по настоящим значениям.
                 pPtr[cell] = pPhys;
             }
         }
+        lbmPressureNonFinite = pBad;
 
         // v1.26.0 — мин/макс давления и остаток сходимости считаются здесь же,
         // одним проходом с ограниченным числом ячеек (не больше 256K сравнений),
@@ -1426,8 +1507,17 @@ void computeLBMVorticityAndQ() {
     const float* uzW = lbmUzWorld.data();
     float* vortPtr = lbmVorticityMag.data();
     float* qPtr = lbmQCriterion.data();
-    float* tkePtr = lbmTKEField.data();
     float* strainPtr = lbmStrainMag.data();
+    // ИСПРАВЛЕНО: здесь брался ещё и float* tkePtr = lbmTKEField.data(), и в конце
+    // цикла постобработка писала в него
+    //     tke = 0.5f*vortMag*vortMag*0.01f + S2*0.005f;   if (tke > 10) tke = 10;
+    // то есть ПЕРЕЗАПИСЫВАЛА подсеточную TKE, которую честно считает решатель
+    // (модель Смагоринского, м2/с2), эвристикой от вихря и тензора скоростей
+    // деформации. Единицы у них разные: |ω| и S — это 1/с и 1/с2, коэффициенты
+    // 0.01 и 0.005 подобраны произвольно, потолок 10 м2/с2 отрезал реальную
+    // турбулентность, а вызов каждые 30 шагов подменял поле между кадрами.
+    // Постобработка теперь отвечает только за свои производные (вихрь, Q,
+    // деформация) и поле TKE не трогает: смысл и единицы — в комментарии lbm.h.
     const char* solidPtr = lbmIsSolid.data();
     const char* groundPtr = lbmIsGround.data();
     float csx = lbmCellSizeX, csy = lbmCellSizeY, csz = lbmCellSizeZ;
@@ -1491,10 +1581,7 @@ void computeLBMVorticityAndQ() {
                 float strain = std::sqrt(2.0f*S2);
                 if (!std::isfinite(strain)) strain = 0;
                 strainPtr[cell] = strain;
-                float tke = 0.5f * (vortMag*vortMag) * 0.01f + S2*0.005f;
-                if (!std::isfinite(tke)) tke = 0;
-                if (tke > 10.0f) tke = 10.0f;
-                tkePtr[cell] = tke;
+                // TKE здесь намеренно не считается: см. комментарий выше.
             }
         }
     }
@@ -1506,11 +1593,8 @@ float computeLBMRe() {
     // перезаписывал aeroReNumber, поэтому на высоте, где температура и плотность
     // другие, число Рейнольдса в панели и в CSV не совпадало с тем, по которому
     // считались коэффициенты трения.
-    float T = airTemperature;
-    if (!std::isfinite(T) || T < 100.0f) T = 288.15f;
-    const float T0s = 273.15f, S = 110.4f, mu0 = 1.716e-5f;
-    float mu = mu0 * powf(T/T0s, 1.5f) * (T0s+S)/(T+S);
-    if (!std::isfinite(mu) || mu < 1e-6f) mu = 1.81e-5f;
+    // Та же формула, что и в initLBM: airSutherlandViscosity() принимает кельвины.
+    float mu = airSutherlandViscosity(airTemperature);
     float L = maxDim;
     if (L < 1e-6f) L = 1.0f;
     float Re = airDensity * flowSpeed * L / mu;

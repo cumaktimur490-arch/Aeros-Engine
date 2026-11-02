@@ -17,15 +17,15 @@ struct LBMParams {
     float viscosity = 0.033f;
     float smagorinskyC = 0.12f;
     bool useTurbulence = true;
-    bool useMRT = false;
+    bool useMRT = false;         // НЕ РЕАЛИЗОВАНО: коллизия везде BGK, MRT нет (v1.30.0 — в UI заблокирован)
     int maxSteps = 10000;
     float convergenceThreshold = 1e-5f;
     bool useGround = false;
     float groundHeight = 0.0f;
-    bool useZouHeBC = true;
+    bool useZouHeBC = false;     // НЕ РЕАЛИЗОВАНО: вход — равновесные популяции, схемы Zou/He нет (v1.30.0)
     bool useConvectiveOutlet = true;
     float inletTurbulence = 0.02f;
-    bool useRegularized = false; // v1.8.0 — regularized LBM for stability
+    bool useRegularized = false; // НЕ РЕАЛИЗОВАНО: неравновесная часть не регуляризуется (v1.30.0)
 };
 
 extern LBMParams lbmParams;
@@ -41,6 +41,30 @@ extern float lbmConvergence;
 // v1.27.0 — диагностика устойчивости (нули — норма, рост означает развал расчёта)
 extern long long lbmNegativePops;
 extern long long lbmBadPops;
+// v1.30.0 — явная диагностика вместо тихой подмены данных. Раньше плотность
+// молча обрезалась до [0.8; 1.2] внутри расчёта равновесных популяций
+// (computeEquilibriumFast), из-за чего sum(feq) != rho и масса с давлением поля
+// искажались без следа. Обрезки больше нет, а состояния, требующие
+// вмешательства, считаются и показываются в панели, журнале и отчёте:
+extern long long lbmRhoOutOfRange;  // плотностей вне [0.5; 1.5] (расходимость)
+extern long long lbmRhoNonFinite;   // плотностей NaN/Inf
+extern long long lbmULimited;       // ячеек, где сработал ограничитель |u| < 0.3
+// v1.30.0 — физическое давление (lbmPressure, Па) больше НЕ обрезается по
+// скоростному напору: обрезали данные, которые читают силы, экспорт и карта.
+// Считается только число неконечных значений — признак развала расчёта.
+extern long long lbmPressureNonFinite;
+// v1.30.0 — масса/импульс равновесных популяций: отдельная тестируемая функция
+// (computeEquilibriumFast объявлена inline внутри lbm.cpp и из теста недоступна).
+// Проверяет sum_i feq_i = rho и sum_i feq_i*c_i = rho*u. Возвращает false при
+// неконечных входных данных. ВАЖНО: при |u| > 0.3 срабатывает ограничитель
+// устойчивости, поэтому импульс равен rho*u_limited — масса сохраняется всегда.
+bool lbmEquilibriumMoments(float rho, float ux, float uy, float uz,
+                           float* sumFeq, float* momX, float* momY, float* momZ);
+// v1.30.0 — честность настроек: через запятую перечисляет поля LBMParams,
+// которые показаны в UI, но НЕ реализованы в решателе (пустая строка = все
+// видимые настройки работают). Используется панелью, журналом и отчётом, чтобы
+// переключатель больше не выдавал себя за то, чего в коде нет.
+const char* lbmInertSettings();
 extern float lbmTimeMs;
 extern float lbmTKE;
 
@@ -52,6 +76,19 @@ extern float lbmCellSizeX, lbmCellSizeY, lbmCellSizeZ;
 extern std::vector<float> lbmRho;
 extern std::vector<float> lbmUx, lbmUy, lbmUz;
 extern std::vector<float> lbmUxWorld, lbmUyWorld, lbmUzWorld;
+// v1.30.0 — смысл и единицы каждого поля, чтобы постобработка и решатель больше
+// не писали в один массив разные по природе величины:
+//   lbmVorticityMag [1/с]    — модуль вихря |ω| = |rot u| по мировым скоростям
+//                               (центральные разности), computeLBMVorticityAndQ();
+//   lbmQCriterion   [1/с2]   — Q-критерий 0.5*(Ω:Ω − S:S), там же;
+//   lbmStrainMag    [1/с]    — sqrt(2*S:S), там же;
+//   lbmTKEField     [м2/с2]  — подсеточная турбулентная кинетическая энергия
+//                               k = 0.5*(Cs*Δ)²*|S|² из ШАГА СОУДАРЕНИЙ решателя
+//                               (модель Смагоринского). Постобработка её НЕ
+//                               пересчитывает: раньше она подменяла k эвристикой
+//                               0.5|ω|²*0.01 + S²*0.005 с потолком 10 (1/с2);
+//   lbmPressure     [Па]     — p = rho0*cs2*(rho-1)*scale2, физическое давление
+//                               БЕЗ обрезки по скоростному напору.
 extern std::vector<float> lbmVorticityMag;
 extern std::vector<float> lbmQCriterion;
 extern std::vector<float> lbmPressure;

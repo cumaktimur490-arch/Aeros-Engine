@@ -154,7 +154,10 @@ extern "C" void computeVertexPressureCUDA(const std::vector<float>& vertices,
         // единая карта давления (общий диапазон и общая схема), вместо своей
         // зашитой шкалы (cp+1)/2. Иначе CPU-сборка и CUDA-сборка показывали
         // разные цвета для одного и того же Cp.
-        cp = aeroClampCp(cp);
+        // ИСПРАВЛЕНО: Cp не обрезается — диапазон для картинки ограничивает сама
+        // карта цвета (pressureColorInRange -> glm::clamp), а статистика
+        // авто-масштаба обязана видеть настоящие значения.
+        if (!std::isfinite(cp)) cp = 0.0f;
         glm::vec3 col = getRealisticPressureColor(cp);
         outColors[3*i]   = col.x;
         outColors[3*i+1] = col.y;

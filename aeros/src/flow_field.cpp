@@ -228,13 +228,41 @@ static inline glm::vec3 divergenceFreeNoise(const glm::vec3& p, float t, float s
 // =====================================================
 // Поле скоростей CPU — v1.19.0 Physics Logic Fix
 // =====================================================
-glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
-    // LBM приоритет — физически точнее
+long long aeroCpNonFinite = 0;   // v1.30.0 — треугольников с неконечным Cp за кадр
+
+// v1.30.0 — единая точка решения «какое поле брать». Тестируемо и видно в журнале.
+AeroVelocitySource aeroVelocitySourceAt(const glm::vec3& p, const FlowParams& prm) {
+    (void)prm;
     if (lbmParams.enabled && lbmInitialized) {
-        if (p.x >= lbmMinX && p.x <= lbmMaxX &&
-            p.y >= lbmMinY && p.y <= lbmMaxY &&
-            p.z >= lbmMinZ && p.z <= lbmMaxZ) {
-            if (isLBMSolidWorld(p)) return glm::vec3(0.0f);
+        const bool inside =
+            (p.x >= lbmMinX && p.x <= lbmMaxX &&
+             p.y >= lbmMinY && p.y <= lbmMaxY &&
+             p.z >= lbmMinZ && p.z <= lbmMaxZ);
+        if (!inside) return AeroVelocitySource::LBMFreestream;   // вне домена решателя
+        if (isLBMSolidWorld(p)) return AeroVelocitySource::LBMSolid;
+        return AeroVelocitySource::LBM;
+    }
+    return AeroVelocitySource::Analytical;
+}
+
+const char* aeroVelocitySourceName(AeroVelocitySource src) {
+    switch (src) {
+        case AeroVelocitySource::LBM:           return "LBM (поле решателя)";
+        case AeroVelocitySource::LBMSolid:      return "LBM (твёрдое тело, v=0)";
+        case AeroVelocitySource::LBMFreestream: return "набегающий поток (вне домена LBM)";
+        case AeroVelocitySource::Analytical:    return "аналитическое поле (LBM выключен)";
+    }
+    return "неизвестно";
+}
+
+glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
+    // LBM приоритет — физически точнее.
+    // v1.30.0: условие вынесено в aeroVelocitySourceAt(), логика прежняя.
+    const AeroVelocitySource aeroSrc = aeroVelocitySourceAt(p, prm);
+    if (aeroSrc == AeroVelocitySource::LBMSolid) return glm::vec3(0.0f);
+    if (aeroSrc == AeroVelocitySource::LBMFreestream) return glm::vec3(prm.vx, prm.vy, prm.vz);
+    if (aeroSrc == AeroVelocitySource::LBM) {
+        {
             glm::vec3 vLBM = getLBMVelocityWorld(p);
             if (std::isfinite(vLBM.x) && std::isfinite(vLBM.y) && std::isfinite(vLBM.z)) {
                 float mag2 = glm::dot(vLBM, vLBM);
@@ -260,8 +288,8 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
                     return glm::vec3(0.0f);
                 }
             }
-        } else {
-            return glm::vec3(prm.vx, prm.vy, prm.vz);
+            // Неконечное поле решателя нулём не подменяется: расчёт продолжается
+            // аналитическим полем ниже (поведение прежнее).
         }
     }
 

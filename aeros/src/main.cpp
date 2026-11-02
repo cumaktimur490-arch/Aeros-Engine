@@ -47,6 +47,7 @@
 #include "atmosphere.h"
 #include "test_mode.h"
 #include "lbm.h"
+#include "flow_field.h"   // v1.30.0 — aeroCpNonFinite, airSutherlandViscosity
 #include "lang.h"
 #include "fsr.h"
 #include "framegen.h"
@@ -422,6 +423,20 @@ static void collectDebugFacts() {
     std::snprintf(buf, sizeof(buf), "отрицательных популяций %lld, заменённых нефизических %lld (за последний шаг)",
                   lbmNegativePops, lbmBadPops);
     debugLogAddFact("LBM", "Аномалии популяций", buf);
+    // v1.30.0 — в отчёт добавлено всё, что решатель раньше правил молча:
+    // обрезка плотности до [0.8; 1.2] в равновесных популяциях и обрезка
+    // физического давления по скоростному напору удалены, а вмешательства
+    // (неконечные rho/p, выход rho за пределы устойчивости, ограничитель |u|<0.3,
+    // неконечный Cp в силах) считаются и попадают сюда.
+    std::snprintf(buf, sizeof(buf),
+                  "rho вне [0.5;1.5] %lld, rho NaN %lld, |u|>0.3 ограничено %lld, p NaN %lld, Cp NaN у треугольников %lld",
+                  lbmRhoOutOfRange, lbmRhoNonFinite, lbmULimited, lbmPressureNonFinite, aeroCpNonFinite);
+    debugLogAddFact("LBM", "Подмены и ограничения за шаг", buf);
+    // v1.30.0 — настройки, показанные в UI, но не реализованные в решателе.
+    // Раньше useZouHeBC по умолчанию был true, и журнал писал «Zou/He (LBM): вкл»,
+    // хотя схемы Zou/He в коде нет.
+    debugLogAddFact("LBM", "Настройки без эффекта",
+                    lbmInertSettings()[0] ? lbmInertSettings() : "нет (все видимые настройки работают)");
     std::snprintf(buf, sizeof(buf), "подсеточная вязкость Смагоринского Cs=%.3f, TKE %.3e м2/с2 (модель в решёточных единицах)",
                   lbmParams.smagorinskyC, lbmTKE);
     debugLogAddFact("LBM", "Модель турбулентности", buf);
@@ -476,7 +491,7 @@ static void trackParamChangesForJournal() {
     };
     static const char* kBN[] = {
         "показ модели", "показ давления", "показ линий тока", "показ частиц", "LBM включён",
-        "Zou/He (LBM)", "конвективный выход (LBM)", "земля (LBM)", "vsync", "лимит FPS",
+        "Zou/He (LBM, не реализовано)", "конвективный выход (LBM)", "земля (LBM)", "vsync", "лимит FPS",
         "FSR", "авто-качество", "энергосбережение", "отсечение по пирамиде", "динамические частицы",
         "адаптивный шаг LBM", "автоповорот", "режим полёта", "режим тестов", "Lite", "Ultra-Lite"
     };

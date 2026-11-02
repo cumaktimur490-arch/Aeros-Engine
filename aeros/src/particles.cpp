@@ -216,6 +216,32 @@ void updateParticles(float dt) {
     if (n <= 0) return;
     if (n > (int)(particlePositions.size()/3)) return;
     if (particlePositions.size() != particleColors.size()) return;
+
+    // v1.30.0 — явная фиксация источника поля скорости, которым интегрируются
+    // частицы. На CPU все стадии (инициализация, RK4 через particleAcceleration,
+    // Эйлер, цвет) идут через computeVelocityFieldCPU(), а он спрашивает
+    // aeroVelocitySourceAt(): приоритет у поля, посчитанного решателем LBM.
+    // Ограничение GPU: ядро updateParticlesKernel получает только FlowParams и
+    // поле LBM не читает, поэтому на GPU частицы интегрируются аналитическим
+    // полем. Расхождение CPU/GPU больше не молчаливое — оно фиксируется в
+    // журнале физики при каждой смене состояния (не каждый кадр).
+    {
+        const AeroVelocitySource probe = aeroVelocitySourceAt(
+            glm::vec3(flowParams.centerX, flowParams.centerY, flowParams.centerZ), flowParams);
+        const int state = (useCUDA == 1) ? 0 : ((probe == AeroVelocitySource::Analytical) ? 1 : 2);
+        static int loggedState = -1;
+        if (state != loggedState) {
+            loggedState = state;
+            if (state == 0)
+                debugLogAddFact("Частицы", "Источник скорости (GPU)",
+                                "аналитическое поле: ядро CUDA получает только FlowParams и не читает поле LBM");
+            else if (state == 2)
+                debugLogAddFact("Частицы", "Источник скорости (CPU)", aeroVelocitySourceName(probe));
+            else
+                debugLogAddFact("Частицы", "Источник скорости (CPU)", aeroVelocitySourceName(probe));
+        }
+    }
+
     if (useCUDA == 1) {
         try { updateParticlesCUDA(particlePositions, particleColors, n, flowParams, dt); }
         catch (...) {

@@ -1,13 +1,29 @@
 // Headless-прогон решателя LBM: проверка сохранения массы, устойчивости,
 // физического смысла TKE и того, что модель Смагоринского действительно влияет
 // на расчёт (до v1.27.0 её вклад был ~1e-5, то есть она не работала).
+//
+// v1.30.0 — добавлены проверки на исправленные ошибки физики:
+//   1) вязкость по Сазерленду получает температуру в кельвинах (в initLBM к уже
+//      кельвиновому airTemperature прибавлялось 273.15, вязкость выходила на 61%
+//      больше, а Re — в 1.6 раза меньше);
+//   2) равновесные популяции сохраняют массу и импульс при любой плотности —
+//      раньше rho молча обрезалась до [0.8; 1.2] и sum(feq) != rho;
+//   3) физическое давление не обрезается по скоростному напору (проверка
+//      линейности p(rho) вместо прежнего «|p| <= 1.05*q»);
+//   4) источник скорости для частиц выбирает отдельная тестируемая функция;
+//   5) постобработка вихрь/Q/деформация не перезаписывает TKE решателя;
+//   6) не реализованные настройки (MRT / Zou-He / регуляризация) перечисляются
+//      в диагностике и действительно не влияют на решение.
 #include "globals.h"
 #include "lbm.h"
 #include "atmosphere.h"
 #include "voxel_grid.h"
+#include "flow_field.h"
 #include "debug_log.h"
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <algorithm>
 #include <vector>
 
 static int g_failed = 0;
@@ -82,8 +98,62 @@ int main() {
     check(tkeTurb >= 0.0f && tkeTurb < 100.0f, "TKE в физическом диапазоне (м2/с2)");
     check(tkeTurb > 1e-12f, "TKE ненулевая: модель подсеточной турбулентности работает");
     float q = 0.5f * airDensity * flowSpeed * flowSpeed;
-    check(std::fabs(pmin) <= q*1.05f && std::fabs(pmax) <= q*1.05f,
-          "давление ограничено скоростным напором (Cp в [-2, 2])");
+    // ИСПРАВЛЕНО: прежняя проверка требовала |p| <= 1.05*q и тем самым защищала
+    // обрезку ФИЗИЧЕСКОГО поля давления по скоростному напору (lbm.cpp:
+    // `if (fabsf(pPhys) > q) pPhys = clamp(pPhys, -q, q)`). Тест теперь проверяет
+    // физическую согласованность и конечность, а не искусственный потолок.
+    check(std::isfinite(pmin) && std::isfinite(pmax), "мин/макс давления конечны");
+    check(pmin < 0.0f, "в поле есть разрежение (p < 0)");
+    check(pmax > 0.0f, "в поле есть подпор (p > 0)");
+    check(pmin > -50.0f*q && pmax < 50.0f*q, "давление в разумных физических пределах");
+    check(lbmPressureNonFinite == 0, "неконечных значений давления за шаг нет");
+    {
+        // Если бы поле резали по +-q, экстремальные ячейки навалились бы ровно на
+        // потолок: считаем, сколько значений совпадает с q с точностью до 1e-3.
+        int atCeiling = 0;
+        for (size_t k = 0; k < lbmPressure.size(); ++k) {
+            if (lbmIsSolid[k] || lbmIsGround[k]) continue;
+            if (std::fabs(std::fabs(lbmPressure[k]) - q) < 1e-3f) atCeiling++;
+        }
+        char nm[160];
+        std::snprintf(nm, sizeof(nm),
+                      "давление не свалено на потолок +-%.1f Па (ячеек на потолке: %d)", q, atCeiling);
+        check(atCeiling == 0, nm);
+    }
+    {
+        // p = rho0*cs2*scale^2*(rho-1) — линейная функция плотности с ОДНИМ
+        // коэффициентом на всё поле. Обрезка по диапазону сломала бы линейность.
+        int iA = -1, iB = -1, iC = -1;
+        float rA = -1e30f, rB = 1e30f, rC = -1e30f;
+        for (size_t k = 0; k < lbmRho.size(); ++k) {
+            if (lbmIsSolid[k] || lbmIsGround[k]) continue;
+            if (!std::isfinite(lbmRho[k])) continue;
+            if (lbmRho[k] > rA) { rA = lbmRho[k]; iA = (int)k; }
+            if (lbmRho[k] < rB) { rB = lbmRho[k]; iB = (int)k; }
+        }
+        // третья точка — с плотностью посередине
+        for (size_t k = 0; k < lbmRho.size(); ++k) {
+            if ((int)k == iA || (int)k == iB) continue;
+            if (lbmIsSolid[k] || lbmIsGround[k] || !std::isfinite(lbmRho[k])) continue;
+            float mid = std::fabs(lbmRho[k] - 0.5f*(rA + rB));
+            if (iC < 0 || mid < rC) { rC = mid; iC = (int)k; }
+        }
+        bool found = (iA >= 0 && iB >= 0 && iC >= 0 && std::fabs(rA - rB) > 1e-6f);
+        check(found, "есть три ячейки с разной плотностью для проверки p(rho)");
+        if (found) {
+            float k1 = (lbmPressure[iA] - lbmPressure[iB]) / (lbmRho[iA] - lbmRho[iB]);
+            float k2 = (lbmPressure[iA] - lbmPressure[iC]) / (lbmRho[iA] - lbmRho[iC]);
+            check(k1 > 0.0f, "рост плотности даёт рост давления (знак коэффициента физический)");
+            check(std::fabs(k1 - k2) < 2e-3f * std::fabs(k1),
+                  "давление линейно по плотности одним коэффициентом (обрезки по диапазону нет)");
+            float pExpect = k1 * (rA - 1.0f) + 0.0f;   // p(rho=1) = 0 по построению
+            check(std::fabs(lbmPressure[iA] - pExpect) < 2e-3f * (std::fabs(pExpect) + 1.0f),
+                  "сохранённое давление соответствует формуле p ~ (rho - 1)");
+        }
+    }
+    check(lbmRhoOutOfRange == 0, "плотность не выходила за пределы устойчивости [0.5; 1.5]");
+    check(lbmRhoNonFinite == 0, "неконечных плотностей нет");
+    check(lbmULimited == 0, "ограничитель |u| < 0.3 не срабатывал (режим допустимый)");
     check(vmaxTurb > 0.1f && vmaxTurb < 3.0f*flowSpeed, "максимальная скорость физична");
     check(lbmResidualRho >= 0.0f && std::isfinite(lbmResidualRho), "остаток сходимости конечен");
 
@@ -115,6 +185,222 @@ int main() {
     float pOut = 0;
     check(!getLBMPressureWorldChecked(glm::vec3(50.0f, 50.0f, 50.0f), &pOut),
           "точка вне расчётной области не выдаёт ложное давление");
+
+    // =====================================================
+    // 1) ВЯЗКОСТЬ ПО САЗЕРЛЕНДУ: температура обязана быть в кельвинах
+    // =====================================================
+    std::printf("\n--- вязкость по Сазерленду (единицы температуры) ---\n");
+    {
+        const float mu273 = airSutherlandViscosity(273.15f);
+        const float mu288 = airSutherlandViscosity(288.15f);
+        const float mu300 = airSutherlandViscosity(300.0f);
+        char nm[192];
+        std::snprintf(nm, sizeof(nm), "mu(273.15 K) = %.4e Па*с = mu0 (контрольная точка формулы)", mu273);
+        check(std::fabs(mu273 - 1.716e-5f) < 1e-9f, nm);
+        std::snprintf(nm, sizeof(nm), "mu(288.15 K) = %.4e Па*с (ISA, справочно 1.789e-5)", mu288);
+        check(std::fabs(mu288 - 1.7894e-5f) < 2e-8f, nm);
+        check(mu300 > mu288 && mu288 > mu273, "вязкость монотонно растёт с температурой");
+        // Ошибка была такой: к уже кельвиновой температуре прибавляли 273.15.
+        const float muBug = airSutherlandViscosity(288.15f + 273.15f);
+        std::snprintf(nm, sizeof(nm),
+                      "повторное +273.15 меняет вязкость (%.4e вместо %.4e) — ошибка была бы видна",
+                      muBug, mu288);
+        check(muBug > mu288 * 1.3f, nm);
+        // защита от передачи градусов Цельсия вместо кельвинов
+        check(std::fabs(airSutherlandViscosity(15.0f) - mu288) < 1e-9f,
+              "15 K не принимается за расчётную температуру: срабатывает защита (ISA)");
+        check(std::isfinite(airSutherlandViscosity(NAN)), "NaN на входе не даёт NaN вязкости");
+    }
+    {
+        // Re из initLBM обязан равняться rho*V*L/mu(T[K]) — сквозная проверка единиц
+        altitude = 0.0f; updateAtmosphereParams();
+        shutdownLBM(); makeSphereCase(0.7f); initLBM();
+        const float muRef = airSutherlandViscosity(airTemperature);
+        const float reRef = airDensity * flowSpeed * maxDim / muRef;
+        char nm[192];
+        std::snprintf(nm, sizeof(nm),
+                      "initLBM: Re=%.0f совпадает с rho*V*L/mu(T=%.2f K)=%.0f (T=%.2f K, mu=%.4e)",
+                      lbmReynolds, airTemperature, reRef, airTemperature, muRef);
+        check(std::fabs(lbmReynolds - reRef) < 1e-3f * reRef, nm);
+        check(std::fabs(aeroReNumber - lbmReynolds) < 1e-3f * reRef, "aeroReNumber согласован с lbmReynolds");
+        // при той же ошибке Re отличался бы в ~1.6 раза
+        const float reBug = airDensity * flowSpeed * maxDim / airSutherlandViscosity(airTemperature + 273.15f);
+        std::snprintf(nm, sizeof(nm), "Re не равен значению с двойным переводом в кельвины (%.0f)", reBug);
+        check(std::fabs(lbmReynolds - reBug) > 0.2f * reRef, nm);
+
+        // и на высоте, где температура другая: связь обязана сохраняться
+        altitude = 5000.0f; updateAtmosphereParams();
+        shutdownLBM(); makeSphereCase(0.7f); initLBM();
+        const float muHi = airSutherlandViscosity(airTemperature);
+        const float reHi = airDensity * flowSpeed * maxDim / muHi;
+        std::snprintf(nm, sizeof(nm),
+                      "на высоте 5000 м: T=%.2f K, mu=%.4e, Re=%.0f (ожидание %.0f)",
+                      airTemperature, muHi, lbmReynolds, reHi);
+        check(std::fabs(lbmReynolds - reHi) < 1e-3f * reHi, nm);
+        check(airTemperature < 280.0f && airTemperature > 200.0f,
+              "температура на высоте в кельвинах (255..280 K), а не 0 +/- 20");
+        altitude = 0.0f; updateAtmosphereParams();
+    }
+
+    // =====================================================
+    // 2) РАВНОВЕСНЫЕ ПОПУЛЯЦИИ: масса и импульс при любой плотности
+    // =====================================================
+    std::printf("\n--- равновесные популяции: sum(feq) = rho, sum(feq*c) = rho*u ---\n");
+    {
+        struct MomCase { float rho, ux, uy, uz; };
+        const MomCase cases[] = {
+            { 1.00f,  0.00f,  0.00f,  0.00f },
+            { 1.00f,  0.05f,  0.00f,  0.00f },
+            { 0.70f,  0.04f, -0.03f,  0.02f },   // НИЖЕ прежнего клампа 0.8
+            { 1.35f, -0.02f,  0.05f,  0.01f },   // ВЫШЕ прежнего клампа 1.2
+            { 0.55f,  0.10f,  0.10f,  0.00f },
+            { 1.60f,  0.00f,  0.00f, -0.08f },
+            { 1.10f,  0.28f,  0.00f,  0.00f },   // у предела устойчивости |u| = 0.3
+        };
+        char nm[192];
+        for (const MomCase& cs : cases) {
+            float m = 0, px = 0, py = 0, pz = 0;
+            const bool ok = lbmEquilibriumMoments(cs.rho, cs.ux, cs.uy, cs.uz, &m, &px, &py, &pz);
+            std::snprintf(nm, sizeof(nm), "конечность при rho=%.2f u=(%.2f,%.2f,%.2f)", cs.rho, cs.ux, cs.uy, cs.uz);
+            check(ok, nm);
+            if (!ok) continue;
+            const float tolM = 3e-5f * std::max(1.0f, cs.rho);
+            std::snprintf(nm, sizeof(nm), "масса: sum(feq) = %.6f ~ rho = %.3f", m, cs.rho);
+            check(std::fabs(m - cs.rho) <= tolM, nm);
+            const float tolP = 3e-5f;
+            std::snprintf(nm, sizeof(nm), "импульс: sum(feq*c) = (%.5f,%.5f,%.5f) ~ rho*u = (%.5f,%.5f,%.5f)",
+                          px, py, pz, cs.rho*cs.ux, cs.rho*cs.uy, cs.rho*cs.uz);
+            check(std::fabs(px - cs.rho*cs.ux) <= tolP &&
+                  std::fabs(py - cs.rho*cs.uy) <= tolP &&
+                  std::fabs(pz - cs.rho*cs.uz) <= tolP, nm);
+        }
+        // регрессия: плотность больше не подменяется границами [0.8; 1.2]
+        float mHi = 0, x = 0, y = 0, z = 0;
+        lbmEquilibriumMoments(1.35f, 0.0f, 0.0f, 0.0f, &mHi, &x, &y, &z);
+        float mLo = 0;
+        lbmEquilibriumMoments(0.70f, 0.0f, 0.0f, 0.0f, &mLo, &x, &y, &z);
+        std::snprintf(nm, sizeof(nm), "rho=1.35 даёт массу %.4f, а не 1.2 (прежний потолок)", mHi);
+        check(std::fabs(mHi - 1.2f) > 1e-3f && std::fabs(mHi - 1.35f) < 3e-5f, nm);
+        std::snprintf(nm, sizeof(nm), "rho=0.70 даёт массу %.4f, а не 0.8 (прежний пол)", mLo);
+        check(std::fabs(mLo - 0.8f) > 1e-3f && std::fabs(mLo - 0.70f) < 3e-5f, nm);
+        // неконечные входные данные отвергаются, а не подменяются молча
+        check(!lbmEquilibriumMoments(1.0f, NAN, 0.0f, 0.0f, &mHi, &x, &y, &z),
+              "NaN-скорость отвергается (не считается физической)");
+        check(!lbmEquilibriumMoments(NAN, 0.0f, 0.0f, 0.0f, &mHi, &x, &y, &z),
+              "NaN-плотность отвергается (не считается физической)");
+        check(!lbmEquilibriumMoments(1.0f, 0.0f, 0.0f, 0.0f, nullptr, &x, &y, &z),
+              "нулевой указатель результата не разыменовывается");
+    }
+
+    // =====================================================
+    // 4) ИСТОЧНИК СКОРОСТИ ДЛЯ ЧАСТИЦ выбирается явной функцией
+    // =====================================================
+    std::printf("\n--- источник поля скорости (частицы, линии тока, цвет) ---\n");
+    {
+        shutdownLBM(); makeSphereCase(0.7f); initLBM();
+        for (int i = 0; i < 30; ++i) stepLBMCPU(1);
+        FlowParams prm = flowParams;   // заполнение не важно: источник его не читает
+        lbmParams.enabled = true;
+        const glm::vec3 inBody(0.0f, 0.0f, 0.0f);      // центр сферы — твёрдое тело
+        const glm::vec3 inDomain(1.2f, 0.5f, 0.0f);    // внутри домена, вне тела
+        const glm::vec3 outside(50.0f, 50.0f, 50.0f);  // вне домена решателя
+        check(aeroVelocitySourceAt(inBody, prm) == AeroVelocitySource::LBMSolid,
+              "внутри тела решателя источник — твёрдое тело (v = 0)");
+        check(aeroVelocitySourceAt(inDomain, prm) == AeroVelocitySource::LBM,
+              "внутри домена источник — поле, посчитанное решателем LBM");
+        check(aeroVelocitySourceAt(outside, prm) == AeroVelocitySource::LBMFreestream,
+              "вне домена источник — набегающий поток (данных решателя там нет)");
+        check(std::strcmp(aeroVelocitySourceName(AeroVelocitySource::LBM), "") != 0,
+              "у источника есть человекочитаемое имя для журнала и отчёта");
+        // значение скорости берётся из того же источника
+        glm::vec3 vIn = computeVelocityFieldCPU(inDomain, prm);
+        check(std::isfinite(vIn.x) && std::isfinite(vIn.y) && std::isfinite(vIn.z), "скорость внутри домена конечна");
+        check(glm::length(computeVelocityFieldCPU(inBody, prm)) < 1e-6f, "внутри тела скорость равна нулю");
+        lbmParams.enabled = false;
+        check(aeroVelocitySourceAt(inDomain, prm) == AeroVelocitySource::Analytical,
+              "с выключенным LBM источник — аналитическое поле");
+        glm::vec3 vAn = computeVelocityFieldCPU(inDomain, prm);
+        lbmParams.enabled = true;
+        check(std::isfinite(vAn.x) && std::isfinite(vAn.y) && std::isfinite(vAn.z),
+              "аналитическое поле тоже конечно (режим без LBM работает)");
+        check(glm::length(vIn - vAn) > 1e-6f,
+              "поле LBM отличается от аналитического — источник действительно переключается");
+    }
+
+    // =====================================================
+    // 5) ПОСТОБРАБОТКА НЕ ПЕРЕЗАПИСЫВАЕТ TKE РЕШАТЕЛЯ
+    // =====================================================
+    std::printf("\n--- TKE: решатель против постобработки ---\n");
+    {
+        shutdownLBM(); makeSphereCase(0.7f); initLBM();
+        lbmParams.useTurbulence = true;
+        for (int i = 0; i < 60; ++i) stepLBMCPU(1);   // TKE считает модель Смагоринского
+        const std::vector<float> tkeBefore = lbmTKEField;
+        std::fill(lbmVorticityMag.begin(), lbmVorticityMag.end(), 0.0f);
+        std::fill(lbmQCriterion.begin(), lbmQCriterion.end(), 0.0f);
+        std::fill(lbmStrainMag.begin(), lbmStrainMag.end(), 0.0f);
+        computeLBMVorticityAndQ();
+        size_t diffTke = 0;
+        for (size_t k = 0; k < lbmTKEField.size() && k < tkeBefore.size(); ++k)
+            if (lbmTKEField[k] != tkeBefore[k]) diffTke++;
+        char nm[192];
+        std::snprintf(nm, sizeof(nm),
+                      "computeLBMVorticityAndQ() не тронула TKE (изменилось ячеек: %zu)", diffTke);
+        check(diffTke == 0, nm);
+        size_t nz = 0;
+        for (size_t k = 0; k < lbmVorticityMag.size(); ++k)
+            if (lbmVorticityMag[k] != 0.0f) nz++;
+        check(nz > 0, "при этом вихрь пересчитан (функция не стала пустой)");
+        size_t nzQ = 0;
+        for (size_t k = 0; k < lbmQCriterion.size(); ++k) if (lbmQCriterion[k] != 0.0f) nzQ++;
+        check(nzQ > 0, "Q-критерий пересчитан");
+        // смысл и единицы: TKE из решателя — м2/с2, неотрицательная
+        float tkeMax = 0.0f; size_t tkeNeg = 0, tkeNan = 0;
+        for (size_t k = 0; k < lbmTKEField.size(); ++k) {
+            float t = lbmTKEField[k];
+            if (!std::isfinite(t)) { tkeNan++; continue; }
+            if (t < 0.0f) tkeNeg++;
+            if (t > tkeMax) tkeMax = t;
+        }
+        std::snprintf(nm, sizeof(nm), "поле TKE: max=%.3e м2/с2, отрицательных %zu, неконечных %zu",
+                      tkeMax, tkeNeg, tkeNan);
+        check(tkeNeg == 0 && tkeNan == 0 && tkeMax < 1000.0f, nm);
+        // прежняя эвристика 0.5*|w|^2*0.01 + S^2*0.005 с потолком 10 не вернулась
+        check(tkeMax != 10.0f, "TKE не упирается в прежний эвристический потолок 10");
+    }
+
+    // =====================================================
+    // 6) НЕ РЕАЛИЗОВАННЫЕ НАСТРОЙКИ больше не выдают себя за работающие
+    // =====================================================
+    std::printf("\n--- настройки без эффекта (MRT / Zou-He / регуляризация) ---\n");
+    {
+        lbmParams.useMRT = true; lbmParams.useZouHeBC = true; lbmParams.useRegularized = true;
+        const char* inert = lbmInertSettings();
+        char nm[256];
+        std::snprintf(nm, sizeof(nm), "диагностика перечисляет не реализованные настройки: %s",
+                      inert ? inert : "(пусто)");
+        check(inert && std::strstr(inert, "useMRT") && std::strstr(inert, "useZouHeBC") &&
+              std::strstr(inert, "useRegularized"), nm);
+        lbmParams.useMRT = false; lbmParams.useZouHeBC = false; lbmParams.useRegularized = false;
+        check(lbmInertSettings()[0] == '\0', "когда всё выключено, список настроек без эффекта пуст");
+        // поведение обязано быть одинаковым — иначе настройка что-то делает
+        shutdownLBM(); makeSphereCase(0.7f); initLBM();
+        lbmParams.useTurbulence = true;
+        lbmParams.useMRT = false; lbmParams.useZouHeBC = false; lbmParams.useRegularized = false;
+        for (int i = 0; i < 60; ++i) stepLBMCPU(1);
+        const float rhoOff = lbmAvgRho, vmaxOff = lbmMaxVelocityWorld, pOff = lbmPressureMax;
+        shutdownLBM(); makeSphereCase(0.7f); initLBM();
+        lbmParams.useTurbulence = true;
+        lbmParams.useMRT = true; lbmParams.useZouHeBC = true; lbmParams.useRegularized = true;
+        for (int i = 0; i < 60; ++i) stepLBMCPU(1);
+        std::snprintf(nm, sizeof(nm),
+                      "MRT/Zou-He/регуляризация не меняют решение: rho %.6f против %.6f, vmax %.4f против %.4f",
+                      lbmAvgRho, rhoOff, lbmMaxVelocityWorld, vmaxOff);
+        check(std::fabs(lbmAvgRho - rhoOff) < 1e-6f &&
+              std::fabs(lbmMaxVelocityWorld - vmaxOff) < 1e-4f &&
+              std::fabs(lbmPressureMax - pOff) < 1e-2f, nm);
+        lbmParams.useMRT = false; lbmParams.useZouHeBC = false; lbmParams.useRegularized = false;
+    }
 
     std::printf("\n=== %s (ошибок: %d) ===\n", g_failed == 0 ? "ФИЗИКА В ПОРЯДКЕ" : "ЕСТЬ ПРОВАЛЫ", g_failed);
     return g_failed == 0 ? 0 : 1;
