@@ -157,10 +157,18 @@ inline bool femMeshBuildFromVoxels(FemMesh& mesh,
 
     const long long totalNodes = (long long)mesh.nx * mesh.ny * mesh.nz;
     const long long totalElems = (long long)mesh.ex * mesh.ey * mesh.ez;
-    if (totalNodes > 40000000LL || totalElems > 40000000LL) {
-        char b[160];
-        std::snprintf(b, sizeof(b), "сетка %dx%dx%d слишком велика (>%lld элементов) — уменьшите разрешение",
-                      mesh.ex, mesh.ey, mesh.ez, 40000000LL);
+    // Предел выбран по памяти, а не «чтобы просто был»: расчёт держит около
+    // 250 байт на элемент (векторы метода сопряжённых градиентов, системные
+    // массивы, узловые поля результатов), то есть 12 млн элементов — это уже
+    // порядка 3 ГБ. На 32-битной сборке адресное пространство вдвое меньше,
+    // поэтому лучше честный отказ здесь, чем std::bad_alloc в середине решения.
+    const long long kMaxCells = 12000000LL;
+    if (totalNodes > kMaxCells || totalElems > kMaxCells) {
+        char b[224];
+        std::snprintf(b, sizeof(b),
+                      "сетка %dx%dx%d слишком велика: нужно не более %lld элементов "
+                      "(расчёт требует около 250 байт памяти на элемент) — уменьшите разрешение",
+                      mesh.ex, mesh.ey, mesh.ez, kMaxCells);
         mesh.warnings.push_back(b);
         mesh = FemMesh();
         mesh.warnings.push_back(b);

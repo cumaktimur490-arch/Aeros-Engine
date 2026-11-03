@@ -52,6 +52,9 @@ struct ResultFieldInfo {
     int           unitKind;  // 0=length 1=stress 2=temp 3=heatflux 4=force 5=power 6=безразмерное
 };
 
+// Имя поля по идентификатору: для подписей и для честных сообщений об отказе.
+inline const char* resultFieldName(ResultFieldId id);
+
 inline const ResultFieldInfo* resultFieldTable(size_t* count) {
     static const ResultFieldInfo t[] = {
         { ResultFieldId::DisplacementMag, "Перемещение |u|",   0 },
@@ -73,6 +76,13 @@ inline const ResultFieldInfo* resultFieldTable(size_t* count) {
     };
     if (count) *count = sizeof(t) / sizeof(t[0]);
     return t;
+}
+
+inline const char* resultFieldName(ResultFieldId id) {
+    size_t cnt = 0;
+    const ResultFieldInfo* tab = resultFieldTable(&cnt);
+    for (size_t i = 0; i < cnt; ++i) if (tab[i].id == id) return tab[i].name;
+    return (cnt > 0) ? tab[0].name : "?";
 }
 
 inline const char* resultUnitName(int unitKind, StudyUnitSystem s) {
@@ -650,6 +660,11 @@ struct CaeViewState {
     // график вдоль линии
     bool           lineEnabled = false;
     ResultLinePlot line;
+    // Концы линии — часть состояния просмотра, а не локальные static внутри
+    // панели: иначе они не сохранялись вместе с остальными параметрами (проба,
+    // срез, шкала) и не были доступны ни тестам, ни настройкам.
+    double lineAx = 0, lineAy = 0, lineAz = 0;
+    double lineBx = 1, lineBy = 0, lineBz = 0;
 
     // исследование сходимости по сетке
     struct MeshPoint {

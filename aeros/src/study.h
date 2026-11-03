@@ -426,7 +426,10 @@ struct StudyResults {
     double initialResidual  = 0;
     double finalResidual    = 0;    // относительная невязка ||r||/||f||
     double solveTimeMs      = 0;
-    std::vector<float> residualHistory;   // для графика сходимости
+    // История невязки — в double. Раньше здесь был float: малые невязки
+    // (1e-45…1e-160, что нормально для точно решённой системы) обнулялись,
+    // и интерфейс показывал «начальная невязка 0» либо плоский график сходимости.
+    std::vector<double> residualHistory;  // для графика сходимости
     std::vector<std::string> warnings;    // предупреждения расчёта
     std::string errorMessage;             // если status == Error
 
@@ -653,9 +656,17 @@ inline std::vector<StudyIssue> studyValidate(const StudyProject& pr) {
     // решатель
     if (pr.solver.maxIterations < 10)
         add(StudyNodeState::Error, "Решатель", "предел итераций меньше 10 — расчёт не успеет сойтись");
-    if (!(pr.solver.relTolerance > 0) || pr.solver.relTolerance > 1e-2)
+    // Бессмысленный допуск (NaN, Inf, <= 0 или >= 1) — ошибка: при нём условие
+    // сходимости выполняется сразу, и расчёт рапортует «сошёлся», не решив систему.
+    // Свободный, но осмысленный допуск остаётся предупреждением.
+    if (!std::isfinite(pr.solver.relTolerance) || !(pr.solver.relTolerance > 0.0) ||
+        pr.solver.relTolerance >= 1.0)
+        add(StudyNodeState::Error, "Решатель",
+            "допуск невязки задан бессмысленно: нужно число в диапазоне 0 < tol < 1 "
+            "(иначе сходимость будет заявлена без решения системы)");
+    else if (pr.solver.relTolerance > 1e-2)
         add(StudyNodeState::Warning, "Решатель",
-            "допуск невязки вне разумного диапазона (ожидается 1e-12..1e-2)");
+            "допуск невязки слишком свободный (ожидается 1e-12..1e-2): результат может быть неточным");
 
     return out;
 }
@@ -779,6 +790,11 @@ inline bool studyLoadProject(StudyProject& pr, const std::string& path) {
     if (pr.mesh.resolution < 4) pr.mesh.resolution = 4;
     if (pr.mesh.resolution > pr.mesh.resolutionCap) pr.mesh.resolution = pr.mesh.resolutionCap;
     if (pr.solver.maxIterations < 10) pr.solver.maxIterations = 10;
+    // Из файла может прийти что угодно, включая «nan», «inf», 0 или 1e9:
+    // такой допуск нельзя передавать решателю (см. femSafeRelTolerance).
+    if (!std::isfinite(pr.solver.relTolerance) || !(pr.solver.relTolerance > 0.0) ||
+        pr.solver.relTolerance >= 1.0)
+        pr.solver.relTolerance = 1e-10;
 
     int nm = getI("materials", 0);
     if (nm > 0 && nm <= 64) {

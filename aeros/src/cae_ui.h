@@ -30,6 +30,8 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cfloat>
+#include <new>        // std::bad_alloc
+#include <stdexcept>  // std::exception
 #include <cstring>
 #include <cmath>
 #include <string>
@@ -172,10 +174,23 @@ inline bool caeBuildMesh() {
         return false;
     }
     FemMesh& m = caeMesh();
-    const bool ok = femMeshBuildFromVoxels(m, g_voxelData, g_voxNx, g_voxNy, g_voxNz,
-                                           g_voxMinX, g_voxMinY, g_voxMinZ,
-                                           g_voxMaxX, g_voxMaxY, g_voxMaxZ,
-                                           res, pr.materialIndex, pr.material().density);
+    bool ok = false;
+    try {
+        ok = femMeshBuildFromVoxels(m, g_voxelData, g_voxNx, g_voxNy, g_voxNz,
+                                    g_voxMinX, g_voxMinY, g_voxMinZ,
+                                    g_voxMaxX, g_voxMaxY, g_voxMaxZ,
+                                    res, pr.materialIndex, pr.material().density);
+    } catch (const std::bad_alloc&) {
+        // так же, как lbm.cpp / voxel_grid.cpp / particles.cpp: честный отказ,
+        // а не падение процесса из-за нехватки памяти
+        m = FemMesh();
+        caeLog(2, "сетка", "не хватило памяти на сетку такого размера — уменьшите разрешение");
+        return false;
+    } catch (const std::exception& e) {
+        m = FemMesh();
+        caeLog(2, "сетка", "построение сетки прервано: %s", e.what());
+        return false;
+    }
     for (const std::string& w : m.warnings) caeLog(1, "сетка", "%s", w.c_str());
     if (!ok || !m.built) {
         caeLog(2, "сетка", "не удалось построить объёмную сетку (элементов %d)", m.elemCount);
@@ -224,6 +239,7 @@ inline bool caeSolve(bool rebuildMesh) {
 
     std::string err;
     bool ok = false;
+    try {
     if (pr.analysis == StudyAnalysis::LinearStatic)
         ok = femSolveLinearStatic(caeMesh(), pr, pr.results, err);
     else if (pr.analysis == StudyAnalysis::SteadyThermal)
@@ -234,6 +250,28 @@ inline bool caeSolve(bool rebuildMesh) {
         // результата, который можно было бы принять за ответ.
         err = "этот тип анализа не реализован (см. документацию: следующие этапы)";
         caeLog(2, "анализ", "%s", err.c_str());
+        // Иначе pr.status остался бы от предыдущего успешного расчёта: интерфейс
+        // показывал бы «решено» и старые числа при фактически невыполненном расчёте.
+        pr.results.status = StudySolveStatus::Error;
+        pr.results.valid = false;
+        pr.results.errorMessage = err;
+    }
+    } catch (const std::bad_alloc&) {
+        // Нехватка памяти на систему такого размера. Результаты чистим: оставлять
+        // частично заполненные поля нельзя — их приняли бы за ответ.
+        ok = false;
+        err = "не хватило памяти на расчёт такой сетки — уменьшите разрешение или предел сетки";
+        pr.results.clear();
+        pr.results.status = StudySolveStatus::Error;
+        pr.results.errorMessage = err;
+        caeLog(2, "решатель", "%s", err.c_str());
+    } catch (const std::exception& e) {
+        ok = false;
+        err = std::string("расчёт прерван исключением: ") + e.what();
+        pr.results.clear();
+        pr.results.status = StudySolveStatus::Error;
+        pr.results.errorMessage = err;
+        caeLog(2, "решатель", "%s", err.c_str());
     }
     pr.progress = 1.0;
     pr.status = pr.results.status;
@@ -293,12 +331,34 @@ inline bool caeApplyFieldToGeometry() {
     const StudyProject& pr = studyProject();
     caeColorOverride = false;
     if (!v.colorGeometry) { updateVertexColors(); return false; }
-    if (!m.built || !pr.results.valid) return false;
+    // Каждый отказ обязан называть причину. Раньше функция просто возвращала false
+    // (или, что хуже, красила всю модель в цвет «вне тела» и возвращала true, если
+    // выбранное поле в этих результатах не считается), а интерфейс молчал.
+    if (!m.built || !pr.results.valid) {
+        caeLog(1, "отображение", "раскраска по полю не применена: %s",
+               !m.built ? "нет объёмной сетки" : "нет результатов расчёта");
+        return false;
+    }
     const std::vector<double>* data = resultFieldData(pr.results, v.field);
+    if (!data) {
+        caeLog(2, "отображение",
+               "поле «%s» в этих результатах не считается — раскраска не применена; "
+               "выберите другое поле или включите его в настройках решателя",
+               resultFieldName(v.field));
+        return false;
+    }
     const size_t nVert = g_vertices.size() / 3;
-    if (nVert == 0) return false;
+    if (nVert == 0) {
+        caeLog(1, "отображение", "раскраска по полю не применена: у модели нет вершин");
+        return false;
+    }
     if (g_vertexColors.size() != nVert * 3) {
-        try { g_vertexColors.assign(nVert * 3, 0.6f); } catch (...) { return false; }
+        try { g_vertexColors.assign(nVert * 3, 0.6f); }
+        catch (...) {
+            caeLog(2, "отображение", "не удалось выделить буфер цветов вершин на %zu значений",
+                   nVert * 3);
+            return false;
+        }
     }
     v.scale.field = v.field;
     const bool symmetric = (v.field == ResultFieldId::StressXX || v.field == ResultFieldId::StressYY ||
@@ -366,9 +426,18 @@ inline void caeRunMeshConvergence() {
         if (!caeBuildMesh()) { caeLog(2, "сходимость", "разрешение %d: сетка не построилась", tries[k]); continue; }
         std::string err;
         StudyResults res;
-        bool ok = (pr.analysis == StudyAnalysis::LinearStatic)
-                      ? femSolveLinearStatic(caeMesh(), pr, res, err)
-                      : femSolveSteadyThermal(caeMesh(), pr, res, err);
+        bool ok = false;
+        try {
+            ok = (pr.analysis == StudyAnalysis::LinearStatic)
+                     ? femSolveLinearStatic(caeMesh(), pr, res, err)
+                     : femSolveSteadyThermal(caeMesh(), pr, res, err);
+        } catch (const std::bad_alloc&) {
+            err = "не хватило памяти на это разрешение";
+            caeLog(2, "сходимость", "разрешение %d: %s", tries[k], err.c_str());
+        } catch (const std::exception& e) {
+            err = std::string("расчёт прерван исключением: ") + e.what();
+            caeLog(2, "сходимость", "разрешение %d: %s", tries[k], err.c_str());
+        }
         CaeViewState::MeshPoint mp;
         mp.resolution = tries[k];
         mp.elements = res.elements;
@@ -1432,7 +1501,10 @@ inline void caeDrawResultsProps() {
         ImGui::TextUnformatted(_TR("Plots along a line", "Графики вдоль линии"));
         ImGui::TextWrapped("%s", _TR("Line from point A to point B; values are sampled from the nodal field.",
                                      "Линия от точки A до точки B; значения берутся из узловых данных поля."));
-        static double ax = 0, ay = 0, az = 0, bx = 1, by = 0, bz = 0;
+        // концы линии живут в состоянии просмотра (CaeViewState), а не в static
+        // внутри панели — см. пояснение в results_view.h
+        double& ax = v.lineAx; double& ay = v.lineAy; double& az = v.lineAz;
+        double& bx = v.lineBx; double& by = v.lineBy; double& bz = v.lineBz;
         ImGui::PushItemWidth(-1);
         ImGui::InputDouble(_TR("A X, m", "A X, м"), &ax, 0, 0, "%.6g");
         ImGui::InputDouble(_TR("A Y, m", "A Y, м"), &ay, 0, 0, "%.6g");
@@ -1470,8 +1542,8 @@ inline void caeDrawResultsProps() {
         else {
             std::vector<float> lg;
             lg.reserve(pr.results.residualHistory.size());
-            for (float rr : pr.results.residualHistory) {
-                const double d = (rr > 1e-16) ? std::log10((double)rr) : -16.0;
+            for (double rr : pr.results.residualHistory) {
+                const double d = (rr > 1e-16) ? std::log10(rr) : -16.0;
                 lg.push_back((float)d);
             }
             ImGui::PlotLines("log10(||r||/||f||)", lg.data(), (int)lg.size(), 0, nullptr,
@@ -1598,8 +1670,8 @@ inline void caeDrawBottomConvergence() {
     if (!pr.results.residualHistory.empty()) {
         std::vector<float> lg;
         lg.reserve(pr.results.residualHistory.size());
-        for (float rr : pr.results.residualHistory)
-            lg.push_back((float)((rr > 1e-16) ? std::log10((double)rr) : -16.0));
+        for (double rr : pr.results.residualHistory)
+            lg.push_back((float)((rr > 1e-16) ? std::log10(rr) : -16.0));
         ImGui::PlotLines("log10 ||r||/||f||", lg.data(), (int)lg.size(), 0, nullptr,
                          FLT_MAX, FLT_MAX, ImVec2(-1, 64));
     } else {
@@ -1975,7 +2047,12 @@ inline void caeHandleShortcuts(UiLayoutState& st) {
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
         caeSolve(true);
     }
-    if (st.maximized && !st.panelsVisible) st.panelsVisible = true;  // максимизация не прячет доки навсегда
+    // Здесь НЕЛЬЗЯ принудительно возвращать panelsVisible = true при максимизации.
+    // uiLayoutCompute() и так скрывает доки: showDocks = panelsVisible && !maximized.
+    // Прежняя строка «максимизация не прячет доки навсегда» откатывала выбор
+    // пользователя: в полноэкранном виде пункт «Скрыть все панели» (F12) и кнопка
+    // «Панели (F12)» становились inert — нажатие тут же отменялось, а в настройки
+    // записывалось «панели показаны» вопреки действию пользователя.
 }
 
 // -----------------------------------------------------

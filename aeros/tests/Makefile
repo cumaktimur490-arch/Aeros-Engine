@@ -5,6 +5,7 @@
 #   make lbm         только прогон решателя LBM (v1.27.0)
 #   make physclock   только фиксированный такт физики (v1.29.0)
 #   make fem         только CAD/CAE: исследование, сетка МКЭ, решатели, компоновка (v1.31.0)
+#   make ui          только оболочка CAD/CAE: панели, меню, обработчики кнопок (v1.31.x)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -14,8 +15,10 @@ CXXFLAGS := -std=c++17 -O1 -fopenmp -Wall -Wextra -Wno-unused-parameter $(INC)
 
 COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
-.PHONY: all timelapse lbm physclock fem clean
-all: timelapse lbm physclock fem
+IMGUI := $(SRC)/imgui
+
+.PHONY: all timelapse lbm physclock fem ui clean
+all: timelapse lbm physclock fem ui
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -38,6 +41,20 @@ physclock:
 fem:
 	g++ $(CXXFLAGS) fem_headless.cpp -o /tmp/aeros-test-fem
 	/tmp/aeros-test-fem
+
+# Оболочка CAD/CAE (cae_ui.h, ui_dock.h, ui_layout.h) собирается с НАСТОЯЩИМ ядром
+# ImGui в headless-режиме: без GLFW/OpenGL-бэкендов, с заглушками для диалогов выбора
+# файлов, загрузки модели и выгрузки цветов вершин в GPU. Так проверяются вещи, которые
+# не видны в расчётных тестах: сбалансирован ли стек окон ImGui при любом размере окна
+# и при Begin()==false, выполняются ли обработчики кнопок, честно ли оболочка отказывает
+# на пустом проекте и не падает ли на мусоре в настройках компоновки.
+ui:
+	g++ $(CXXFLAGS) -I$(IMGUI) cae_ui_headless.cpp \
+	    $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_widgets.cpp \
+	    $(IMGUI)/imgui_tables.cpp $(COMMON) $(SRC)/timelapse.cpp $(SRC)/lbm.cpp \
+	    $(SRC)/flow_field.cpp $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp \
+	    -o /tmp/aeros-test-ui -pthread
+	/tmp/aeros-test-ui
 
 clean:
 	rm -f /tmp/aeros-test-timelapse /tmp/aeros-test-lbm /tmp/aeros-test-physclock \

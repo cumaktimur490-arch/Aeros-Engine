@@ -49,6 +49,12 @@ inline bool uiDockBeginPanel(const char* title, const UiRect& r, float fontScale
 inline void uiDockEndPanel() { ImGui::End(); }
 
 // Открыть панель и сразу войти в её строку меню (нужно для главного меню).
+// ВАЖНО: в отличие от uiDockBeginPanel(), здесь false означает «окно НЕ открыто,
+// End вызывать не нужно». ImGui::Begin() обязан сопровождаться End() даже когда
+// вернул false (окно свёрнуто или полностью отсечено), поэтому закрываем окно
+// прямо здесь: иначе вызывающий код, написанный как `if (Begin…) { …; End…; }`,
+// оставляет несбалансированный стек окон — в отладочной сборке это IM_ASSERT,
+// в релизной разъехавшиеся панели и падение.
 inline bool uiDockBeginMenuBar(const UiRect& r, float fontScale) {
     if (!r.valid()) return false;
     ImGui::SetNextWindowPos(ImVec2(r.x, r.y));
@@ -56,8 +62,9 @@ inline bool uiDockBeginMenuBar(const UiRect& r, float fontScale) {
     const bool open = ImGui::Begin("##AerosMainMenuBar", nullptr,
                                    uiDockPanelFlags() | ImGuiWindowFlags_MenuBar |
                                    ImGuiWindowFlags_NoScrollbar);
-    if (open && fontScale > 0.5f) ImGui::SetWindowFontScale(fontScale);
-    return open;
+    if (!open) { ImGui::End(); return false; }
+    if (fontScale > 0.5f) ImGui::SetWindowFontScale(fontScale);
+    return true;
 }
 inline void uiDockEndMenuBar() { ImGui::End(); }
 
@@ -65,6 +72,8 @@ inline void uiDockEndMenuBar() { ImGui::End(); }
 // Строка состояния — постоянная полоса у самого низа окна. Не закрывается,
 // не двигается, всегда видна: по требованию к оболочке САПР.
 // -----------------------------------------------------
+// Как и uiDockBeginMenuBar(): false означает, что окно уже закрыто здесь и End
+// вызывать не нужно (см. пояснение выше).
 inline bool uiDockBeginStatusBar(const UiRect& r, float fontScale) {
     if (!r.valid()) return false;
     ImGui::SetNextWindowPos(ImVec2(r.x, r.y));
@@ -73,8 +82,9 @@ inline bool uiDockBeginStatusBar(const UiRect& r, float fontScale) {
     const bool open = ImGui::Begin("##AerosStatusBar", nullptr,
                                    uiDockPanelFlags() | ImGuiWindowFlags_NoTitleBar |
                                    ImGuiWindowFlags_NoScrollbar);
-    if (open && fontScale > 0.5f) ImGui::SetWindowFontScale(fontScale);
-    return open;
+    if (!open) { ImGui::End(); return false; }
+    if (fontScale > 0.5f) ImGui::SetWindowFontScale(fontScale);
+    return true;
 }
 inline void uiDockEndStatusBar() { ImGui::End(); }
 

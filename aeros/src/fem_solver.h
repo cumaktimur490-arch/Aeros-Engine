@@ -281,6 +281,20 @@ struct FemOperator {
 // Закреплённые DOF не обновляются: их значения лежат в u (предписанные),
 // невязка по ним обнуляется.
 // Возвращает число выполненных итераций; finalRel — ||r||/||f||.
+// Допуск сходимости, которому можно доверять.
+//
+// Значение tol >= 1 (а также NaN, Inf и неположительные числа) делает условие
+// сходимости истинным на первой же итерации: решатель рапортует «сошёлся»,
+// фактически не решив систему. Такой ответ хуже явной ошибки — его принимают за
+// результат. Поэтому бессмысленный допуск заменяется безопасным 1e-10, а
+// вызывающий код пишет об этом предупреждение и показывает реально использованное
+// значение.
+inline double femSafeRelTolerance(const StudySolverSettings& st, bool& wasFixed) {
+    const double t = st.relTolerance;
+    wasFixed = !(std::isfinite(t) && t > 0.0 && t < 1.0);
+    return wasFixed ? 1e-10 : t;
+}
+
 // -----------------------------------------------------
 inline int femPCG(const FemOperator& op,
                   const std::vector<double>& diag,
@@ -288,7 +302,7 @@ inline int femPCG(const FemOperator& op,
                   const std::vector<char>& fixed,
                   std::vector<double>& u,
                   const StudySolverSettings& st,
-                  std::vector<float>& history,
+                  std::vector<double>& history,
                   double& finalRel,
                   bool& converged)
 {
@@ -296,6 +310,9 @@ inline int femPCG(const FemOperator& op,
     converged = false;
     finalRel = 1.0;
     history.clear();
+    bool tolFixed = false;
+    const double tol = femSafeRelTolerance(st, tolFixed);
+    (void)tolFixed;   // о замене допуска сообщает вызывающий решатель
     std::vector<double> r(n), z(n), p(n), Kp(n);
 
     double fnorm = 0.0;
@@ -316,12 +333,12 @@ inline int femPCG(const FemOperator& op,
     for (int i = 0; i < n; ++i) rnorm += r[i] * r[i];
     rnorm = std::sqrt(rnorm);
     finalRel = rnorm / fnorm;
-    history.push_back((float)finalRel);
+    history.push_back(finalRel);
 
     const int maxIt = st.maxIterations > 0 ? st.maxIterations : 1000;
     int it = 0;
     for (; it < maxIt; ++it) {
-        if (finalRel <= st.relTolerance) { converged = true; break; }
+        if (finalRel <= tol) { converged = true; break; }
         op.apply(p, Kp);
         double pKp = 0.0;
         for (int i = 0; i < n; ++i) pKp += p[i] * Kp[i];
@@ -345,7 +362,7 @@ inline int femPCG(const FemOperator& op,
         }
         rnorm = std::sqrt(rn);
         finalRel = rnorm / fnorm;
-        if ((it % 5) == 0 || it == maxIt - 1) history.push_back((float)finalRel);
+        if ((it % 5) == 0 || it == maxIt - 1) history.push_back(finalRel);
         if (!(rzNew > 0.0) || !std::isfinite(rzNew)) break;
         const double beta = rzNew / (rz > 0.0 ? rz : 1.0);
         rz = rzNew;
@@ -354,7 +371,7 @@ inline int femPCG(const FemOperator& op,
         #endif
         for (int i = 0; i < n; ++i) p[i] = fixed[i] ? 0.0 : (z[i] + beta * p[i]);
     }
-    if (finalRel <= st.relTolerance) converged = true;
+    if (finalRel <= tol) converged = true;
     return it;
 }
 
@@ -854,6 +871,19 @@ inline bool femSolveLinearStatic(const FemMesh& mesh, const StudyProject& pr,
     res.massKg = mesh.massKg;
     res.appliedLoadSum = sys.appliedLoadSum;
     res.warnings.insert(res.warnings.end(), sys.warnings.begin(), sys.warnings.end());
+    {
+        // Если допуск сходимости задан бессмысленно, решатель использовал безопасный —
+        // и обязан об этом сказать: иначе «сошёлся» выглядит как честно полученный ответ.
+        bool tolFixed = false;
+        const double tolUsed = femSafeRelTolerance(pr.solver, tolFixed);
+        if (tolFixed) {
+            char tb[224];
+            std::snprintf(tb, sizeof(tb),
+                          "допуск сходимости %.3g вне диапазона (0; 1) — использован %.1g",
+                          pr.solver.relTolerance, tolUsed);
+            res.warnings.push_back(tb);
+        }
+    }
 
     if (conv) res.status = StudySolveStatus::Converged;
     else {
@@ -956,6 +986,19 @@ inline bool femSolveSteadyThermal(const FemMesh& mesh, const StudyProject& pr,
     res.volumeM3 = mesh.volume;
     res.massKg = mesh.massKg;
     res.warnings.insert(res.warnings.end(), sys.warnings.begin(), sys.warnings.end());
+    {
+        // Если допуск сходимости задан бессмысленно, решатель использовал безопасный —
+        // и обязан об этом сказать: иначе «сошёлся» выглядит как честно полученный ответ.
+        bool tolFixed = false;
+        const double tolUsed = femSafeRelTolerance(pr.solver, tolFixed);
+        if (tolFixed) {
+            char tb[224];
+            std::snprintf(tb, sizeof(tb),
+                          "допуск сходимости %.3g вне диапазона (0; 1) — использован %.1g",
+                          pr.solver.relTolerance, tolUsed);
+            res.warnings.push_back(tb);
+        }
+    }
 
     if (conv) res.status = StudySolveStatus::Converged;
     else {

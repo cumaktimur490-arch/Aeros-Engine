@@ -31,6 +31,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <limits>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -1444,6 +1445,156 @@ int main() {
             bool noFemChecks = true;
             for (const StudyIssue& i : iss) if (i.node == "Сетка") noFemChecks = false;
             check(noFemChecks, "для режима аэродинамики валидация не требует сетку МКЭ");
+        }
+        {   // Допуск сходимости: бессмысленное значение не должно давать фиктивную
+            // «сходимость». Раньше tol >= 1 (или NaN/Inf) делал условие сходимости
+            // истинным на первой итерации: решатель рапортовал «сошёлся», не решив
+            // систему, и такой ответ принимали за результат.
+            StudyProject pr;
+            setupBarTension(pr, 2.1e11, 0.0, 10000.0, 0.01);
+            pr.mesh.resolution = 12;
+            const int R = 12;
+            std::vector<int> occ((size_t)R * R * R, 1);
+            FemMesh m;
+            femMeshBuildFromVoxels(m, occ, R, R, R, 0.0f, 0.0f, 0.0f, 1.0f, 0.1f, 0.1f,
+                                   pr.mesh.resolution, 0, pr.material().density);
+            check(m.built && m.elemCount > 0, "сетка для проверки допуска построена");
+
+            pr.solver.relTolerance = 1e-10;
+            StudyResults ref; std::string errRef;
+            femSolveLinearStatic(m, pr, ref, errRef);
+            check(ref.status == StudySolveStatus::Converged, "эталонный расчёт (допуск 1e-10) сошёлся");
+
+            const double badTol[] = { 1e9, -1.0, 0.0,
+                                      std::numeric_limits<double>::quiet_NaN(),
+                                      std::numeric_limits<double>::infinity() };
+            const char* badName[] = { "1e9", "-1", "0", "NaN", "Inf" };
+            for (int i = 0; i < 5; ++i) {
+                pr.solver.relTolerance = badTol[i];
+                StudyResults r; std::string err;
+                femSolveLinearStatic(m, pr, r, err);
+                std::snprintf(b, sizeof(b),
+                              "допуск %s: статус %s, итераций %d, невязка %.3e, u_max %.6e (эталон %.6e)",
+                              badName[i], studyStatusName(r.status), r.iterations, r.finalResidual,
+                              r.maxDisplacement, ref.maxDisplacement);
+                check(r.status == StudySolveStatus::Converged, b);
+                check(r.iterations > 1, "бессмысленный допуск не дал «сходимость» за одну итерацию");
+                check(r.finalResidual < 1e-6, "невязка действительно мала, а не принята на веру");
+                check(std::fabs(r.maxDisplacement - ref.maxDisplacement) <=
+                          1e-6 * (std::fabs(ref.maxDisplacement) + 1e-30),
+                      "результат совпал с эталонным: допуск подменён безопасным, а не проглочен");
+                bool tolWarn = false;
+                for (const std::string& w : r.warnings)
+                    if (w.find("допуск сходимости") != std::string::npos) tolWarn = true;
+                check(tolWarn, "в результатах записано предупреждение о замене допуска");
+            }
+
+            pr.solver.relTolerance = 1e-10;
+            StudyResults r2; std::string e2;
+            femSolveLinearStatic(m, pr, r2, e2);
+            bool noTolWarn = true;
+            for (const std::string& w : r2.warnings)
+                if (w.find("допуск сходимости") != std::string::npos) noTolWarn = false;
+            check(noTolWarn, "при корректном допуске предупреждение о замене не появляется");
+
+            // История невязки хранится в double. Раньше это был float: невязка
+            // глубоко сошедшейся системы (1e-45…1e-160) обнулялась, и интерфейс
+            // показывал «начальная невязка 0» и плоский график сходимости.
+            std::snprintf(b, sizeof(b), "история невязки: %zu точек, первая %.3e, последняя %.3e",
+                          r2.residualHistory.size(),
+                          r2.residualHistory.empty() ? 0.0 : r2.residualHistory.front(),
+                          r2.residualHistory.empty() ? 0.0 : r2.residualHistory.back());
+            check(!r2.residualHistory.empty(), b);
+            // история пишется не каждую итерацию, поэтому последняя записанная
+            // невязка обязана быть не меньше конечной — и не обнулённой
+            check(!r2.residualHistory.empty() && r2.residualHistory.back() >= r2.finalResidual &&
+                  r2.residualHistory.back() > 0.0,
+                  "последняя записанная невязка истории не меньше конечной и не обнулена");
+            check(!r2.residualHistory.empty() && r2.initialResidual == r2.residualHistory.front(),
+                  "начальная невязка взята из истории без потери точности");
+            check(r2.initialResidual > r2.finalResidual && r2.finalResidual > 0.0,
+                  "невязка убывает и не обнуляется");
+
+            // недостижимый допуск: честно «не сошёлся», но невязка обязана остаться числом
+            pr.solver.relTolerance = 1e-300;
+            pr.solver.maxIterations = 5000;
+            StudyResults r3; std::string e3;
+            femSolveLinearStatic(m, pr, r3, e3);
+            std::snprintf(b, sizeof(b), "глубокая невязка: статус %s, итераций %d, невязка %.3e",
+                          studyStatusName(r3.status), r3.iterations, r3.finalResidual);
+            check(r3.status == StudySolveStatus::NotConverged, b);
+            check(r3.finalResidual > 0.0, "невязка не обнулилась при глубокой сходимости");
+            check(!r3.residualHistory.empty() && r3.residualHistory.back() > 0.0,
+                  "в истории невязки нет обнуления там, где float дал бы 0");
+            // прямое доказательство: это значение float представить не может
+            check(!r3.residualHistory.empty() && (float)r3.residualHistory.back() == 0.0f,
+                  "значение невязки ниже порога float: double его сохранил, float обнулил бы");
+            check(r3.finalResidual < 1e-30,
+                  "невязка действительно ниже порога представимости float (1.2e-38)");
+            pr.solver.relTolerance = 1e-10;
+            pr.solver.maxIterations = 2000;
+
+            // валидация постановки: бессмысленный допуск — ошибка, свободный — предупреждение
+            pr.solver.relTolerance = 5.0;
+            bool isError = false;
+            for (const StudyIssue& is : studyValidate(pr))
+                if (is.node == "Решатель" && is.level == StudyNodeState::Error) isError = true;
+            check(isError, "валидация считает бессмысленный допуск ошибкой, а не предупреждением");
+            pr.solver.relTolerance = 2e-2;
+            bool isWarn = false; isError = false;
+            for (const StudyIssue& is : studyValidate(pr))
+                if (is.node == "Решатель") {
+                    if (is.level == StudyNodeState::Warning) isWarn = true;
+                    if (is.level == StudyNodeState::Error) isError = true;
+                }
+            check(isWarn && !isError, "свободный, но осмысленный допуск — предупреждение, не ошибка");
+
+            // загрузка из файла: мусорный допуск заменяется безопасным
+            const char* tmp = "/tmp/aeros-fem-tolerance.aerosproj";
+            {   std::ofstream f(tmp);
+                f << "# проверка загрузки допуска\nsolverTolerance=1e9\nmeshResolution=12\n"; }
+            StudyProject loaded;
+            check(studyLoadProject(loaded, tmp), "проект с мусорным допуском загружен");
+            std::snprintf(b, sizeof(b), "загруженный допуск %.3g (ожидался безопасный 1e-10)",
+                          loaded.solver.relTolerance);
+            check(std::fabs(loaded.solver.relTolerance - 1e-10) <= 1e-13, b);
+            {   std::ofstream f(tmp);
+                f << "solverTolerance=nan\n"; }
+            check(studyLoadProject(loaded, tmp), "проект с «nan» в допуске загружен");
+            check(std::isfinite(loaded.solver.relTolerance) && loaded.solver.relTolerance > 0.0,
+                  "«nan» из файла не попал в настройки решателя");
+            std::remove(tmp);
+        }
+        {   // Предел размера сетки: честный отказ ДО выделения гигабайтов.
+            // Расчёт держит примерно 250 байт на элемент, поэтому сетка больше
+            // 12 млн элементов на обычном ПК не решается — её надо отклонить сразу.
+            const int R = 8;
+            std::vector<int> occ((size_t)R * R * R, 1);
+            FemMesh big;
+            const bool okBig = femMeshBuildFromVoxels(big, occ, R, R, R,
+                                                      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+                                                      300, 0, 7850.0);
+            const long long elems = (long long)300 * 300 * 300;
+            std::snprintf(b, sizeof(b), "сетка на %lld элементов отклонена (построение вернуло %d)",
+                          elems, (int)okBig);
+            check(!okBig && !big.built && big.elemCount == 0, b);
+            bool saidTooBig = false;
+            for (const std::string& w : big.warnings)
+                if (w.find("слишком велика") != std::string::npos) saidTooBig = true;
+            check(saidTooBig, "в предупреждениях названа причина: сетка слишком велика");
+            bool mentionsMemory = false;
+            for (const std::string& w : big.warnings)
+                if (w.find("байт") != std::string::npos || w.find("памят") != std::string::npos)
+                    mentionsMemory = true;
+            check(mentionsMemory, "предупреждение объясняет ограничение памятью, а не просто «нельзя»");
+
+            // сразу под пределом — сетка строится (проверка, что предел не занижен зря)
+            FemMesh ok12;
+            const bool okMid = femMeshBuildFromVoxels(ok12, occ, R, R, R,
+                                                      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+                                                      96, 0, 7850.0);
+            std::snprintf(b, sizeof(b), "сетка 96x96x96 = %d элементов построена", ok12.elemCount);
+            check(okMid && ok12.built && ok12.elemCount == 96 * 96 * 96, b);
         }
     }
 
