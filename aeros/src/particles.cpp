@@ -449,11 +449,17 @@ void updateParticles(float dt) {
             colPtr[3*i] = col.x; colPtr[3*i+1] = col.y; colPtr[3*i+2] = col.z;
         }
 
-        if (particleVAO != 0) {
-            glBindBuffer(GL_ARRAY_BUFFER, particleVBO_pos);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, n*3*sizeof(float), posPtr);
-            glBindBuffer(GL_ARRAY_BUFFER, particleVBO_col);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, n*3*sizeof(float), colPtr);
-        }
+    }
+
+    // v1.31.2 — загрузка новых позиций и цветов в VBO вынесена ИЗ ветки CPU.
+    // Раньше glBufferSubData выполнялся только при useCUDA == 0: при включённой
+    // CUDA ядро честно обновляло particlePositions/particleColors на хосте, но
+    // видеопамять не переписывалась, и на экране частицы навсегда оставались на
+    // стартовых позициях («частицы при CUDA не работают»).
+    if (particleVAO != 0) {
+        glBindBuffer(GL_ARRAY_BUFFER, particleVBO_pos);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, n*3*sizeof(float), particlePositions.data());
+        glBindBuffer(GL_ARRAY_BUFFER, particleVBO_col);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, n*3*sizeof(float), particleColors.data());
     }
 }

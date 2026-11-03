@@ -595,11 +595,11 @@ inline void caeDrawStudyTree() {
     if (ImGui::TreeNodeEx(_TR("Study", "Исследование"), gf)) {
         uiDockStateDot(caeRootState(pr));
         if (ImGui::Selectable(studyAnalysisName(pr.analysis), v.studySel == CAE_STUDY_ANALYSIS,
-                              ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
             v.studySel = CAE_STUDY_ANALYSIS;
         uiDockStateDot(caeNodeState(pr, "Геометрия"));
         if (ImGui::Selectable(_TR("Geometry", "Геометрия"), v.studySel == CAE_STUDY_GEOMETRY,
-                              ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
             v.studySel = CAE_STUDY_GEOMETRY;
         ImGui::TreePop();
     }
@@ -607,7 +607,7 @@ inline void caeDrawStudyTree() {
     if (ImGui::TreeNodeEx(_TR("Units", "Единицы"), gf)) {
         uiDockStateDot(1);
         if (ImGui::Selectable(_TR("Unit system", "Система единиц"), v.studySel == CAE_STUDY_UNITS,
-                              ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
             v.studySel = CAE_STUDY_UNITS;
         ImGui::TreePop();
     }
@@ -615,7 +615,7 @@ inline void caeDrawStudyTree() {
     if (ImGui::TreeNodeEx(_TR("Materials", "Материалы"), gf)) {
         uiDockStateDot(caeNodeState(pr, "Материалы"));
         if (ImGui::Selectable(_TR("Material list", "Список материалов"), v.studySel == CAE_STUDY_MATERIALS,
-                              ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
             v.studySel = CAE_STUDY_MATERIALS;
         for (size_t i = 0; i < pr.materials.size(); ++i) {
             const int sel = CAE_STUDY_MAT_BASE + (int)i;
@@ -624,7 +624,7 @@ inline void caeDrawStudyTree() {
                           (int)i == pr.materialIndex ? "  *" : "");
             uiDockStateDot((int)i == pr.materialIndex ? 1 : 0);
             ImGui::PushID((int)i);
-            if (ImGui::Selectable(label, v.studySel == sel, ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+            if (ImGui::Selectable(label, v.studySel == sel, ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
                 v.studySel = sel;
             ImGui::PopID();
         }
@@ -634,7 +634,7 @@ inline void caeDrawStudyTree() {
     if (ImGui::TreeNodeEx(_TR("Loads and constraints", "Нагрузки и закрепления"), gf)) {
         uiDockStateDot(caeNodeState(pr, "Нагрузки"));
         if (ImGui::Selectable(_TR("Load list", "Список условий"), v.studySel == CAE_STUDY_LOADS,
-                              ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
             v.studySel = CAE_STUDY_LOADS;
         for (size_t i = 0; i < pr.loads.size(); ++i) {
             const int sel = CAE_STUDY_LOAD_BASE + (int)i;
@@ -643,7 +643,7 @@ inline void caeDrawStudyTree() {
                           studyBCKindName(pr.loads[i].kind), pr.loads[i].enabled ? "" : "  (выкл)");
             uiDockStateDot(pr.loads[i].enabled ? 1 : 0);
             ImGui::PushID(1000 + (int)i);
-            if (ImGui::Selectable(label, v.studySel == sel, ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+            if (ImGui::Selectable(label, v.studySel == sel, ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
                 v.studySel = sel;
             ImGui::PopID();
         }
@@ -654,11 +654,11 @@ inline void caeDrawStudyTree() {
         const int meshState = caeMesh().built ? 1 : 0;
         uiDockStateDot(meshState);
         if (ImGui::Selectable(_TR("Volume mesh", "Объёмная сетка"), v.studySel == CAE_STUDY_MESH,
-                              ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
             v.studySel = CAE_STUDY_MESH;
         uiDockStateDot(1);
         if (ImGui::Selectable(_TR("Solver settings", "Настройки решателя"), v.studySel == CAE_STUDY_SOLVER,
-                              ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
             v.studySel = CAE_STUDY_SOLVER;
         ImGui::TreePop();
     }
@@ -668,7 +668,7 @@ inline void caeDrawStudyTree() {
                        : (pr.results.status == StudySolveStatus::NotConverged ? 2 : 3));
     uiDockStateDot(resState);
     if (ImGui::Selectable(_TR("Results", "Результаты"), v.studySel == CAE_STUDY_RESULTS,
-                          ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                          ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
         v.studySel = CAE_STUDY_RESULTS;
 
     ImGui::Separator();
@@ -962,7 +962,7 @@ inline void caeDrawStudyProps() {
             std::snprintf(b, sizeof(b), "%zu. %s [%s]%s", i + 1, pr.loads[i].name.c_str(),
                           studyBCKindName(pr.loads[i].kind), pr.loads[i].enabled ? "" : " (выкл)");
             if (ImGui::Selectable(b, v.studySel == CAE_STUDY_LOAD_BASE + (int)i,
-                                  ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                                  ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
                 v.studySel = CAE_STUDY_LOAD_BASE + (int)i;
         }
         if (pr.loads.empty())
@@ -1269,7 +1269,7 @@ inline void caeDrawResultsTree() {
             uiDockStateDot(v.field == tab[i].id ? 4 : 1);
             ImGui::PushID((int)i);
             if (ImGui::Selectable(tab[i].name, v.studySel == sel && v.field == tab[i].id,
-                                  ImGuiSelectableFlags_None, ImVec2(-1, 0))) {
+                                  ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f))) {
                 v.field = tab[i].id;
                 v.studySel = sel;
                 v.resultSel = 0;
@@ -1296,7 +1296,7 @@ inline void caeDrawResultsTree() {
         for (auto& it : items) {
             uiDockStateDot(1);
             if (ImGui::Selectable(_TR(it.en, it.ru), v.resultSel == it.id,
-                                  ImGuiSelectableFlags_None, ImVec2(-1, 0)))
+                                  ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f)))
                 v.resultSel = it.id;
         }
         ImGui::TreePop();

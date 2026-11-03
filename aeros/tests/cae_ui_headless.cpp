@@ -68,6 +68,7 @@ static void section(const char* name) { std::printf("\n--- %s ---\n", name); }
 // Глубина стека окон сразу после NewFrame — эталон: к концу отрисовки оболочки
 // стек обязан вернуться к этому значению.
 static int g_stackBase = 1;
+static int  g_treeVtx = 0;   // вершин списка отрисовки панели дерева во время кадра
 static int windowStackDepth() {
     ImGuiContext& g = *GImGui;
     return (int)g.CurrentWindowStack.Size;
@@ -106,6 +107,9 @@ static bool drawShellFrame(float W, float H, bool drawLegacyTreePlaceholder) {
             if (st.workspace == 1)       caeDrawStudyTree();
             else if (st.workspace == 2)  caeDrawResultsTree();
             else if (drawLegacyTreePlaceholder) ImGui::Text("навигатор расчёта (в ui.cpp)");
+            // вершин списка отрисовки снимаем ВО ВРЕМЯ кадра: после Render()
+            // список панели уже собран в общие данные и очищен
+            g_treeVtx = ImGui::GetWindowDrawList()->VtxBuffer.Size;
             ImGui::EndChild();
         }
         uiDockEndPanel();
@@ -313,6 +317,9 @@ static bool fileExistsNonEmpty(const char* path) {
     return false;
 }
 
+
+static int g_imguiErrors = 0;
+static void countImguiErrors(ImGuiContext*, void*, const char*) { g_imguiErrors++; }
 
 int main(int argc, char** argv) {
     // ---- Режим дочернего процесса: проверка нехватки памяти ----
@@ -1109,6 +1116,94 @@ int main(int argc, char** argv) {
                     check(true, "при нехватке памяти оболочка сообщила причину и не упала");
             }
         }
+    }
+
+    // =========================================================
+    section("12. Подписи узлов деревьев видны (прямоугольник Selectable не вырожден)");
+    // =========================================================
+    {
+        // Ловушка ImGui 1.92.9b: у Selectable размер ImVec2(-1, 0) НЕ означает
+        // «занять всю ширину» — size.x остаётся -1, прямоугольник элемента
+        // вырождается, и подпись не рисуется вовсе (на экране остаются только
+        // линии дерева). Именно так были написаны все 14 вызовов Selectable в
+        // деревьях («Модель»/«Исследование»/«Результаты»): пользователь видел
+        // пустые строки вместо названий. Правильно — ImVec2(0, 0): тогда ширина
+        // растягивается на всю доступную, а подпись рисуется.
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2(264.0f, 600.0f));
+        ImGui::Begin("##probeTreeWidth");
+        ImGui::TreeNodeEx("Группа", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+        ImGui::Selectable("Подпись узла дерева", false, ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f));
+        const float wGood = ImGui::GetItemRectMax().x - ImGui::GetItemRectMin().x;
+        const bool visGood = ImGui::IsItemVisible();
+        ImGui::Selectable("Подпись узла дерева", false, ImGuiSelectableFlags_None, ImVec2(-1.0f, 0.0f));
+        const float wBad = ImGui::GetItemRectMax().x - ImGui::GetItemRectMin().x;
+        ImGui::TreePop();
+        ImGui::End();
+        ImGui::Render();
+        std::snprintf(b, sizeof(b), "Selectable с размером (0,0): ширина %.1f пкс, видим=%d",
+                      wGood, (int)visGood);
+        check(wGood > 200.0f && visGood, b);
+        std::snprintf(b, sizeof(b), "Selectable с размером (-1,0): ширина %.1f пкс (вырожденный "
+                                    "прямоугольник — подпись не рисуется)", wBad);
+        check(wBad < 20.0f, b);
+
+        // Проверка на уровне приложения: после отрисовки деревьев в панелях
+        // «Исследование» и «Результаты» список отрисовки панели обязан содержать
+        // текст подписей. С вырожденными Selectable вершин на текст не было бы.
+        for (int ws = 1; ws <= 2; ++ws) {
+            uiLayoutState().workspace = ws;
+            uiLayoutState().treePanel = true;
+            uiLayoutState().panelsVisible = true;
+            frameOk(1600.0f, 900.0f);
+            char title[192];
+            std::snprintf(title, sizeof(title), "%s — %s", _TR("Project", "Проект"),
+                          uiWorkspaceName(ws));
+            std::snprintf(b, sizeof(b), "панель «%s»: вершин в списке отрисовки %d "
+                                        "(подписи узлов дают текст)", title, g_treeVtx);
+            check(g_treeVtx > 1200, b);
+        }
+    }
+
+    // =========================================================
+    section("13. Клик по вкладкам пространства не ломает стек стилей ImGui");
+    // =========================================================
+    {
+        // Прежде подсветка активной вкладки делала PushStyleColor(3) ДО отрисовки
+        // кнопки и PopStyleColor(3) ПОСЛЕ, проверяя то же условие. Кнопка меняет
+        // st.workspace между ними, и в кадре клика pop шёл без парного push:
+        // ImGui сообщал «Calling PopStyleColor() too many times!» (в отладочной
+        // сборке — падение на ассерте). Решение о подсветке теперь запоминается
+        // до отрисовки, и стеки остаются симметричными.
+        ImGuiContext& g = *GImGui;
+        g.ErrorCallback = countImguiErrors;
+        g_imguiErrors = 0;
+        UiLayoutState& st = uiLayoutState();
+        st.workspace = 0;
+        st.panelsVisible = true;
+        st.treePanel = true;
+        frameOk(1600.0f, 900.0f);
+
+        const int order[3] = { 1, 2, 0 };
+        bool switched = true;
+        for (int k = 0; k < 3; ++k) {
+            char title[192];
+            std::snprintf(title, sizeof(title), "%s — %s", _TR("Project", "Проект"),
+                          uiWorkspaceName(st.workspace));
+            char label[128];
+            std::snprintf(label, sizeof(label), "%s##ws%d", uiWorkspaceName(order[k]), order[k]);
+            if (!pressButton(title, label)) { switched = false; break; }
+            frameOk(1600.0f, 900.0f);
+            frameOk(1600.0f, 900.0f);
+            if (st.workspace != order[k]) { switched = false; break; }
+        }
+        check(switched, "вкладки Модель/Исследование/Результаты переключаются кликом");
+        std::snprintf(b, sizeof(b), "ошибок ImGui за три клика по вкладкам: %d (норма 0)",
+                      g_imguiErrors);
+        check(g_imguiErrors == 0, b);
+        g.ErrorCallback = nullptr;
+        check(frameOk(1600.0f, 900.0f), "оболочка рисуется после переключения вкладок");
     }
 
     ImGui::DestroyContext();

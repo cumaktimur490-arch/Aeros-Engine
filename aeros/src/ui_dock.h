@@ -158,7 +158,15 @@ inline bool uiDockWorkspaceTabs(UiLayoutState& st) {
     for (int i = 0; i < UI_WORKSPACE_COUNT; ++i) {
         if (i > 0) ImGui::SameLine(0.0f, 4.0f);
         const float w = (ImGui::GetContentRegionAvail().x - 8.0f) / 3.0f;
-        if (st.workspace == i) {
+        // Решение «подсвечивать ли кнопку» принимается ДО отрисовки и запоминается:
+        // сама кнопка меняет st.workspace, и прежний вариант (push до кнопки, pop
+        // после по тому же условию) при клике делал PopStyleColor(3) БЕЗ парного
+        // push. В отладочной сборке ImGui падал на ассерте «PopStyleColor() too
+        // many times», а в релизной (NDEBUG) стек стилей уезжал в отрицательный
+        // размер и молча портил цвета последующих виджетов — в частности, текст
+        // в панелях переставал отображаться.
+        const bool styled = (st.workspace == i);
+        if (styled) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.45f, 0.78f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.53f, 0.86f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.38f, 0.68f, 1.0f));
@@ -168,7 +176,7 @@ inline bool uiDockWorkspaceTabs(UiLayoutState& st) {
         if (ImGui::Button(id, ImVec2(w > 40.0f ? w : 40.0f, 0.0f))) {
             if (st.workspace != i) { st.workspace = i; changed = true; }
         }
-        if (st.workspace == i) ImGui::PopStyleColor(3);
+        if (styled) ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", uiWorkspaceHint(i));
     }
     return changed;

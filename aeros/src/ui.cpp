@@ -616,8 +616,7 @@ static void drawUiTree() {
         ImGui::PushID(lf.id);
         // В ImGui 1.92 флага SpanAvailWidth для Selectable больше нет: ширина
         // задаётся размером (-1 = занять всю доступную ширину).
-        if (ImGui::Selectable(name, uiSelectedLeaf == lf.id, ImGuiSelectableFlags_None,
-                              ImVec2(-1.0f, 0.0f))) {
+        if (ImGui::Selectable(name, uiSelectedLeaf == lf.id, ImGuiSelectableFlags_None, ImVec2(0.0f, 0.0f))) {
             if (uiSelectedLeaf != lf.id) {
                 uiSelectedLeaf = lf.id;
                 debugLogAction("интерфейс", "выбран узел «%s»", name);
