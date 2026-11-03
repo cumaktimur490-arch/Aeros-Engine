@@ -5,7 +5,7 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [Не выпущено]
+## [1.31.1] - 2026-11-03
 
 ### Исправлено — оболочка CAD/CAE и решатели МКЭ
 
