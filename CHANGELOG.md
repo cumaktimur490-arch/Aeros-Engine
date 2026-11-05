@@ -5,7 +5,7 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [Не выпущено]
+## [1.31.2] - 2026-11-05
 
 ### Исправлено — интерфейс: подписи деревьев и стек стилей вкладок
 
