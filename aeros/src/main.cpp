@@ -40,6 +40,7 @@
 #include "gl_utils.h"
 #include "input.h"
 #include "ui.h"
+#include "vulkan_scene.h"
 #include "ui_layout.h"   // v1.31.0 — компоновка оболочки CAD/CAE (сохранение между запусками)
 #include "model.h"
 #include "stl_loader.h"
@@ -477,6 +478,20 @@ static void trackParamChangesForJournal() {
     }
 }
 
+// v1.33.0 — иконка окна ставится из одного места: раньше код был вставлен
+// дважды (при создании окна и при его пересоздании для отката на OpenGL), а
+// icon_data.h с #pragma once нельзя включить второй раз в другой области
+// видимости — второй блок просто не компилировался.
+static void applyWindowIcon(GLFWwindow* window) {
+    #include "icon_data.h"
+    GLFWimage iconImg;
+    iconImg.width = ICON_WIDTH;
+    iconImg.height = ICON_HEIGHT;
+    iconImg.pixels = (unsigned char*)ICON_DATA;
+    glfwSetWindowIcon(window, 1, &iconImg);
+    std::cout << "[Icon] Window icon set: AoS ENG. " << ICON_WIDTH << "x" << ICON_HEIGHT << std::endl;
+}
+
 int main(int argc, char** argv) {
     // v1.25.0 — журнал отладки открывается до всего остального, чтобы в него
     // попали причины любых ранних сбоев (GLFW, окно, GLAD, шейдеры, модель).
@@ -775,18 +790,22 @@ int main(int argc, char** argv) {
         // потому что renderer=vulkan сохраняется в aeros_settings.ini и без
         // этого сообщения пользователь каждый запуск получал бы чёрное окно
         // (или непонятный OpenGL) без объяснения причины.
-        DBG_WARN("Vulkan запрошен (ключ --vulkan или aeros_settings.ini), но рендерер Vulkan "
-                 "в этой версии не реализован — окно создаётся с контекстом OpenGL 3.3");
+        // v1.33.0 — причина пишется точная: чего именно не хватило (загрузчик,
+        // устройство с графикой или поддержка вывода в окно).
+        const std::string why = getVulkanDecisionReason();
+        DBG_WARN("Vulkan запрошен (ключ --vulkan или aeros_settings.ini), но недоступен: %s "
+                 "— окно создаётся с контекстом OpenGL 3.3", why.c_str());
         debugLogAddFact("Рендерер", "Vulkan",
                         vulkanLoaderPresent()
-                            ? "запрошен, но не реализован в этой версии (загрузчик в системе есть) — используется OpenGL"
-                            : "запрошен, но не реализован в этой версии (загрузчик не найден) — используется OpenGL");
+                            ? ("запрошен, но недоступен: " + why + " — используется OpenGL").c_str()
+                            : "запрошен, но загрузчик Vulkan не найден — используется OpenGL");
     }
     if (requestedAPI == RendererAPI::Vulkan && isVulkanAvailable()) {
         // For Vulkan, we need no API
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         useVulkanWindow = true;
-        std::cout << "[Main] Creating Vulkan window (no OpenGL context)" << std::endl;
+        std::cout << "[Main] Окно создаётся без контекста OpenGL (Vulkan): "
+                  << getVulkanDecisionReason() << std::endl;
     } else {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -810,15 +829,7 @@ int main(int argc, char** argv) {
     }
 
     // v1.19.0: Set window icon — AoS ENG.
-    {
-        #include "icon_data.h"
-        GLFWimage iconImg;
-        iconImg.width = ICON_WIDTH;
-        iconImg.height = ICON_HEIGHT;
-        iconImg.pixels = (unsigned char*)ICON_DATA;
-        glfwSetWindowIcon(window, 1, &iconImg);
-        std::cout << "[Icon] Window icon set: AoS ENG. " << ICON_WIDTH << "x" << ICON_HEIGHT << std::endl;
-    }
+    applyWindowIcon(window);
 
     // Init renderer abstraction — v1.19.0 Vulkan+OpenGL
     RendererConfig rendCfg;
@@ -846,9 +857,44 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Init our renderer abstraction (will choose Vulkan or OpenGL)
+    // v1.33.0 — инициализация рендерера. Если Vulkan запрошен, но не поднялся
+    // (например, драйвер не дал поверхность для окна), окно придётся создать
+    // заново: в окне с GLFW_NO_API контекст OpenGL создать нельзя, а без него
+    // GL-функции не загрузить.
     if (!initRenderer(window, requestedAPI)) {
-        std::cerr << "[Main] Renderer init failed, trying OpenGL fallback" << std::endl;
+        std::cerr << "[Main] Рендерер не инициализировался, пробуем OpenGL" << std::endl;
+        if (useVulkanWindow) {
+            glfwDestroyWindow(window);
+            glfwDefaultWindowHints();
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            glfwWindowHint(GLFW_SAMPLES, 4);
+            glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_TRUE);
+            window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, AEROS_VERSION_FULL, nullptr, nullptr);
+            if (!window) {
+                DBG_ERROR("окно OpenGL не создалось после отказа Vulkan — выход");
+                glfwTerminate();
+                return -1;
+            }
+            applyWindowIcon(window);   // окно пересоздано — иконку ставим заново
+            glfwMakeContextCurrent(window);
+            glfwSwapInterval(vsyncEnabled ? 1 : 0);
+            glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+            glfwSetCursorPosCallback(window, mouse_callback);
+            glfwSetScrollCallback(window, scroll_callback);
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+                DBG_ERROR("gladLoadGLLoader не удалась после пересоздания окна — выход");
+                glfwTerminate();
+                return -1;
+            }
+            useVulkanWindow = false;
+            requestedAPI = RendererAPI::OpenGL;
+            DBG_WARN("Vulkan не запустился, окно пересоздано — используется OpenGL");
+        }
         if (!initRenderer(window, RendererAPI::OpenGL)) {
             std::cerr << "[Main] Both renderers failed" << std::endl;
             DBG_ERROR("не удалось инициализировать ни Vulkan, ни OpenGL — выход");
@@ -856,11 +902,18 @@ int main(int argc, char** argv) {
             return -1;
         }
     }
+    // v1.33.0 — единый признак «рисуем через Vulkan» для всей главной функции.
+    const bool vulkanMode = isRendererVulkan();
+    // v1.33.0 — фактический размер кадрового буфера. Матрица проекции считается
+    // по display_w/display_h, а колбэк изменения размера срабатывает только при
+    // последующем изменении окна: без этой строки на HiDPI-экране пропорции
+    // сцены были бы неверными до первого ресайза.
+    glfwGetFramebufferSize(window, &display_w, &display_h);
     std::cout << "[Main] Renderer: " << getRendererName() << std::endl;
     DBG_INFO("рендерер: %s", getRendererName() ? getRendererName() : "?");
 
     // OpenGL debug — v1.9.0 fixed: use GLAD_GL_VERSION_4_3 — only for OpenGL
-    if (!useVulkanWindow && GLAD_GL_VERSION_4_3) {
+    if (!vulkanMode && GLAD_GL_VERSION_4_3) {
         glEnable(GL_DEBUG_OUTPUT);
         glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
         glDebugMessageCallback(glDebugCallback, nullptr);
@@ -870,7 +923,7 @@ int main(int argc, char** argv) {
         std::cout << "[GL] Debug output not available (GL < 4.3)" << std::endl;
     }
 
-    if (!useVulkanWindow) {
+    if (!vulkanMode) {
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -893,10 +946,12 @@ int main(int argc, char** argv) {
             DBG_INFO("OpenGL: %s | MSAA=%d", g_debugGLInfo.c_str(), g_debugMSAA);
         }
     } else {
-        std::cout << "[Vulkan] Skipping OpenGL state setup — using Vulkan" << std::endl;
+        std::cout << "[Main] OpenGL-состояние не настраивается — рисует Vulkan" << std::endl;
+        g_debugGLInfo = "Vulkan: " + getVulkanVersionString();
+        DBG_INFO("%s", g_debugGLInfo.c_str());
     }
 
-    createObstacleSphere(48, 48);
+    if (!vulkanMode) createObstacleSphere(48, 48);   // геометрия GL; Vulkan строит сам
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -915,13 +970,27 @@ int main(int argc, char** argv) {
     style.GrabRounding = 3.0f;
     style.ScrollbarRounding = 3.0f;
 
-    if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
+    // v1.33.0 — у каждого бэкенда свой ввод и свой рисовальщик интерфейса.
+    // Для Vulkan типы Vulkan нужны только рендереру: main.cpp вызывает
+    // initUiBackend/uiRender и не тянет vulkan.h.
+    const bool imguiGlfwOk = vulkanMode ? ImGui_ImplGlfw_InitForVulkan(window, true)
+                                        : ImGui_ImplGlfw_InitForOpenGL(window, true);
+    if (!imguiGlfwOk) {
         std::cerr << "[ImGui] Failed to init GLFW backend" << std::endl;
-        DBG_ERROR("ImGui_ImplGlfw_InitForOpenGL не удалась");
+        DBG_ERROR("ImGui_ImplGlfw_InitFor%s не удалась", vulkanMode ? "Vulkan" : "OpenGL");
         glfwTerminate();
         return -1;
     }
-    if (!ImGui_ImplOpenGL3_Init("#version 330 core")) {
+    if (vulkanMode) {
+        if (!g_renderer || !g_renderer->initUiBackend()) {
+            std::cerr << "[ImGui] Failed to init Vulkan backend" << std::endl;
+            DBG_ERROR("ImGui_ImplVulkan_Init не удалась — выход");
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+            glfwTerminate();
+            return -1;
+        }
+    } else if (!ImGui_ImplOpenGL3_Init("#version 330 core")) {
         std::cerr << "[ImGui] Failed to init OpenGL3 backend" << std::endl;
         DBG_ERROR("ImGui_ImplOpenGL3_Init не удалась");
         ImGui_ImplGlfw_Shutdown();
@@ -930,11 +999,19 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    unsigned int modelShaderProgram    = compileProgram(vertexShaderSource, fragmentShaderSource);
-    unsigned int particleShaderProgram = compileProgram(particleVertexShaderSource, particleFragmentShaderSource);
-    unsigned int lineShaderProgram     = compileProgram(lineVertexShaderSource, lineFragmentShaderSource);
-    unsigned int groundShaderProgram   = compileProgram(groundVertexShaderSource, groundFragmentShaderSource);
-    if (modelShaderProgram == 0 || particleShaderProgram == 0 || lineShaderProgram == 0 || groundShaderProgram == 0) {
+    // v1.33.0 — GLSL-программы нужны только OpenGL-ветке. В Vulkan-режиме они
+    // не компилируются вообще: рисовать ими нечего, а их отсутствие не ошибка.
+    unsigned int modelShaderProgram    = 0;
+    unsigned int particleShaderProgram = 0;
+    unsigned int lineShaderProgram     = 0;
+    unsigned int groundShaderProgram   = 0;
+    if (!vulkanMode) {
+        modelShaderProgram    = compileProgram(vertexShaderSource, fragmentShaderSource);
+        particleShaderProgram = compileProgram(particleVertexShaderSource, particleFragmentShaderSource);
+        lineShaderProgram     = compileProgram(lineVertexShaderSource, lineFragmentShaderSource);
+        groundShaderProgram   = compileProgram(groundVertexShaderSource, groundFragmentShaderSource);
+    }
+    if (!vulkanMode && (modelShaderProgram == 0 || particleShaderProgram == 0 || lineShaderProgram == 0 || groundShaderProgram == 0)) {
         std::cerr << "[Main] Shader compile failed" << std::endl;
         DBG_ERROR("компиляция шейдеров не удалась (model=%u particle=%u line=%u ground=%u)",
                   modelShaderProgram, particleShaderProgram, lineShaderProgram, groundShaderProgram);
@@ -945,21 +1022,29 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // v1.19.0 FSR init
-    if (!initFSR(display_w, display_h)) {
+    // v1.19.0 FSR init — только OpenGL. FSR/FG построены на кадровых буферах и
+    // фрагментных шейдерах OpenGL; в Vulkan-режиме они не включаются, и об этом
+    // прямо сообщается (иначе настройка выглядела бы включённой, но не работала).
+    if (vulkanMode) {
+        fsrEnabled = false;
+        fgEnabled  = false;
+        DBG_WARN("FSR и генерация кадров доступны только в OpenGL-режиме — в Vulkan они отключены");
+        std::cout << "[Main] FSR/FG отключены: в Vulkan-режиме они не поддерживаются" << std::endl;
+    }
+    if (!vulkanMode && !initFSR(display_w, display_h)) {
         std::cerr << "[FSR] Failed to init, disabling" << std::endl;
         fsrEnabled = false;
-    } else {
+    } else if (!vulkanMode) {
         fsrRenderScale = getFSRScale((int)fsrMode);
         fsrCurrentScale = fsrRenderScale;
         std::cout << "[FSR] Ready — mode " << getFSRModeName((int)fsrMode) << " scale " << fsrRenderScale << std::endl;
     }
 
-    // v1.19.0 Frame Generation init
-    if (!initFrameGen(display_w, display_h)) {
+    // v1.19.0 Frame Generation init — тоже только OpenGL
+    if (!vulkanMode && !initFrameGen(display_w, display_h)) {
         std::cerr << "[FG] Failed to init, disabling" << std::endl;
         fgEnabled = false;
-    } else {
+    } else if (!vulkanMode) {
         std::cout << "[FG] Ready — mode " << getFGModeName((int)fgMode) << std::endl;
     }
 
@@ -972,9 +1057,11 @@ int main(int argc, char** argv) {
     // установщик ([Run] ... nowait) — такой процесс не получает передний план,
     // и диалог без владельца остаётся за окном установки. Пользователь видит
     // «программа не запускается», хотя она ждёт выбора STL-модели.
-    glClearColor(0.04f, 0.05f, 0.07f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glfwSwapBuffers(window);
+    if (!vulkanMode) {
+        glClearColor(0.04f, 0.05f, 0.07f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glfwSwapBuffers(window);
+    }
     glfwShowWindow(window);
     glfwFocusWindow(window);
 
@@ -998,15 +1085,20 @@ int main(int argc, char** argv) {
         DBG_INFO("диалог выбора модели вернул: %s", modelPath.empty() ? "(файл не выбран)" : modelPath.c_str());
     }
     if (modelPath.empty()) {
-        std::cout << "[Main] No file selected, exiting" << std::endl;
+        std::cout << "[Main] Файл модели не выбран — выход" << std::endl;
         DBG_WARN("файл модели не выбран — выход");
-        glDeleteProgram(modelShaderProgram);
-        glDeleteProgram(particleShaderProgram);
-        glDeleteProgram(lineShaderProgram);
-        glDeleteProgram(groundShaderProgram);
-        ImGui_ImplOpenGL3_Shutdown();
+        if (!vulkanMode) {
+            glDeleteProgram(modelShaderProgram);
+            glDeleteProgram(particleShaderProgram);
+            glDeleteProgram(lineShaderProgram);
+            glDeleteProgram(groundShaderProgram);
+            ImGui_ImplOpenGL3_Shutdown();
+        } else if (g_renderer) {
+            g_renderer->shutdownUiBackend();
+        }
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
+        shutdownRenderer();   // v1.33.0 — раньше рендерер не освобождался вообще
         glfwTerminate();
         return 0;
     }
@@ -1296,6 +1388,15 @@ int main(int argc, char** argv) {
         // Handle screenshot and CSV export requests (v1.9.0)
         if (aeroScreenshotRequested) {
             aeroScreenshotRequested = false;
+            // v1.33.0 — снимок экрана в Vulkan-режиме пока не реализован: чтение
+            // пикселей идёт из видеопамяти отдельного изображения swapchain, а не
+            // через glReadPixels. Говорим об этом прямо вместо пустого файла.
+            if (vulkanMode) {
+                std::cerr << "[Export] Скриншот в Vulkan-режиме не поддерживается — "
+                             "переключитесь на OpenGL (renderer=opengl)" << std::endl;
+                DBG_WARN("скриншот запрошен, но в Vulkan-режиме не поддерживается — переключитесь на OpenGL");
+                debugLogAddFact("Скриншот", "Vulkan", "не поддерживается в Vulkan-режиме");
+            } else {
             std::string fname = generateTimestampFilename("screenshot", ".bmp");
             if (saveScreenshotBMP(fname)) {
                 aeroLastScreenshotPath = fname;
@@ -1304,6 +1405,7 @@ int main(int argc, char** argv) {
             } else {
                 std::cerr << "[Export] Failed to save screenshot" << std::endl;
                 DBG_ERROR("не удалось сохранить скриншот: %s", fname.c_str());
+            }
             }
         }
         if (aeroCSVExportRequested) {
@@ -1319,7 +1421,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        ImGui_ImplOpenGL3_NewFrame();
+        if (vulkanMode) g_renderer->uiNewFrame();
+        else            ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
@@ -1364,295 +1467,340 @@ int main(int argc, char** argv) {
         bool useFSR = fsrEnabled && fsrMode != FSRMode::Off && fsrLowResFBO != 0;
         bool useFG = fgEnabled && fgMode != FGMode::Off && fgRealFBO != 0;
 
-        // v1.19.0 FG — begin real frame
-        if (useFG) {
-            beginRealFrame(view, projection, cameraPos);
-        }
-
-        // v1.19.0 FSR — begin low-res render if enabled
-        if (useFG && useFSR) {
-            // Both FSR+FG: render to FSR low-res, then upscale to FG real FBO
-            beginFSRRender(display_w, display_h);
-        } else if (useFG) {
-            // Only FG: render directly to FG real FBO
-            fgBindRealFBO();
-            glViewport(0,0,display_w,display_h);
-        } else if (useFSR) {
-            beginFSRRender(display_w, display_h);
+        // =====================================================
+        // v1.33.0 — КАДР В VULKAN-РЕЖИМЕ
+        // Всё, что ниже до конца ветки, — OpenGL-отрисовка; Vulkan рисует сцену
+        // через собственный бэкенд (swapchain, render pass, конвейеры) и интерфейс
+        // через imgui_impl_vulkan, без единого вызова OpenGL.
+        // =====================================================
+        if (vulkanMode) {
+            // Начало кадра: ждём fence своего кадра, берём изображение swapchain,
+            // открываем render pass с очисткой цвета и глубины.
+            if (!g_renderer || !g_renderer->beginFrame()) {
+                // Кадр пропущен (окно свёрнуто или swapchain устарел). Кадр
+                // интерфейса всё равно надо закрыть: ImGui требует Render()
+                // перед следующим NewFrame(), иначе сработает assert.
+                ImGui::Render();
+                glfwPollEvents();
+            } else {
+                float groundYVk = g_voxMinY + aeroGroundHeight;
+                if (!std::isfinite(groundYVk)) groundYVk = minBB.y - maxDim * 0.1f;
+                VulkanSceneFrame vkFrame;
+                vkFrame.view = view;
+                vkFrame.projection = projection;
+                vkFrame.model = model;
+                vkFrame.cameraPos = cameraPos;
+                // То же положение света, что и в OpenGL-ветке.
+                vkFrame.lightPos = center + glm::vec3(maxDim * 2.0f, maxDim * 2.5f, maxDim * 2.0f);
+                vkFrame.maxDim = maxDim;
+                vkFrame.groundY = groundYVk;
+                vkFrame.effectiveParticleCount = effectiveParticleCount;
+                vkFrame.modelVisibleInFrustum = modelInFrustum;
+                g_renderer->clearColor(glm::vec3(0.05f, 0.06f, 0.09f));
+                buildVulkanScene(g_renderer, vkFrame);   // сцена + flushScene внутри
+                ImGui::Render();
+                g_renderer->uiRender();                  // интерфейс поверх сцены
+                g_renderer->endFrame();                  // submit + present
+                glfwPollEvents();
+            }
         } else {
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0,0,display_w,display_h);
-        }
+            // v1.19.0 FG — begin real frame
+            if (useFG) {
+                beginRealFrame(view, projection, cameraPos);
+            }
 
-        glClearColor(bgColor.x, bgColor.y, bgColor.z, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            // v1.19.0 FSR — begin low-res render if enabled
+            if (useFG && useFSR) {
+                // Both FSR+FG: render to FSR low-res, then upscale to FG real FBO
+                beginFSRRender(display_w, display_h);
+            } else if (useFG) {
+                // Only FG: render directly to FG real FBO
+                fgBindRealFBO();
+                glViewport(0,0,display_w,display_h);
+            } else if (useFSR) {
+                beginFSRRender(display_w, display_h);
+            } else {
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                glViewport(0,0,display_w,display_h);
+            }
 
-        glm::vec3 lightPos = center + glm::vec3(maxDim*2.0f, maxDim*2.5f, maxDim*2.0f);
-        glm::vec3 lightColor(1.0f);
+            glClearColor(bgColor.x, bgColor.y, bgColor.z, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        if (optEarlyZ) {
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-        }
+            glm::vec3 lightPos = center + glm::vec3(maxDim*2.0f, maxDim*2.5f, maxDim*2.0f);
+            glm::vec3 lightColor(1.0f);
 
-        // === Scene render lambda to avoid duplication ===
-        auto renderScene = [&]() {
-            if (showGroundPlane || aeroGroundEffect) {
-                float groundY = g_voxMinY + aeroGroundHeight;
-                if (!std::isfinite(groundY)) groundY = minBB.y - maxDim*0.1f;
-                glm::mat4 groundModel = glm::translate(glm::mat4(1.0f), glm::vec3(center.x, groundY, center.z));
-                groundModel = glm::scale(groundModel, glm::vec3(maxDim*2.5f, 1.0f, maxDim*2.5f));
-                glUseProgram(groundShaderProgram);
-                glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(groundModel));
-                glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-                glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightPos"), 1, &lightPos[0]);
-                glUniform3fv(glGetUniformLocation(groundShaderProgram, "viewPos"), 1, &cameraPos[0]);
-                glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightColor"), 1, &lightColor[0]);
-                glUniform3fv(glGetUniformLocation(groundShaderProgram, "groundColor"), 1, &groundColor[0]);
-                glUniform1f(glGetUniformLocation(groundShaderProgram, "alpha"), groundAlpha);
-                glBindVertexArray(groundVAO);
-                glDrawElements(GL_TRIANGLES, groundIndexCount, GL_UNSIGNED_INT, 0);
-                glBindVertexArray(0);
-                if (gridVAO != 0) {
+            if (optEarlyZ) {
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_LESS);
+                glDepthMask(GL_TRUE);
+            }
+
+            // === Scene render lambda to avoid duplication ===
+            auto renderScene = [&]() {
+                if (showGroundPlane || aeroGroundEffect) {
+                    float groundY = g_voxMinY + aeroGroundHeight;
+                    if (!std::isfinite(groundY)) groundY = minBB.y - maxDim*0.1f;
+                    glm::mat4 groundModel = glm::translate(glm::mat4(1.0f), glm::vec3(center.x, groundY, center.z));
+                    groundModel = glm::scale(groundModel, glm::vec3(maxDim*2.5f, 1.0f, maxDim*2.5f));
+                    glUseProgram(groundShaderProgram);
+                    glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(groundModel));
+                    glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                    glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                    glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightPos"), 1, &lightPos[0]);
+                    glUniform3fv(glGetUniformLocation(groundShaderProgram, "viewPos"), 1, &cameraPos[0]);
+                    glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightColor"), 1, &lightColor[0]);
+                    glUniform3fv(glGetUniformLocation(groundShaderProgram, "groundColor"), 1, &groundColor[0]);
+                    glUniform1f(glGetUniformLocation(groundShaderProgram, "alpha"), groundAlpha);
+                    glBindVertexArray(groundVAO);
+                    glDrawElements(GL_TRIANGLES, groundIndexCount, GL_UNSIGNED_INT, 0);
+                    glBindVertexArray(0);
+                    if (gridVAO != 0) {
+                        glUseProgram(lineShaderProgram);
+                        glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(groundModel));
+                        glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                        glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                        glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
+                        glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.18f);
+                        glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.3f, 0.3f, 0.35f);
+                        glBindVertexArray(gridVAO);
+                        glDrawArrays(GL_LINES, 0, 82*2);
+                        glBindVertexArray(0);
+                    }
+                }
+                if (showModel && modelInFrustum) {
+                    glUseProgram(modelShaderProgram);
+                    glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+                    glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                    glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightPos"), 1, &lightPos[0]);
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "viewPos"), 1, &cameraPos[0]);
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightColor"), 1, &lightColor[0]);
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &modelColor[0]);
+                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), lightingEnabled ? 1 : 0);
+                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), showPressure ? 1 : 0);
+                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), aeroUseRealisticLighting ? 1 : 0);
+                    glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), 1.0f);
+                    glBindVertexArray(modelVAO);
+                    glDrawArrays(GL_TRIANGLES, 0, modelVertexCount);
+                    glBindVertexArray(0);
+                }
+                if (showSlicePlane && aeroShowSlice) {
+                    createSlicePlane(aeroSliceAxis, aeroSlicePos);
                     glUseProgram(lineShaderProgram);
-                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(groundModel));
+                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
                     glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
                     glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
                     glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
-                    glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.18f);
-                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.3f, 0.3f, 0.35f);
-                    glBindVertexArray(gridVAO);
-                    glDrawArrays(GL_LINES, 0, 82*2);
+                    glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.4f);
+                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.2f, 0.8f, 1.0f);
+                    glLineWidth(2.0f);
+                    glBindVertexArray(sliceVAO);
+                    glDrawArrays(GL_LINE_LOOP, 0, 4);
                     glBindVertexArray(0);
+                    glLineWidth(1.0f);
                 }
-            }
-            if (showModel && modelInFrustum) {
-                glUseProgram(modelShaderProgram);
-                glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-                glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-                glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightPos"), 1, &lightPos[0]);
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "viewPos"), 1, &cameraPos[0]);
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightColor"), 1, &lightColor[0]);
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &modelColor[0]);
-                glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), lightingEnabled ? 1 : 0);
-                glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), showPressure ? 1 : 0);
-                glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), aeroUseRealisticLighting ? 1 : 0);
-                glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), 1.0f);
-                glBindVertexArray(modelVAO);
-                glDrawArrays(GL_TRIANGLES, 0, modelVertexCount);
-                glBindVertexArray(0);
-            }
-            if (showSlicePlane && aeroShowSlice) {
-                createSlicePlane(aeroSliceAxis, aeroSlicePos);
                 glUseProgram(lineShaderProgram);
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
-                glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.4f);
-                glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.2f, 0.8f, 1.0f);
-                glLineWidth(2.0f);
-                glBindVertexArray(sliceVAO);
-                glDrawArrays(GL_LINE_LOOP, 0, 4);
-                glBindVertexArray(0);
-                glLineWidth(1.0f);
-            }
-            glUseProgram(lineShaderProgram);
-            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-            glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 1.0f);
-            glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
-            if (showBoundingBox) {
-                glUniform3fv(glGetUniformLocation(lineShaderProgram, "lineColor"), 1, &bboxColor[0]);
-                glBindVertexArray(bboxVAO);
-                glDrawArrays(GL_LINES, 0, 24);
-                glBindVertexArray(0);
-            }
-            if (showAxes) {
-                glBindVertexArray(axesVAO);
-                glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 1,0,0);
-                glDrawArrays(GL_LINES, 0, 2);
-                glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0,1,0);
-                glDrawArrays(GL_LINES, 2, 2);
-                glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0,0,1);
-                glDrawArrays(GL_LINES, 4, 2);
-                glBindVertexArray(0);
-            }
-            if (showStreamlines && streamlineVertexCount > 0) {
-                glUseProgram(lineShaderProgram);
-                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 1);
-                glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), streamlineAlpha);
-                glLineWidth(streamlineWidth);
-                glBindVertexArray(streamlineVAO);
-                glDrawArrays(GL_LINES, 0, streamlineVertexCount);
-                glBindVertexArray(0);
-                glLineWidth(1.0f);
-            }
-            if (showObstacle) {
-                glDepthMask(GL_FALSE);
-                glUseProgram(modelShaderProgram);
-                glm::mat4 om = glm::translate(glm::mat4(1.0f), center) *
-                               glm::scale(glm::mat4(1.0f), glm::vec3(flowParams.radiusX, flowParams.radiusY, flowParams.radiusZ));
-                glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(om));
-                glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-                glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightPos"), 1, &lightPos[0]);
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "viewPos"), 1, &cameraPos[0]);
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightColor"), 1, &lightColor[0]);
-                glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &obstacleColor[0]);
-                glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), 1);
-                glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), 0);
-                glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), 0);
-                glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), obstacleAlpha);
-                glBindVertexArray(obstacleVAO);
-                glDrawElements(GL_TRIANGLES, obstacleIndexCount, GL_UNSIGNED_INT, 0);
-                glBindVertexArray(0);
-                glDepthMask(GL_TRUE);
-            }
-            if (showParticles) {
-                glUseProgram(particleShaderProgram);
-                glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-                glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-                glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                glUniform1f(glGetUniformLocation(particleShaderProgram, "pointSize"), particleSize);
-                glBindVertexArray(particleVAO);
-                glDrawArrays(GL_POINTS, 0, effectiveParticleCount);
-                glBindVertexArray(0);
-                perfCulledParticles = particleDrawCount - effectiveParticleCount;
-            }
-            if (showLiftDrag) {
-                glUseProgram(lineShaderProgram);
-                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-                glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
                 glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 1.0f);
-                glLineWidth(3.0f);
-                if (fabs(dragMagnitude) > 1e-6f) {
-                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 1,0.35f,0.15f);
-                    glBindVertexArray(liftDragVAO);
+                glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
+                if (showBoundingBox) {
+                    glUniform3fv(glGetUniformLocation(lineShaderProgram, "lineColor"), 1, &bboxColor[0]);
+                    glBindVertexArray(bboxVAO);
+                    glDrawArrays(GL_LINES, 0, 24);
+                    glBindVertexArray(0);
+                }
+                if (showAxes) {
+                    glBindVertexArray(axesVAO);
+                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 1,0,0);
                     glDrawArrays(GL_LINES, 0, 2);
-                    glBindVertexArray(0);
-                }
-                if (fabs(liftMagnitude) > 1e-6f) {
-                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.3f,1,0.3f);
-                    glBindVertexArray(liftDragVAO);
+                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0,1,0);
                     glDrawArrays(GL_LINES, 2, 2);
-                    glBindVertexArray(0);
-                }
-                if (fabs(momentMagnitude) > 1e-9f) {
-                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.8f,0.3f,1.0f);
-                    glBindVertexArray(liftDragVAO);
+                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0,0,1);
                     glDrawArrays(GL_LINES, 4, 2);
                     glBindVertexArray(0);
                 }
-                glLineWidth(1.0f);
-            }
-        };
+                if (showStreamlines && streamlineVertexCount > 0) {
+                    glUseProgram(lineShaderProgram);
+                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                    glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 1);
+                    glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), streamlineAlpha);
+                    glLineWidth(streamlineWidth);
+                    glBindVertexArray(streamlineVAO);
+                    glDrawArrays(GL_LINES, 0, streamlineVertexCount);
+                    glBindVertexArray(0);
+                    glLineWidth(1.0f);
+                }
+                if (showObstacle) {
+                    glDepthMask(GL_FALSE);
+                    glUseProgram(modelShaderProgram);
+                    glm::mat4 om = glm::translate(glm::mat4(1.0f), center) *
+                                   glm::scale(glm::mat4(1.0f), glm::vec3(flowParams.radiusX, flowParams.radiusY, flowParams.radiusZ));
+                    glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(om));
+                    glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                    glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightPos"), 1, &lightPos[0]);
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "viewPos"), 1, &cameraPos[0]);
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightColor"), 1, &lightColor[0]);
+                    glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &obstacleColor[0]);
+                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), 1);
+                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), 0);
+                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), 0);
+                    glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), obstacleAlpha);
+                    glBindVertexArray(obstacleVAO);
+                    glDrawElements(GL_TRIANGLES, obstacleIndexCount, GL_UNSIGNED_INT, 0);
+                    glBindVertexArray(0);
+                    glDepthMask(GL_TRUE);
+                }
+                if (showParticles) {
+                    glUseProgram(particleShaderProgram);
+                    glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+                    glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                    glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                    glUniform1f(glGetUniformLocation(particleShaderProgram, "pointSize"), particleSize);
+                    glBindVertexArray(particleVAO);
+                    glDrawArrays(GL_POINTS, 0, effectiveParticleCount);
+                    glBindVertexArray(0);
+                    perfCulledParticles = particleDrawCount - effectiveParticleCount;
+                }
+                if (showLiftDrag) {
+                    glUseProgram(lineShaderProgram);
+                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                    glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
+                    glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 1.0f);
+                    glLineWidth(3.0f);
+                    if (fabs(dragMagnitude) > 1e-6f) {
+                        glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 1,0.35f,0.15f);
+                        glBindVertexArray(liftDragVAO);
+                        glDrawArrays(GL_LINES, 0, 2);
+                        glBindVertexArray(0);
+                    }
+                    if (fabs(liftMagnitude) > 1e-6f) {
+                        glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.3f,1,0.3f);
+                        glBindVertexArray(liftDragVAO);
+                        glDrawArrays(GL_LINES, 2, 2);
+                        glBindVertexArray(0);
+                    }
+                    if (fabs(momentMagnitude) > 1e-9f) {
+                        glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.8f,0.3f,1.0f);
+                        glBindVertexArray(liftDragVAO);
+                        glDrawArrays(GL_LINES, 4, 2);
+                        glBindVertexArray(0);
+                    }
+                    glLineWidth(1.0f);
+                }
+            };
 
-        renderScene();
+            renderScene();
 
-        // Handle FSR+FG combination
-        if (useFG && useFSR) {
-            // FSR low-res -> intermediate (EASU)
-            glDisable(GL_DEPTH_TEST);
-            glDisable(GL_BLEND);
-            glBindFramebuffer(GL_FRAMEBUFFER, fsrIntermediateFBO);
-            glViewport(0,0,display_w,display_h);
-            glUseProgram(fsrEASUProgram);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, fsrLowResColorTex);
-            glUniform1i(glGetUniformLocation(fsrEASUProgram, "uLowRes"), 0);
-            float lowW = display_w * fsrCurrentScale;
-            float lowH = display_h * fsrCurrentScale;
-            glUniform2f(glGetUniformLocation(fsrEASUProgram, "uLowResSize"), lowW, lowH);
-            glUniform2f(glGetUniformLocation(fsrEASUProgram, "uDisplaySize"), (float)display_w, (float)display_h);
-            glUniform2f(glGetUniformLocation(fsrEASUProgram, "uInputViewport"), lowW, lowH);
-            glUniform2f(glGetUniformLocation(fsrEASUProgram, "uOutputViewport"), (float)display_w, (float)display_h);
-            glBindVertexArray(fsrQuadVAO);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-
-            // intermediate -> FG real FBO (RCAS or blit)
-            glBindFramebuffer(GL_FRAMEBUFFER, fgRealFBO);
-            glViewport(0,0,display_w,display_h);
-            if (fsrUseRCAS) {
-                glUseProgram(fsrRCASProgram);
+            // Handle FSR+FG combination
+            if (useFG && useFSR) {
+                // FSR low-res -> intermediate (EASU)
+                glDisable(GL_DEPTH_TEST);
+                glDisable(GL_BLEND);
+                glBindFramebuffer(GL_FRAMEBUFFER, fsrIntermediateFBO);
+                glViewport(0,0,display_w,display_h);
+                glUseProgram(fsrEASUProgram);
                 glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, fsrIntermediateTex);
-                glUniform1i(glGetUniformLocation(fsrRCASProgram, "uImage"), 0);
-                glUniform2f(glGetUniformLocation(fsrRCASProgram, "uTexelSize"), 1.0f/display_w, 1.0f/display_h);
-                glUniform1f(glGetUniformLocation(fsrRCASProgram, "uSharpness"), fsrSharpness);
+                glBindTexture(GL_TEXTURE_2D, fsrLowResColorTex);
+                glUniform1i(glGetUniformLocation(fsrEASUProgram, "uLowRes"), 0);
+                float lowW = display_w * fsrCurrentScale;
+                float lowH = display_h * fsrCurrentScale;
+                glUniform2f(glGetUniformLocation(fsrEASUProgram, "uLowResSize"), lowW, lowH);
+                glUniform2f(glGetUniformLocation(fsrEASUProgram, "uDisplaySize"), (float)display_w, (float)display_h);
+                glUniform2f(glGetUniformLocation(fsrEASUProgram, "uInputViewport"), lowW, lowH);
+                glUniform2f(glGetUniformLocation(fsrEASUProgram, "uOutputViewport"), (float)display_w, (float)display_h);
                 glBindVertexArray(fsrQuadVAO);
                 glDrawArrays(GL_TRIANGLES, 0, 6);
-            } else {
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, fsrIntermediateFBO);
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fgRealFBO);
-                glBlitFramebuffer(0,0,display_w,display_h, 0,0,display_w,display_h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-            }
-            glBindVertexArray(0);
-            glEnable(GL_DEPTH_TEST);
-            glEnable(GL_BLEND);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        } else if (useFSR) {
-            endFSRRenderAndUpscale(display_w, display_h);
-        } else if (useFG) {
-            // Already rendered to FG real FBO, unbind
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0,0,display_w,display_h);
-        }
 
-        // v1.19.0 Frame Generation presentation
-        if (useFG) {
-            int mult = getFGMultiplier((int)fgMode);
-            // If we have history, generate interpolated frames
-            if (hasFGHistory() && mult > 1) {
-                for (int i=0;i<mult-1;i++) {
-                    float alpha = (float)(i+1) / (float)mult;
-                    generateInterpolatedFrame(alpha, display_w, display_h);
-                    // Present interpolated
-                    presentInterpolatedFrame(display_w, display_h);
-                    // UI for interpolated frame (optional, but we render UI to avoid flicker)
-                    ImGui::Render();
-                    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-                    glfwSwapBuffers(window);
-                    glfwPollEvents();
-                    // Small pacing
-                    if (optFramePacing) {
-                        float targetMs = 1000.0f / (optTargetFPS * mult);
-                        std::this_thread::sleep_for(std::chrono::milliseconds((int)(targetMs*0.5f)));
+                // intermediate -> FG real FBO (RCAS or blit)
+                glBindFramebuffer(GL_FRAMEBUFFER, fgRealFBO);
+                glViewport(0,0,display_w,display_h);
+                if (fsrUseRCAS) {
+                    glUseProgram(fsrRCASProgram);
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D, fsrIntermediateTex);
+                    glUniform1i(glGetUniformLocation(fsrRCASProgram, "uImage"), 0);
+                    glUniform2f(glGetUniformLocation(fsrRCASProgram, "uTexelSize"), 1.0f/display_w, 1.0f/display_h);
+                    glUniform1f(glGetUniformLocation(fsrRCASProgram, "uSharpness"), fsrSharpness);
+                    glBindVertexArray(fsrQuadVAO);
+                    glDrawArrays(GL_TRIANGLES, 0, 6);
+                } else {
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, fsrIntermediateFBO);
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fgRealFBO);
+                    glBlitFramebuffer(0,0,display_w,display_h, 0,0,display_w,display_h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                }
+                glBindVertexArray(0);
+                glEnable(GL_DEPTH_TEST);
+                glEnable(GL_BLEND);
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            } else if (useFSR) {
+                endFSRRenderAndUpscale(display_w, display_h);
+            } else if (useFG) {
+                // Already rendered to FG real FBO, unbind
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                glViewport(0,0,display_w,display_h);
+            }
+
+            // v1.19.0 Frame Generation presentation
+            if (useFG) {
+                int mult = getFGMultiplier((int)fgMode);
+                // If we have history, generate interpolated frames
+                if (hasFGHistory() && mult > 1) {
+                    for (int i=0;i<mult-1;i++) {
+                        float alpha = (float)(i+1) / (float)mult;
+                        generateInterpolatedFrame(alpha, display_w, display_h);
+                        // Present interpolated
+                        presentInterpolatedFrame(display_w, display_h);
+                        // UI for interpolated frame (optional, but we render UI to avoid flicker)
+                        ImGui::Render();
+                        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+                        glfwSwapBuffers(window);
+                        glfwPollEvents();
+                        // Small pacing
+                        if (optFramePacing) {
+                            float targetMs = 1000.0f / (optTargetFPS * mult);
+                            std::this_thread::sleep_for(std::chrono::milliseconds((int)(targetMs*0.5f)));
+                        }
                     }
                 }
-            }
-            // Present real frame
-            presentRealFrame(display_w, display_h);
-            // UI on top of real
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-            glfwSwapBuffers(window);
-            glfwPollEvents();
+                // Present real frame
+                presentRealFrame(display_w, display_h);
+                // UI on top of real
+                ImGui::Render();
+                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+                glfwSwapBuffers(window);
+                glfwPollEvents();
 
-            // Update history for next frame
-            updateFGHistory(view, projection, cameraPos);
-            fgEffectiveFPS = (deltaTime>1e-6f) ? (1.0f/deltaTime)*mult : 0.0f;
-        } else {
-            // No FG — normal UI + swap
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-            glfwSwapBuffers(window);
-            glfwPollEvents();
+                // Update history for next frame
+                updateFGHistory(view, projection, cameraPos);
+                fgEffectiveFPS = (deltaTime>1e-6f) ? (1.0f/deltaTime)*mult : 0.0f;
+            } else {
+                // No FG — normal UI + swap
+                ImGui::Render();
+                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+                glfwSwapBuffers(window);
+                glfwPollEvents();
+            }
+
         }
 
         // VSync toggle handling
         static bool lastVsync = vsyncEnabled;
         if (lastVsync != vsyncEnabled) {
-            glfwSwapInterval(vsyncEnabled ? 1 : 0);
+            if (vulkanMode) {
+                // В Vulkan режим показа задаётся в swapchain — рендерер
+                // пересоздаст её на следующем кадре.
+                if (g_renderer) g_renderer->setVSync(vsyncEnabled);
+            } else {
+                glfwSwapInterval(vsyncEnabled ? 1 : 0);
+            }
             lastVsync = vsyncEnabled;
         }
     }
@@ -1667,18 +1815,29 @@ int main(int argc, char** argv) {
     // Cleanup
     std::cout << "[Main] Cleaning up v1.19.0..." << std::endl;
     shutdownInterestingFeatures();
-    shutdownFrameGen();
-    shutdownFSR();
-    glDeleteProgram(modelShaderProgram);
-    glDeleteProgram(particleShaderProgram);
-    glDeleteProgram(lineShaderProgram);
-    glDeleteProgram(groundShaderProgram);
-    cleanupGLResources();
+    // v1.33.0 — FSR/FG и GL-ресурсы существуют только в OpenGL-режиме.
+    if (!vulkanMode) {
+        shutdownFrameGen();
+        shutdownFSR();
+        glDeleteProgram(modelShaderProgram);
+        glDeleteProgram(particleShaderProgram);
+        glDeleteProgram(lineShaderProgram);
+        glDeleteProgram(groundShaderProgram);
+        cleanupGLResources();
+    }
     shutdownLBM();
 
-    ImGui_ImplOpenGL3_Shutdown();
+    // Порядок важен: сначала бэкенд интерфейса (он владеет пулом дескрипторов и
+    // конвейером ImGui), потом сам контекст ImGui, и только затем рендерер —
+    // иначе Vulkan-объекты уничтожались бы после того, как их уже нельзя трогать.
+    if (vulkanMode) {
+        if (g_renderer) g_renderer->shutdownUiBackend();
+    } else {
+        ImGui_ImplOpenGL3_Shutdown();
+    }
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+    shutdownRenderer();
     glfwTerminate();
     DBG_INFO("=== завершение работы: кадров %lld, ошибок в журнале %d, откатов GPU на CPU %d ===",
              g_debugFrameCounter, debugLogErrorCount(), g_debugCudaFallbacks);

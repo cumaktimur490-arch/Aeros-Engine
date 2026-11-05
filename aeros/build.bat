@@ -161,22 +161,25 @@ if not exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.lib" (
     )
 )
 
-rem --- Проверка Vulkan SDK ---
+rem --- Vulkan SDK: НЕ требуется ---
+rem v1.33.0 — заголовки Vulkan лежат в репозитории (libs\vulkan\include), а
+rem функции берутся у системного загрузчика (vulkan-1.dll) через
+rem vkGetInstanceProcAddr, поэтому библиотека импорта и установленный SDK не
+rem нужны. Наличие SDK проверяется только для информации: если он есть, glslc
+rem под рукой (пересборка шейдеров), но сама сборка от него не зависит.
 set "VULKAN_SDK_FOUND=0"
-set "VULKAN_LIB="
 if defined VULKAN_SDK (
-    if exist "%VULKAN_SDK%\Lib\vulkan-1.lib" set "VULKAN_SDK_FOUND=1" & set "VULKAN_LIB=%VULKAN_SDK%\Lib\vulkan-1.lib"
+    if exist "%VULKAN_SDK%\Bin\glslc.exe" set "VULKAN_SDK_FOUND=1"
 )
 if exist "%ProgramFiles%\VulkanSDK" (
     for /D %%D in ("%ProgramFiles%\VulkanSDK\*") do (
-        if exist "%%D\Lib\vulkan-1.lib" set "VULKAN_SDK_FOUND=1" & set "VULKAN_LIB=%%D\Lib\vulkan-1.lib"
+        if exist "%%D\Bin\glslc.exe" set "VULKAN_SDK_FOUND=1"
     )
 )
 if "%VULKAN_SDK_FOUND%"=="1" (
-    echo [Aeros] Vulkan SDK found: !VULKAN_LIB!
+    echo [Aeros] Vulkan SDK найден — пригодится только для пересборки шейдеров
 ) else (
-    echo [WARN] Vulkan SDK not found — Vulkan renderer will be stub, OpenGL fallback will be used
-    echo [INFO] Install Vulkan SDK from https://vulkan.lunarg.com/
+    echo [Aeros] Vulkan SDK не нужен: заголовки в libs\vulkan, загрузчик берётся из системы при запуске
 )
 
 rem --- Версия: VERSION, а если его нет — авторитетный aeros\src\version.h ---
@@ -219,14 +222,13 @@ echo [Aeros] Arch flags: !CPUARCHFLAGS!
 
 set "NVCC_FLAGS=-cudart static -allow-unsupported-compiler -O3 --use_fast_math -Xcompiler /openmp:llvm !CPUARCHFLAGS! -Xcompiler /O2 -Xcompiler /Ot -Xcompiler /fp:fast"
 
-if "%RENDERER%"=="vulkan" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_VULKAN -Xcompiler /DVULKAN_SUPPORTED"
+if "%RENDERER%"=="vulkan" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_VULKAN"
 if "%RENDERER%"=="opengl" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DFORCE_OPENGL"
-if "%VULKAN_SDK_FOUND%"=="1" set "NVCC_FLAGS=%NVCC_FLAGS% -Xcompiler /DVULKAN_SUPPORTED -Xcompiler /DHAS_VULKAN_H"
-
-set "VULKAN_LINK="
-if "%VULKAN_SDK_FOUND%"=="1" (
-    set "VULKAN_LINK=!VULKAN_LIB!"
-)
+rem v1.33.0 — VULKAN_SUPPORTED/HAS_VULKAN_H больше не передаются: движок
+rem использует единый AEROS_HAS_VULKAN (см. строку с -Xcompiler ниже).
+rem Библиотека импорта vulkan-1.lib не линкуется вообще: функции Vulkan
+rem загружаются во время работы через vkGetInstanceProcAddr, поэтому в строке
+rem линковки нет ни SDK, ни .lib.
 
 echo [Aeros] Starting nvcc compilation for !OUT_ARCH! renderer=!RENDERER! ...
 
@@ -234,16 +236,19 @@ nvcc !NVCC_ARCH! !NVCC_FLAGS! -std=c++17 -Xcompiler /MD -Xcompiler /EHsc ^
   -I "!LIBDIR!\glfw\include" ^
   -I "!LIBDIR!\glad\include" ^
   -I "!LIBDIR!\glm" ^
+  -I "!LIBDIR!\vulkan\include" ^
+  -Xcompiler /DAEROS_HAS_VULKAN ^
   -I src ^
   -I src\imgui ^
   src\main.cpp src\globals.cpp src\input.cpp src\gl_utils.cpp src\stl_loader.cpp ^
   src\voxel_grid.cpp src\flow_field.cpp src\particles.cpp src\streamlines.cpp ^
-  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp src\framegen.cpp src\interesting.cpp src\vulkan_renderer.cpp src\lite_config.cpp src\benchmark.cpp src\debug_log.cpp src\timelapse.cpp ^
+  src\forces.cpp src\model.cpp src\ui.cpp src\atmosphere.cpp src\test_mode.cpp src\lbm.cpp src\lang.cpp src\fsr.cpp src\framegen.cpp src\interesting.cpp src\vulkan_renderer.cpp src\vulkan_scene.cpp src\lite_config.cpp src\benchmark.cpp src\debug_log.cpp src\timelapse.cpp ^
   src\glad.c src\kernel.cu ^
   src\imgui\imgui.cpp src\imgui\imgui_draw.cpp src\imgui\imgui_tables.cpp src\imgui\imgui_widgets.cpp ^
   src\imgui\imgui_impl_glfw.cpp src\imgui\imgui_impl_opengl3.cpp ^
+  src\imgui\imgui_impl_vulkan.cpp ^
   -L "!LIBDIR!\glfw\!GLFW_LIBDIR!" ^
-  -lglfw3 -lopengl32 -luser32 -lgdi32 -lshell32 -lcomdlg32 !VULKAN_LINK! !ICON_RES! ^
+  -lglfw3 -lopengl32 -luser32 -lgdi32 -lshell32 -lcomdlg32 !ICON_RES! ^
   -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup ^
   -o bin\main-!OUT_ARCH!.exe
 
@@ -277,9 +282,12 @@ if exist "!LIBDIR!\glfw\!GLFW_LIBDIR!\glfw3.dll" (
     echo [Aeros] Copied glfw3.dll from !GLFW_LIBDIR!
 )
 
-if "%VULKAN_SDK_FOUND%"=="1" (
-    if exist "%VULKAN_SDK%\Bin\vulkan-1.dll" copy /Y "%VULKAN_SDK%\Bin\vulkan-1.dll" bin\ >nul
-)
+rem v1.33.0 — vulkan-1.dll из SDK в bin НЕ копируется: загрузчик должен быть
+rem системным (его ставит драйвер), иначе наша копия перекрывает системную и на
+rem машине с другим драйвером Vulkan может не найти ни одного ICD. Поставка
+rem работает на машинах, где Vulkan установлен драйвером, а если его нет —
+rem движок честно запускается на OpenGL.
+
 
 :done
 echo [Aeros] Done. Version !APP_VERSION! Arch !OUT_ARCH! Renderer !RENDERER! Vulkan !VULKAN_SDK_FOUND!

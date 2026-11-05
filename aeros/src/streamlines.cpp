@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "globals.h"
+#include "render_mode.h"
 #include "flow_field.h"
 #include "voxel_grid.h"
 #include "streamlines.h"
@@ -346,7 +347,12 @@ void computeStreamlines() {
 
     std::cout << "Streamlines v1.19.0 Physics Logic Fix (RK45 aero" << (lbmParams.enabled ? "+LBM" : "") << (aeroColorStreamlinesByVelocity ? "+VelColor" : "") << "): " << numLines << " lines, " << (verts.size()/6) << " vertices in " << perfStreamlinesMs << " ms" << std::endl;
     streamlineVertexCount = (int)(verts.size() / 6);
+    // v1.33.0 — копия для Vulkan-бэкенда (он рисует из памяти процесса, а не из VBO).
+    streamlineCpuVerts = verts;
 
+    // v1.33.0 — VBO линий тока нужен только OpenGL-ветке (Vulkan читает
+    // streamlineCpuVerts).
+    if (glBackendActive()) {
     if (streamlineVAO == 0) glGenVertexArrays(1, &streamlineVAO);
     if (streamlineVBO == 0) glGenBuffers(1, &streamlineVBO);
     glBindVertexArray(streamlineVAO);
@@ -358,4 +364,5 @@ void computeStreamlines() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6*sizeof(float), (void*)(3*sizeof(float)));
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+    }
 }

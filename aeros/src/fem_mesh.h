@@ -164,12 +164,14 @@ inline bool femMeshBuildFromVoxels(FemMesh& mesh,
     // поэтому лучше честный отказ здесь, чем std::bad_alloc в середине решения.
     const long long kMaxCells = 12000000LL;
     if (totalNodes > kMaxCells || totalElems > kMaxCells) {
-        char b[224];
+        // Буфер с запасом: сообщение по-русски, а в UTF-8 кириллица занимает два
+        // байта на символ, поэтому 224 байта не хватало и текст обрывался на
+        // «рас…». Три размера сетки — до 11 знаков каждый.
+        char b[384];
         std::snprintf(b, sizeof(b),
                       "сетка %dx%dx%d слишком велика: нужно не более %lld элементов "
                       "(расчёт требует около 250 байт памяти на элемент) — уменьшите разрешение",
                       mesh.ex, mesh.ey, mesh.ez, kMaxCells);
-        mesh.warnings.push_back(b);
         mesh = FemMesh();
         mesh.warnings.push_back(b);
         return false;

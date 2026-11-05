@@ -6,6 +6,7 @@
 #include <iostream>
 
 #include "globals.h"
+#include "render_mode.h"
 #include "cuda_api.h"
 #include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "flow_field.h"
@@ -191,6 +192,9 @@ void initParticles() {
             particleColors[3*i+2] = 1.0f;
         }
     }
+    // v1.33.0 — в Vulkan-режиме VBO не нужны: позиции и цвета остаются в
+    // particlePositions/particleColors, откуда их читает Vulkan-бэкенд.
+    if (glBackendActive()) {
     if (particleVAO == 0) glGenVertexArrays(1, &particleVAO);
     if (particleVBO_pos == 0) glGenBuffers(1, &particleVBO_pos);
     if (particleVBO_col == 0) glGenBuffers(1, &particleVBO_col);
@@ -204,6 +208,7 @@ void initParticles() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+    }
     std::cout << "[Particles] Initialized " << numParticles << " v1.19.0 Physics Logic Fix" << std::endl;
     DBG_PHYS("частицы инициализированы: %d штук, бэкенд %s, буфер %zu значений",
              numParticles, useCUDA ? "CUDA" : "CPU", particlePositions.size());
@@ -456,7 +461,7 @@ void updateParticles(float dt) {
     // CUDA ядро честно обновляло particlePositions/particleColors на хосте, но
     // видеопамять не переписывалась, и на экране частицы навсегда оставались на
     // стартовых позициях («частицы при CUDA не работают»).
-    if (particleVAO != 0) {
+    if (particleVAO != 0 && glBackendActive()) {
         glBindBuffer(GL_ARRAY_BUFFER, particleVBO_pos);
         glBufferSubData(GL_ARRAY_BUFFER, 0, n*3*sizeof(float), particlePositions.data());
         glBindBuffer(GL_ARRAY_BUFFER, particleVBO_col);

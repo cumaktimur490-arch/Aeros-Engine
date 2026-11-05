@@ -8,6 +8,7 @@
 #include <chrono>
 
 #include "globals.h"
+#include "render_mode.h"
 #include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "stl_loader.h"
 #include "gl_utils.h"
@@ -129,6 +130,9 @@ bool loadModel(const std::string& path) {
     pitch = glm::degrees(asinf(glm::clamp(cameraFront.y, -0.99f, 0.99f)));
 
     // VAO
+    // v1.33.0 — в Vulkan-режиме контекста OpenGL нет: геометрия остаётся в
+    // g_vertices/g_normals, оттуда её берёт Vulkan-бэкенд.
+    if (glBackendActive()) {
     if (modelVAO == 0) glGenVertexArrays(1, &modelVAO);
     if (modelVBO_vertices == 0) glGenBuffers(1, &modelVBO_vertices);
     if (modelVBO_normals == 0) glGenBuffers(1, &modelVBO_normals);
@@ -142,6 +146,7 @@ bool loadModel(const std::string& path) {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+    }
     modelVertexCount = (int)(vertices.size() / 3);
 
     std::cout << "[Model] Loaded: " << path << " verts=" << modelVertexCount 
@@ -152,10 +157,14 @@ bool loadModel(const std::string& path) {
     DBG_INFO("модель прочитана: %s, вершин %d, треугольников %d, габарит %.4f",
              path.c_str(), modelVertexCount, modelVertexCount / 3, maxDim);
 
-    createBoundingBoxVAO();
-    createAxesVAO(maxDim * 0.6f);
-    createGroundPlane(maxDim * 5.0f);
-    createGrid(maxDim * 5.0f, 20);
+    // v1.33.0 — VAO земли/сетки/габарита/осей нужны только OpenGL-ветке.
+    // Vulkan строит ту же геометрию сам (vulkan_scene.cpp, scene_geometry.h).
+    if (glBackendActive()) {
+        createBoundingBoxVAO();
+        createAxesVAO(maxDim * 0.6f);
+        createGroundPlane(maxDim * 5.0f);
+        createGrid(maxDim * 5.0f, 20);
+    }
 
     auto tVox0 = std::chrono::high_resolution_clock::now();
     buildVoxelGrid(vertices, voxelResolution);

@@ -1,11 +1,20 @@
 #pragma once
-// v1.19.0 Vulkan Support — рабочий Vulkan рендерер для Aeros Engine
-// Поддерживает Windows и Linux, fallback на OpenGL если Vulkan недоступен
+// =====================================================
+// Рендереры Aeros Engine.
+//
+// v1.33.0 — Vulkan-бэкенд реализован по-настоящему: swapchain, render pass,
+// конвейеры (треугольники/точки/линии), буферы вершин, синхронизация кадров и
+// интерфейс через imgui_impl_vulkan. Заголовок не тянет vulkan.h: все дескрипторы
+// хранятся как void*, поэтому остальной код (и headless-тесты) собирается без
+// Vulkan-заголовков.
+// =====================================================
 
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
 #include <functional>
+#include <cstdint>
+#include <chrono>
 
 // Forward declare GLFW
 struct GLFWwindow;
@@ -13,7 +22,7 @@ struct GLFWwindow;
 enum class RendererAPI {
     OpenGL = 0,
     Vulkan = 1,
-    Auto = 2 // выбирает лучший доступный
+    Auto = 2 // выбирает лучший доступный (сейчас — OpenGL, Vulkan только явно)
 };
 
 struct RendererConfig {
@@ -29,12 +38,14 @@ struct RendererConfig {
 bool isVulkanAvailable();
 // v1.26.0 — найден ли в системе загрузчик Vulkan (vulkan-1.dll / libvulkan.so).
 // Отделено от isVulkanAvailable(): загрузчик есть почти везде, а рисовать через
-// Vulkan эта версия не умеет, поэтому «доступен» означает именно «умеет рисовать».
+// Vulkan умеет только сборка с заголовками Vulkan и рабочим устройством.
 bool vulkanLoaderPresent();
 bool initVulkanLoader();
 std::string getVulkanVersionString();
 std::vector<std::string> getVulkanExtensions();
 std::vector<std::string> getVulkanDevices();
+// v1.33.0 — почему Vulkan включён или нет (для панели «Отладка»).
+std::string getVulkanDecisionReason();
 
 // Renderer abstraction
 class IRenderer {
@@ -53,6 +64,60 @@ public:
     virtual const char* getAPIName() const = 0;
     virtual float getFrameTimeMs() const = 0;
     virtual bool isInitialized() const = 0;
+
+    // ---------- v1.33.0: сцена для альтернативных бэкендов ----------
+    // OpenGL-ветка эти вызовы не использует (рисует своими шейдерами напрямую),
+    // поэтому реализации по умолчанию пустые.
+    virtual bool isVulkanBackend() const { return false; }
+    // Камера, модель и свет на текущий кадр. lightWorld — направление НА свет в
+    // мировых координатах, lighting — включено ли освещение модели.
+    virtual void beginScene(const glm::mat4& viewProj, const glm::mat4& model,
+                            glm::vec3 cameraPos, glm::vec3 lightWorld, bool lighting) {
+        (void)viewProj; (void)model; (void)cameraPos; (void)lightWorld; (void)lighting;
+    }
+    // Земля: два треугольника в плоскости Y=groundY с полуразмером halfSize.
+    virtual void sceneGroundPlane(glm::vec3 center, float halfSize, float groundY,
+                                  glm::vec3 color, float alpha) {
+        (void)center; (void)halfSize; (void)groundY; (void)color; (void)alpha;
+    }
+    // Сетка на земле: divisions линий в каждую сторону.
+    virtual void sceneGrid(glm::vec3 center, float halfSize, float groundY, int divisions,
+                           glm::vec3 color, float alpha) {
+        (void)center; (void)halfSize; (void)groundY; (void)divisions; (void)color; (void)alpha;
+    }
+    // Модель (позиции/нормали/цвета, 3 float на вершину) в пространстве модели.
+    // colors может быть nullptr — тогда используется tint.
+    virtual void sceneModel(const float* verts, const float* norms, const float* colors,
+                            int count, glm::vec3 tint) {
+        (void)verts; (void)norms; (void)colors; (void)count; (void)tint;
+    }
+    // Частицы: точки размером pointSize (в пикселях) в пространстве модели.
+    virtual void sceneParticles(const float* positions, const float* colors, int count,
+                                float pointSize) {
+        (void)positions; (void)colors; (void)count; (void)pointSize;
+    }
+    // Произвольные треугольники (например, препятствие-эллипсоид).
+    virtual void sceneTriangles(const float* verts, const float* norms, const float* colors,
+                                int count, const glm::mat4& modelMatrix, glm::vec3 tint,
+                                float alpha) {
+        (void)verts; (void)norms; (void)colors; (void)count; (void)modelMatrix; (void)tint; (void)alpha;
+    }
+    // Линии: 6 float на вершину (позиция + цвет), рисуются с матрицей modelMatrix.
+    virtual void sceneLines(const float* verts, int count, glm::vec3 tint, float alpha,
+                            float width, const glm::mat4& modelMatrix) {
+        (void)verts; (void)count; (void)tint; (void)alpha; (void)width; (void)modelMatrix;
+    }
+    // Записать накопленную геометрию в командный буфер (вызывается до интерфейса).
+    virtual void flushScene() {}
+    // Интерфейс на Vulkan: main.cpp не тянет vulkan.h — обо всём, что требует
+    // типов Vulkan (ImGui_ImplVulkan_Init/RenderDrawData), заботится рендерер.
+    virtual bool initUiBackend() { return false; }
+    virtual void shutdownUiBackend() {}
+    virtual void uiNewFrame() {}
+    virtual void uiRender() {}
+    // Вертикальная синхронизация: в OpenGL — glfwSwapInterval, в Vulkan —
+    // режим показа swapchain, поэтому при смене пересоздаём цепочку.
+    virtual void setVSync(bool) {}
 };
 
 // OpenGL renderer wrapper (existing code)
@@ -77,7 +142,7 @@ private:
     GLFWwindow* win = nullptr;
 };
 
-// Vulkan renderer — полная реализация
+// Vulkan renderer — рабочая реализация (v1.33.0)
 class VulkanRenderer : public IRenderer {
 public:
     bool init(GLFWwindow* window, const RendererConfig& cfg) override;
@@ -90,11 +155,35 @@ public:
     void drawParticles(const std::vector<float>& positions, const std::vector<float>& colors, float pointSize, int count) override;
     void drawLines(const std::vector<float>& vertices, glm::vec3 color, float width) override;
     RendererAPI getAPI() const override { return RendererAPI::Vulkan; }
-    const char* getAPIName() const override { return "Vulkan 1.3"; }
+    const char* getAPIName() const override { return "Vulkan"; }
     float getFrameTimeMs() const override { return frameTimeMs; }
     bool isInitialized() const override { return initialized; }
 
-    // Vulkan-specific
+    // Сцена (см. IRenderer)
+    bool isVulkanBackend() const override { return true; }
+    void beginScene(const glm::mat4& viewProj, const glm::mat4& model,
+                    glm::vec3 cameraPos, glm::vec3 lightWorld, bool lighting) override;
+    void sceneGroundPlane(glm::vec3 center, float halfSize, float groundY,
+                          glm::vec3 color, float alpha) override;
+    void sceneGrid(glm::vec3 center, float halfSize, float groundY, int divisions,
+                   glm::vec3 color, float alpha) override;
+    void sceneModel(const float* verts, const float* norms, const float* colors,
+                    int count, glm::vec3 tint) override;
+    void sceneParticles(const float* positions, const float* colors, int count,
+                        float pointSize) override;
+    void sceneTriangles(const float* verts, const float* norms, const float* colors,
+                        int count, const glm::mat4& modelMatrix, glm::vec3 tint,
+                        float alpha) override;
+    void sceneLines(const float* verts, int count, glm::vec3 tint, float alpha,
+                    float width, const glm::mat4& modelMatrix) override;
+    void flushScene() override;
+    bool initUiBackend() override;
+    void shutdownUiBackend() override;
+    void uiNewFrame() override;
+    void uiRender() override;
+    void setVSync(bool enabled) override;
+
+    // Шаги инициализации (вызываются из init по порядку)
     bool createInstance();
     bool pickPhysicalDevice();
     bool createLogicalDevice();
@@ -104,28 +193,56 @@ public:
     bool createCommandPool();
     bool createCommandBuffers();
     bool createSyncObjects();
-    bool createDescriptorPool();
     bool createPipelines();
     bool createBuffers();
     void cleanupSwapchain();
+    void destroyPipelines();
     bool recreateSwapchain();
 
-    // Stats
     std::string getDeviceName() const { return deviceName; }
     std::string getDriverVersion() const { return driverVersion; }
     int getVRAM_MB() const { return vramMB; }
+    // Текст последней ошибки — для журнала и панели «Отладка».
+    std::string getLastError() const { return lastError; }
 
 private:
     bool initialized = false;
     float frameTimeMs = 0.0f;
     GLFWwindow* win = nullptr;
     RendererConfig config;
+    std::string lastError;
 
-    // Vulkan handles (pimpl-like, void* to avoid including vulkan.h in header)
+    // Вершина в общем формате кадра: позиция, нормаль, цвет (36 байт).
+    // Тот же порядок объявлен в shaders/scene.vert.
+    struct DrawCmd {
+        int pipeline = 0;  // 0 — треугольники, 1 — точки, 2 — линии
+        uint32_t first = 0;
+        uint32_t count = 0;
+        float mvp[16] = {0};
+        float lightDirUse[4] = {0};  // xyz — свет в пространстве модели, w — освещение
+        float tintAlpha[4] = {0};    // rgb — множитель цвета, a — прозрачность
+        float camPosPoint[4] = {0};  // w — размер точки / толщина линии
+    };
+    struct FrameData {
+        std::vector<DrawCmd> cmds;
+        std::vector<float> cpuVerts;  // позиция/нормаль/цвет на вершину
+        void* buffer = nullptr;
+        void* memory = nullptr;
+        void* mapped = nullptr;
+        size_t capacityVerts = 0;
+    };
+    static const int kFramesInFlight = 2;
+    FrameData frames[kFramesInFlight];
+
+    // Дескрипторы Vulkan (void* — чтобы заголовок не тянул vulkan.h)
     void* instance = nullptr;
     void* physicalDevice = nullptr;
     void* device = nullptr;
     void* surface = nullptr;
+    void* graphicsQueue = nullptr;
+    void* presentQueue = nullptr;
+    int graphicsFamily = -1;
+    int presentFamily = -1;
     void* swapchain = nullptr;
     void* renderPass = nullptr;
     void* pipelineLayout = nullptr;
@@ -137,21 +254,22 @@ private:
     std::vector<void*> swapchainImages;
     std::vector<void*> swapchainImageViews;
     std::vector<void*> framebuffers;
-    std::vector<void*> imageAvailableSemaphores;
-    std::vector<void*> renderFinishedSemaphores;
-    std::vector<void*> inFlightFences;
-    std::vector<void*> uniformBuffers;
-    std::vector<void*> uniformBuffersMemory;
-    void* descriptorPool = nullptr;
-    void* descriptorSetLayout = nullptr;
-    std::vector<void*> descriptorSets;
+    std::vector<void*> imageAvailableSemaphores;   // по кадру в полёте
+    std::vector<void*> renderFinishedSemaphores;   // по изображению swapchain
+    std::vector<void*> inFlightFences;             // по кадру в полёте
+    void* depthImage = nullptr;
+    void* depthImageMemory = nullptr;
+    void* depthImageView = nullptr;
+    void* debugMessenger = nullptr;
+    uint32_t instanceApiVersion = 0;
+    bool hasWideLines = false;
+    bool hasLargePoints = false;
+    bool uiInitialized = false;
 
-    // Buffers
-    void* vertexBuffer = nullptr;
-    void* vertexBufferMemory = nullptr;
-    void* indexBuffer = nullptr;
-    void* indexBufferMemory = nullptr;
-    size_t vertexBufferSize = 0;
+    uint32_t minImageCount = 2;
+    int swapchainFormat = 0;
+    uint32_t extentW = 0, extentH = 0;
+    int depthFormat = 0;
 
     int currentFrame = 0;
     int width = 0, height = 0;
@@ -162,8 +280,21 @@ private:
     int vramMB = 0;
     bool framebufferResized = false;
 
-    // Internal helpers
-    bool vulkanAvailable = false;
+    // Вспомогательные функции записи геометрии
+    bool ensureFrameCapacity(size_t verts);
+    void appendVertex(float px, float py, float pz, float nx, float ny, float nz,
+                      float r, float g, float b);
+    void pushCmd(int pipeline, uint32_t first, uint32_t count, const glm::mat4& mvp,
+                 glm::vec3 lightDir, bool lit, glm::vec3 tint, float alpha, float pointSize);
+
+    // Состояние сцены на текущий кадр
+    glm::mat4 sceneViewProj{1.0f};
+    glm::mat4 sceneModelMatrix{1.0f};
+    glm::vec3 sceneCamera{0.0f};
+    glm::vec3 sceneLight{0.0f, 1.0f, 0.0f};
+    bool sceneLighting = true;
+    bool inFrame = false;
+    std::chrono::steady_clock::time_point frameStart;
 };
 
 // Global renderer

@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "globals.h"
+#include "render_mode.h"
 #include "ui_layout.h"   // v1.31.0 — F12 переключает состояние компоновки оболочки
 #include "input.h"
 #include "debug_log.h"
@@ -24,7 +25,13 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     if (height < 1) height = 1;
     if (width > 16384) width = 16384;
     if (height > 16384) height = 16384;
-    glViewport(0, 0, width, height);
+    // v1.33.0 — в Vulkan-режиме контекста OpenGL нет: glViewport вызвал бы
+    // незагруженную функцию. Размер сообщаем рендереру, он пересоздаст swapchain.
+    if (isRendererVulkan()) {
+        if (g_renderer) g_renderer->resize(width, height);
+    } else {
+        glViewport(0, 0, width, height);
+    }
     display_w = width;
     display_h = height;
     // v1.15.0 FSR resize

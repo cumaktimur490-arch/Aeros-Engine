@@ -167,6 +167,7 @@ set(SOURCES
     src/framegen.cpp
     src/interesting.cpp
     src/vulkan_renderer.cpp
+    src/vulkan_scene.cpp
     src/lite_config.cpp
     src/benchmark.cpp
     src/debug_log.cpp
@@ -178,6 +179,7 @@ set(SOURCES
     src/imgui/imgui_widgets.cpp
     src/imgui/imgui_impl_glfw.cpp
     src/imgui/imgui_impl_opengl3.cpp
+    src/imgui/imgui_impl_vulkan.cpp
 )
 
 if(AEROS_CPU_ONLY)
@@ -200,8 +202,11 @@ else()
     set_target_properties(aeros-engine PROPERTIES OUTPUT_NAME "aeros-engine-linux-${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
+# v1.33.0 — Vulkan: заголовки из репозитория (libs/vulkan/include), SDK не нужен.
+# Функции Vulkan берутся у системного загрузчика во время работы.
 target_include_directories(aeros-engine PRIVATE
     ${LIBDIR}/glfw/include
+    ${LIBDIR}/vulkan/include
     ${LIBDIR}/glad/include
     ${LIBDIR}/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -219,6 +224,8 @@ if(VULKAN_FOUND)
 endif()
 
 target_compile_definitions(aeros-engine PRIVATE VERSION="${APP_VERSION}")
+# v1.33.0 — Vulkan-бэкенд включён: заголовки есть в репозитории.
+target_compile_definitions(aeros-engine PRIVATE AEROS_HAS_VULKAN)
 if(AEROS_CPU_ONLY)
     target_compile_definitions(aeros-engine PRIVATE CPU_ONLY)
 endif()

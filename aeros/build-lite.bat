@@ -117,10 +117,15 @@ rem --- Lite флаги для i3-3xxx ---
 rem i3-3xxx Ivy Bridge: SSE4.2, AVX (нет AVX2), 2C/4T
 rem Для совместимости — только SSE2 (/arch:SSE2), O1 для меньшего бинаря, /MD, /EHsc
 rem Отключаем /arch:AVX2, используем /arch:SSE2, /O1, без /GL (LTCG тяжело), без /Ot (O1)
-set "INCLUDES=/I "!LIBDIR!\glfw\include" /I "!LIBDIR!\glad\include" /I "!LIBDIR!\glm" /I src /I src\imgui"
+set "INCLUDES=/I "!LIBDIR!\glfw\include" /I "!LIBDIR!\glad\include" /I "!LIBDIR!\glm" /I "!LIBDIR!\vulkan\include" /I src /I src\imgui"
 set "DEFINES=/DAEROS_LITE /DCPU_ONLY /DLITE_MODE /DVERSION_STRING=\"!APP_VERSION! Lite\" /DGLFW_INCLUDE_NONE"
+rem Vulkan-бэкенд: заголовки из репозитория, функции — у системного загрузчика.
+rem IMGUI_IMPL_VULKAN_NO_PROTOTYPES уже выставляется в src\imgui\imconfig.h.
+set "VK_DEFINES=/DAEROS_HAS_VULKAN"
+set "VK_INCLUDES=/I "!LIBDIR!\vulkan\include""
 rem Lite: O1, SSE2, no AVX2, no fast math (может давать артефакты на слабых), openmp but limited
 set "CXXFLAGS=/std:c++17 /EHsc /MD /W1 /O1 /arch:SSE2 /openmp /fp:precise !DEFINES! !INCLUDES!"
+set "VK_FLAGS=!CXXFLAGS! !VK_DEFINES! !VK_INCLUDES!"
 
 echo [Aeros Lite] CXXFLAGS: !CXXFLAGS!
 
@@ -168,7 +173,9 @@ cl /c !CXXFLAGS! src\framegen.cpp /Fo:bin\framegen.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\interesting.cpp /Fo:bin\interesting.obj
 if !errorlevel! neq 0 exit /b 1
-cl /c !CXXFLAGS! src\vulkan_renderer.cpp /Fo:bin\vulkan_renderer.obj
+cl /c !VK_FLAGS! src\vulkan_renderer.cpp /Fo:bin\vulkan_renderer.obj
+if !errorlevel! neq 0 exit /b 1
+cl /c !VK_FLAGS! src\vulkan_scene.cpp /Fo:bin\vulkan_scene.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\lite_config.cpp /Fo:bin\lite_config.obj
 if !errorlevel! neq 0 exit /b 1
@@ -191,14 +198,16 @@ cl /c !CXXFLAGS! src\imgui\imgui_impl_glfw.cpp /Fo:bin\imgui_impl_glfw.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\imgui\imgui_impl_opengl3.cpp /Fo:bin\imgui_impl_opengl3.obj
 if !errorlevel! neq 0 exit /b 1
+cl /c !VK_FLAGS! src\imgui\imgui_impl_vulkan.cpp /Fo:bin\imgui_impl_vulkan.obj
+if !errorlevel! neq 0 exit /b 1
 
 echo [Aeros Lite] Linking Lite (no LTCG, small binary)...
 link /OUT:bin\main-lite-%OUT_ARCH%.exe ^
   bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
   bin\voxel_grid.obj bin\flow_field.obj bin\particles.obj bin\streamlines.obj ^
-  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\lite_config.obj bin\cuda_stub.obj bin\debug_log.obj bin\timelapse.obj bin\glad.obj ^
+  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\vulkan_scene.obj bin\lite_config.obj bin\cuda_stub.obj bin\debug_log.obj bin\timelapse.obj bin\glad.obj ^
   bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
-  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj !ICON_RES! ^
+  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj bin\imgui_impl_vulkan.obj !ICON_RES! ^
   /LIBPATH:"!LIBDIR!\glfw\!GLFW_LIBDIR!" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^
   /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
 

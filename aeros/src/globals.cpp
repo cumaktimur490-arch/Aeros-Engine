@@ -70,6 +70,7 @@ float particleSize     = 2.0f;
 float maxSpeedForColor = 5.0f;
 unsigned int particleVAO = 0;
 unsigned int particleVBO_pos = 0, particleVBO_col = 0;
+std::vector<float> streamlineCpuVerts;
 std::vector<float> particlePositions;
 std::vector<float> particleColors;
 int particleDrawCount = 0;

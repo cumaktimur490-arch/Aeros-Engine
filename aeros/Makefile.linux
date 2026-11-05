@@ -25,7 +25,11 @@ OBJDIR = obj
 # железе без AVX2). Для сборки под свою машину: make ARCHFLAGS="-march=native"
 ARCHFLAGS ?=
 CXXFLAGS = -std=c++17 -O3 $(ARCHFLAGS) -ffast-math -fopenmp -fPIC
-CXXFLAGS += -I$(LIBDIR)/glad/include -I$(LIBDIR)/glfw/include -I$(LIBDIR)/glm -I$(SRCDIR) -I$(SRCDIR)/imgui
+# v1.33.0 — заголовки Vulkan поставляются с движком (libs/vulkan/include),
+# поэтому Vulkan SDK при сборке не нужен: функции берутся у системного
+# загрузчика (vulkan-1.dll / libvulkan.so.1) во время работы.
+CXXFLAGS += -I$(LIBDIR)/glad/include -I$(LIBDIR)/glfw/include -I$(LIBDIR)/glm -I$(LIBDIR)/vulkan/include -I$(SRCDIR) -I$(SRCDIR)/imgui
+CXXFLAGS += -DAEROS_HAS_VULKAN
 CXXFLAGS += -DVERSION=\"$(VERSION)\" -DLINUX -DGLFW_INCLUDE_NONE
 CXXFLAGS += $(shell pkg-config --cflags glfw3 2>/dev/null || echo "")
 
@@ -83,6 +87,7 @@ SOURCES = \
     $(SRCDIR)/framegen.cpp \
     $(SRCDIR)/interesting.cpp \
     $(SRCDIR)/vulkan_renderer.cpp \
+    $(SRCDIR)/vulkan_scene.cpp \
     $(SRCDIR)/lite_config.cpp \
     $(SRCDIR)/benchmark.cpp \
     $(SRCDIR)/debug_log.cpp \
@@ -93,7 +98,8 @@ SOURCES = \
     $(SRCDIR)/imgui/imgui_tables.cpp \
     $(SRCDIR)/imgui/imgui_widgets.cpp \
     $(SRCDIR)/imgui/imgui_impl_glfw.cpp \
-    $(SRCDIR)/imgui/imgui_impl_opengl3.cpp
+    $(SRCDIR)/imgui/imgui_impl_opengl3.cpp \
+    $(SRCDIR)/imgui/imgui_impl_vulkan.cpp
 
 ifeq ($(CUDA_AVAILABLE),yes)
     SOURCES += $(SRCDIR)/kernel.cu

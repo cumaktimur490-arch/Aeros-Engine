@@ -6,7 +6,8 @@
 #   make physclock   только фиксированный такт физики (v1.29.0)
 #   make fem         только CAD/CAE: исследование, сетка МКЭ, решатели, компоновка (v1.31.0)
 #   make ui          только оболочка CAD/CAE: панели, меню, обработчики кнопок 
-#   make settings    только реестр настроек: сохранение, загрузка, сброс, профили (v1.32.0)(v1.31.x)
+#   make settings    только реестр настроек: сохранение, загрузка, сброс, профили (v1.32.0)
+#   make vulkan      только Vulkan-бэкенд: выбор swapchain/формата/режима, SPIR-V, геометрия сцены (v1.33.0)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -18,8 +19,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui settings clean
-all: timelapse lbm physclock fem ui settings
+.PHONY: all timelapse lbm physclock fem ui settings vulkan clean
+all: timelapse lbm physclock fem ui settings vulkan
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -71,3 +72,10 @@ ui:
 clean:
 	rm -f /tmp/aeros-test-timelapse /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
 	      /tmp/aeros-test-fem
+
+# Vulkan-бэкенд (v1.33.0) — чистые модули: выбор swapchain/формата/режима показа,
+# проверка SPIR-V, раскладка вершины и геометрия сцены. GPU и Vulkan SDK не нужны:
+# подключаются только заголовки из репозитория и сгенерированный SPIR-V.
+vulkan:
+	g++ $(CXXFLAGS) vulkan_headless.cpp -o /tmp/aeros-test-vulkan
+	/tmp/aeros-test-vulkan

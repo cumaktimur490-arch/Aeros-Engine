@@ -67,6 +67,7 @@ SOURCES=(
     "$SRCDIR/framegen.cpp"
     "$SRCDIR/interesting.cpp"
     "$SRCDIR/vulkan_renderer.cpp"
+    "$SRCDIR/vulkan_scene.cpp"
     "$SRCDIR/lite_config.cpp"
     "$SRCDIR/debug_log.cpp"
     "$SRCDIR/timelapse.cpp"

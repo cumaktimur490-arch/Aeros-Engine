@@ -105,7 +105,7 @@ if !errorlevel! neq 0 (
 
 echo [Aeros CPU] Compiling C++ files...
 
-set "INCLUDES=/I "!LIBDIR!\glfw\include" /I "!LIBDIR!\glad\include" /I "!LIBDIR!\glm" /I src /I src\imgui"
+set "INCLUDES=/I "!LIBDIR!\glfw\include" /I "!LIBDIR!\glad\include" /I "!LIBDIR!\glm" /I "!LIBDIR!\vulkan\include" /I src /I src\imgui"
 set "DEFINES=/DCPU_ONLY /DVERSION_STRING=\"!APP_VERSION!\""
 rem --- Набор инструкций CPU ---
 rem Релизный бинарь ставится на любые ПК, поэтому базовый уровень:
@@ -161,6 +161,8 @@ cl /c !CXXFLAGS! src\interesting.cpp /Fo:bin\interesting.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\vulkan_renderer.cpp /Fo:bin\vulkan_renderer.obj
 if !errorlevel! neq 0 exit /b 1
+cl /c !CXXFLAGS! src\vulkan_scene.cpp /Fo:bin\vulkan_scene.obj
+if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\lite_config.cpp /Fo:bin\lite_config.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\cuda_stub.cpp /Fo:bin\cuda_stub.obj
@@ -184,6 +186,8 @@ cl /c !CXXFLAGS! src\imgui\imgui_impl_glfw.cpp /Fo:bin\imgui_impl_glfw.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\imgui\imgui_impl_opengl3.cpp /Fo:bin\imgui_impl_opengl3.obj
 if !errorlevel! neq 0 exit /b 1
+cl /c !CXXFLAGS! src\imgui\imgui_impl_vulkan.cpp /Fo:bin\imgui_impl_vulkan.obj
+if !errorlevel! neq 0 exit /b 1
 
 echo [Aeros CPU] Compiling icon resource...
 if exist src\app_icon.rc (
@@ -204,9 +208,9 @@ echo [Aeros CPU] Linking (LTCG optimized)...
 link /LTCG /OUT:bin\main-!OUT_ARCH!.exe ^
   bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
   bin\voxel_grid.obj bin\flow_field.obj bin\particles.obj bin\streamlines.obj ^
-  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\lite_config.obj bin\cuda_stub.obj bin\benchmark.obj bin\debug_log.obj bin\timelapse.obj bin\glad.obj ^
+  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\vulkan_scene.obj bin\lite_config.obj bin\cuda_stub.obj bin\benchmark.obj bin\debug_log.obj bin\timelapse.obj bin\glad.obj ^
   bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
-  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj !ICON_RES! ^
+  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj bin\imgui_impl_vulkan.obj !ICON_RES! ^
   /LIBPATH:"!LIBDIR!\glfw\!GLFW_LIBDIR!" glfw3.lib opengl32.lib user32.lib gdi32.lib shell32.lib comdlg32.lib ^
   /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
 

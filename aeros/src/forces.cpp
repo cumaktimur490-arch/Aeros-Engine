@@ -7,6 +7,7 @@
 #include <iostream>
 
 #include "globals.h"
+#include "render_mode.h"
 #include "cuda_api.h"
 #include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "flow_field.h"
@@ -37,9 +38,13 @@ static std::vector<float> s_cpPerVertex;
 bool caeColorOverride = false;
 
 void uploadVertexColorsToGPU() {
+    if (!glBackendActive()) return;   // v1.33.0 — Vulkan читает g_vertexColors сам
     int numVerts = (int)(g_vertices.size() / 3);
     if (numVerts == 0) return;
     if (g_vertexColors.size() != (size_t)numVerts * 3) return;
+    // v1.33.0 — загрузка цветов в VBO нужна только OpenGL-ветке: Vulkan берёт
+    // g_vertexColors напрямую и контекста OpenGL не имеет.
+    if (glBackendActive()) {
     if (modelVBO_colors == 0) {
         glGenBuffers(1, &modelVBO_colors);
         glBindVertexArray(modelVAO);
@@ -51,6 +56,7 @@ void uploadVertexColorsToGPU() {
     } else {
         glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
         glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
+    }
     }
 }
 
@@ -331,6 +337,9 @@ void updateVertexColors() {
         if (!s_cpPerVertex.empty()) aeroUpdateCpRange(s_cpPerVertex.data(), numVerts);
     }
 
+    // v1.33.0 — загрузка цветов в VBO нужна только OpenGL-ветке: Vulkan берёт
+    // g_vertexColors напрямую и контекста OpenGL не имеет.
+    if (glBackendActive()) {
     if (modelVBO_colors == 0) {
         glGenBuffers(1, &modelVBO_colors);
         glBindVertexArray(modelVAO);
@@ -342,6 +351,7 @@ void updateVertexColors() {
     } else {
         glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
         glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
+    }
     }
 }
 
@@ -717,6 +727,9 @@ void updateLiftDragArrows() {
         glm::vec3 e = s + glm::normalize(momentVector) * maxDim * 0.3f;
         if (std::isfinite(e.x)) { verts.push_back(s.x); verts.push_back(s.y); verts.push_back(s.z); verts.push_back(e.x); verts.push_back(e.y); verts.push_back(e.z); }
     }
+    // v1.33.0 — VBO стрелок нужен только OpenGL-ветке; Vulkan собирает те же
+    // стрелки из centerOfPressure/dragVector/liftVector (scene_geometry.h).
+    if (!glBackendActive()) return;
     if (liftDragVAO == 0) glGenVertexArrays(1, &liftDragVAO);
     if (liftDragVBO == 0) glGenBuffers(1, &liftDragVBO);
     glBindVertexArray(liftDragVAO);

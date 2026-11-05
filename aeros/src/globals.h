@@ -96,6 +96,10 @@ extern float streamlineStepSize;
 extern unsigned int streamlineVAO;
 extern unsigned int streamlineVBO;
 extern int   streamlineVertexCount;
+// v1.33.0 — те же вершины линий тока на процессоре (6 float на вершину:
+// позиция + цвет). OpenGL-ветке они не нужны (данные лежат в VBO), Vulkan-бэкенд
+// берёт геометрию отсюда, чтобы не читать обратно из видеопамяти.
+extern std::vector<float> streamlineCpuVerts;
 
 // --- Модель ---
 extern unsigned int modelVAO;

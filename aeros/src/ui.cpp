@@ -1596,26 +1596,36 @@ if (uiSelectedLeaf == 8 && ImGui::CollapsingHeader(_TR("Renderer — Vulkan + Op
         ImGui::OpenPopup("RestartPopup");
     }
     ImGui::SameLine();
-    // v1.26.0 — кнопка Vulkan больше не обещает того, чего в этой версии нет.
-    if (ImGui::Button(_TR("Vulkan (not implemented yet)", "Vulkan (пока не реализован)"))) {
-        ImGui::OpenPopup("VulkanNotImpl");
+    // v1.33.0 — Vulkan-рендерер реализован: кнопка включает его (после
+    // перезапуска). Если Vulkan недоступен, кнопка неактивна, а во всплывающей
+    // подсказке — точная причина (загрузчик, устройство или вывод в окно).
+    const bool vkReady = isVulkanAvailable();
+    ImGui::BeginDisabled(!vkReady);
+    if (ImGui::Button(_TR("Vulkan (full renderer)", "Vulkan (полный рендерер)"))) {
+        saveRendererSetting("vulkan");
+        ImGui::OpenPopup("RestartPopup");
+    }
+    ImGui::EndDisabled();
+    if (!vkReady && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", getVulkanDecisionReason().c_str());
     }
     ImGui::SameLine();
     if (ImGui::Button("OpenGL 3.3+")) {
         saveRendererSetting("opengl");
         ImGui::OpenPopup("RestartPopup");
     }
-    if (ImGui::BeginPopup("VulkanNotImpl")) {
-        ImGui::TextWrapped("%s", _TR("The Vulkan renderer is a stub in this version: it reports success but draws nothing. "
-                                     "The application always runs on OpenGL.",
-                                     "Vulkan-рендерер в этой версии — заглушка: он рапортует об успехе, но ничего не рисует. "
-                                     "Программа всегда работает на OpenGL."));
-        if (ImGui::Button(_TR("Save OpenGL", "Сохранить OpenGL"))) {
-            saveRendererSetting("opengl");
-            ImGui::CloseCurrentPopup();
-            ImGui::OpenPopup("RestartPopup");
-        }
+    // Кнопка «почему недоступен» нужна именно тогда, когда выбрать Vulkan нельзя:
+    // иначе текст причины (единственное место, где сказано, чего не хватило —
+    // загрузчика, устройства или поддержки вывода в окно) было бы не увидеть.
+    if (!vkReady) {
         ImGui::SameLine();
+        if (ImGui::Button(_TR("Why is Vulkan unavailable?", "Почему Vulkan недоступен?")))
+            ImGui::OpenPopup("VulkanNotImpl");
+    }
+    if (ImGui::BeginPopup("VulkanNotImpl")) {
+        ImGui::TextWrapped("%s", _TR("Vulkan is not available on this machine:",
+                                     "Vulkan недоступен на этой машине:"));
+        ImGui::TextWrapped("%s", getVulkanDecisionReason().c_str());
         if (ImGui::Button(_TR("Close", "Закрыть"))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -1629,9 +1639,13 @@ if (uiSelectedLeaf == 8 && ImGui::CollapsingHeader(_TR("Renderer — Vulkan + Op
     ImGui::Text("%s:", _TR("Renderer status", "Состояние рендереров"));
     ImGui::BulletText("%s", _TR("OpenGL 3.3 core — working renderer, used by default",
                                 "OpenGL 3.3 core — рабочий рендерер, используется по умолчанию"));
-    ImGui::BulletText("%s", _TR("Vulkan — interface is present, drawing is not implemented yet",
-                                "Vulkan — интерфейс есть, отрисовка пока не реализована"));
-    ImGui::BulletText("%s", _TR("Ray tracing ready (future)", "Готов к трассировке лучей (будущее)"));
+    ImGui::BulletText("%s", _TR("Vulkan 1.0+ — full renderer: scene, particles, lines and the whole interface",
+                                "Vulkan 1.0+ — полноценный рендерер: сцена, частицы, линии и весь интерфейс"));
+    ImGui::BulletText("%s", _TR("Vulkan mode: FSR, frame generation and screenshots stay OpenGL-only",
+                                "В режиме Vulkan: FSR, генерация кадров и скриншоты доступны только в OpenGL"));
+    // Трассировки лучей в движке нет — так и написано, чтобы список возможностей
+    // не обещал того, чего нет ни в OpenGL, ни в Vulkan-ветке.
+    ImGui::BulletText("%s", _TR("Ray tracing: not implemented (planned)", "Трассировка лучей: не реализована (в планах)"));
     ImGui::BulletText("%s", _TR("Works on Windows and Linux", "Работает на Windows и Linux"));
     ImGui::Separator();
     ImGui::Text("%s: %s", _TR("Linux Port", "Порт на Linux"), _TR("Fully supported", "Полностью поддерживается"));
