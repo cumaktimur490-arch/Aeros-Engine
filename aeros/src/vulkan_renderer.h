@@ -14,7 +14,75 @@
 #include <string>
 #include <functional>
 #include <cstdint>
+#include <cstring>
 #include <chrono>
+#include <type_traits>
+
+// -----------------------------------------------------
+// Хранение дескрипторов Vulkan без подключения vulkan.h в заголовок.
+//
+// Не-диспетчеризуемые дескрипторы (VkBuffer, VkImage, VkSwapchainKHR, VkFence,
+// VkSemaphore, VkPipeline, ...) в 64-битных сборках — это указатели, а в
+// 32-битных — uint64_t (VK_USE_64_BIT_PTR_DEFINES == 0). Поэтому «универсальный»
+// void* не подходит: MSVC на x86 отказывается преобразовывать uint64_t в void*
+// (error C2440 — сборка x86 падала именно на этом), а приведение через uintptr_t
+// на x86 обрезало бы значение. Этот тип хранит те же 8 байт и преобразуется в
+// любой дескриптор через memcpy, поэтому одинаково верен на обеих разрядностях.
+// -----------------------------------------------------
+class AerosVkHandle {
+public:
+    AerosVkHandle() = default;
+    AerosVkHandle(const AerosVkHandle&) = default;
+    AerosVkHandle& operator=(const AerosVkHandle&) = default;
+
+    // Дескриптор → хранилище.
+    template <class H, typename std::enable_if<
+                            std::is_trivially_copyable<H>::value &&
+                                (std::is_pointer<H>::value ||
+                                 (std::is_integral<H>::value && sizeof(H) == sizeof(uint64_t))),
+                            int>::type = 0>
+    AerosVkHandle(H h) {
+        store(h);
+    }
+
+    // Хранилище → дескриптор (для явных приведений (VkBuffer)handle).
+    template <class H, typename std::enable_if<
+                            std::is_trivially_copyable<H>::value &&
+                                (std::is_pointer<H>::value ||
+                                 (std::is_integral<H>::value && sizeof(H) == sizeof(uint64_t))),
+                            int>::type = 0>
+    operator H() const {
+        return load<H>();
+    }
+
+    // Присваивание и сравнение с nullptr — это «обнулить дескриптор».
+    AerosVkHandle(std::nullptr_t) {}
+    AerosVkHandle& operator=(std::nullptr_t) {
+        bits = 0;
+        return *this;
+    }
+
+    explicit operator bool() const { return bits != 0; }
+    bool isNull() const { return bits == 0; }
+    uint64_t raw() const { return bits; }
+
+private:
+    template <class H>
+    void store(H h) {
+        static_assert(sizeof(H) <= sizeof(bits), "дескриптор Vulkan шире 8 байт");
+        bits = 0;
+        std::memcpy(&bits, &h, sizeof(H));
+    }
+    template <class H>
+    H load() const {
+        static_assert(sizeof(H) <= sizeof(bits), "дескриптор Vulkan шире 8 байт");
+        H h{};
+        std::memcpy(&h, &bits, sizeof(H));
+        return h;
+    }
+
+    uint64_t bits = 0;
+};
 
 // Forward declare GLFW
 struct GLFWwindow;
@@ -226,41 +294,43 @@ private:
     struct FrameData {
         std::vector<DrawCmd> cmds;
         std::vector<float> cpuVerts;  // позиция/нормаль/цвет на вершину
-        void* buffer = nullptr;
-        void* memory = nullptr;
-        void* mapped = nullptr;
+        AerosVkHandle buffer;   // VkBuffer
+        AerosVkHandle memory;   // VkDeviceMemory
+        void* mapped = nullptr; // указатель на отображённую память
         size_t capacityVerts = 0;
     };
     static const int kFramesInFlight = 2;
     FrameData frames[kFramesInFlight];
 
-    // Дескрипторы Vulkan (void* — чтобы заголовок не тянул vulkan.h)
+    // Дескрипторы Vulkan. Диспетчеризуемые (VkInstance, VkDevice, VkQueue,
+    // VkCommandBuffer) — всегда указатели, поэтому void*. Остальные — через
+    // AerosVkHandle: на x86 они uint64_t, и void* для них не компилируется.
     void* instance = nullptr;
     void* physicalDevice = nullptr;
     void* device = nullptr;
-    void* surface = nullptr;
+    AerosVkHandle surface;        // VkSurfaceKHR — не-диспетчеризуемый
     void* graphicsQueue = nullptr;
     void* presentQueue = nullptr;
     int graphicsFamily = -1;
     int presentFamily = -1;
-    void* swapchain = nullptr;
-    void* renderPass = nullptr;
-    void* pipelineLayout = nullptr;
-    void* graphicsPipeline = nullptr;
-    void* particlePipeline = nullptr;
-    void* linePipeline = nullptr;
-    void* commandPool = nullptr;
-    std::vector<void*> commandBuffers;
-    std::vector<void*> swapchainImages;
-    std::vector<void*> swapchainImageViews;
-    std::vector<void*> framebuffers;
-    std::vector<void*> imageAvailableSemaphores;   // по кадру в полёте
-    std::vector<void*> renderFinishedSemaphores;   // по изображению swapchain
-    std::vector<void*> inFlightFences;             // по кадру в полёте
-    void* depthImage = nullptr;
-    void* depthImageMemory = nullptr;
-    void* depthImageView = nullptr;
-    void* debugMessenger = nullptr;
+    AerosVkHandle swapchain;
+    AerosVkHandle renderPass;
+    AerosVkHandle pipelineLayout;
+    AerosVkHandle graphicsPipeline;
+    AerosVkHandle particlePipeline;
+    AerosVkHandle linePipeline;
+    AerosVkHandle commandPool;
+    std::vector<void*> commandBuffers;            // VkCommandBuffer — указатель
+    std::vector<AerosVkHandle> swapchainImages;
+    std::vector<AerosVkHandle> swapchainImageViews;
+    std::vector<AerosVkHandle> framebuffers;
+    std::vector<AerosVkHandle> imageAvailableSemaphores;   // по кадру в полёте
+    std::vector<AerosVkHandle> renderFinishedSemaphores;   // по изображению swapchain
+    std::vector<AerosVkHandle> inFlightFences;             // по кадру в полёте
+    AerosVkHandle depthImage;
+    AerosVkHandle depthImageMemory;
+    AerosVkHandle depthImageView;
+    AerosVkHandle debugMessenger;
     uint32_t instanceApiVersion = 0;
     bool hasWideLines = false;
     bool hasLargePoints = false;
