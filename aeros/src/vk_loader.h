@@ -138,8 +138,10 @@ struct AerosVkLoader {
     bool open() {
         if (loaded) return true;
 #ifdef _WIN32
+        // Строковый литерал уже является const char*: (char*)"vulkan-1.dll" —
+        // единственное приведение, которое здесь нужно. Прежняя строка с
+        // .data() не компилировалась MSVC (у массива нет метода data()).
         lib = (void*)LoadLibraryA("vulkan-1.dll");
-        if (!lib) lib = (void*)LoadLibraryA("vulkan-1.dll".data());
 #else
         lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
         if (!lib) lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
