@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Aeros Engine
+Comment=Airflow Visualization with Vulkan and OpenGL — Airflow, Schlieren, Shock Waves, Vortex Tubes, Flight Dynamics
+Exec=@CMAKE_INSTALL_PREFIX@/bin/aeros-engine
+Icon=aeros-engine
+Terminal=false
+Type=Application
+Categories=Science;Engineering;Physics;Education;
+Version=@APP_VERSION@
+Keywords=CFD;aerodynamics;wind tunnel;Vulkan;OpenGL;schlieren;shock;vortex;flight;
+StartupNotify=true
+MimeType=application/sla;model/stl;

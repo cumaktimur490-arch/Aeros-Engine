@@ -15,3 +15,16 @@ imgui.ini
 
 # IDE
 .vs/
+release/
+dist/
+
+# Режим отладки v1.25.0: создаётся программой во время работы
+logs/
+physics.csv
+Aeros-Debug-Report-*.txt
+# v1.26.0 — история таймлапса физики
+timelapse-*.csv
+
+# v1.33.0 — npm-зависимость только для пересборки SPIR-V (tools/build-shaders.js)
+node_modules
+package-lock.json
