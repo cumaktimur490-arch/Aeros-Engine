@@ -1,4 +1,5 @@
 #include "globals.h"
+#include "lbm.h"           // v1.32.0 — LBMParams lbmParams (перенесено из lbm.cpp)
 
 const unsigned int SCR_WIDTH  = 1280;
 const unsigned int SCR_HEIGHT = 720;
@@ -113,6 +114,9 @@ glm::vec3 minBB, maxBB, center;
 float maxDim = 1.0f;
 
 FlowParams flowParams;
+// v1.32.0 — параметры решателя LBM (было в lbm.cpp): настройка, которая входит
+// в реестр settings_store.h, обязана жить в globals.cpp.
+LBMParams lbmParams;
 
 std::vector<int>   g_voxelData;
 std::vector<float> g_distanceField;

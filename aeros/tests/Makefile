@@ -5,7 +5,8 @@
 #   make lbm         только прогон решателя LBM (v1.27.0)
 #   make physclock   только фиксированный такт физики (v1.29.0)
 #   make fem         только CAD/CAE: исследование, сетка МКЭ, решатели, компоновка (v1.31.0)
-#   make ui          только оболочка CAD/CAE: панели, меню, обработчики кнопок (v1.31.x)
+#   make ui          только оболочка CAD/CAE: панели, меню, обработчики кнопок 
+#   make settings    только реестр настроек: сохранение, загрузка, сброс, профили (v1.32.0)(v1.31.x)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -17,8 +18,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui clean
-all: timelapse lbm physclock fem ui
+.PHONY: all timelapse lbm physclock fem ui settings clean
+all: timelapse lbm physclock fem ui settings
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -34,6 +35,17 @@ lbm:
 physclock:
 	g++ $(CXXFLAGS) phys_clock_headless.cpp -o /tmp/aeros-test-physclock
 	/tmp/aeros-test-physclock
+
+# Реестр настроек (settings_store.h) — чистый модуль: тянет только переменные из
+# globals.cpp, atmosphere.cpp (высота, единицы скорости) и lang.cpp (язык).
+# lang.cpp обращается к ImGui::GetIO() при смене языка, поэтому ядро ImGui
+# подключается к сборке (без GLFW/OpenGL-бэкендов), как в цели ui.
+settings:
+	g++ $(CXXFLAGS) -I$(IMGUI) settings_headless.cpp $(SRC)/globals.cpp \
+	    $(SRC)/atmosphere.cpp $(SRC)/lang.cpp $(SRC)/debug_log.cpp \
+	    $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_widgets.cpp \
+	    $(IMGUI)/imgui_tables.cpp -o /tmp/aeros-test-settings -pthread
+	/tmp/aeros-test-settings
 
 # CAD/CAE-модули (study.h, fem_mesh.h, fem_solver.h, results_view.h, ui_layout.h)
 # намеренно header-only и не тянут OpenGL/GLFW/ImGui, поэтому тест линкуется без

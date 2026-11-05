@@ -34,6 +34,7 @@
 #include <ctime>
 
 #include "globals.h"
+#include "settings_store.h"   // v1.32.0 — реестр настроек: сохранение, сброс, профили
 #include "version.h"
 #include "shaders.h"
 #include "gl_utils.h"
@@ -160,57 +161,26 @@ static bool exportForcesCSV(const std::string& path) {
 }
 
 // Settings save/load — v1.19.0 Multilingual (non-static for UI)
+// =====================================================
+// v1.32.0 — сохранение и загрузка настроек через единый реестр
+// (aeros/src/settings_store.h + settings_table.inc).
+//
+// Раньше здесь был ручной список из 28 ключей, тогда как в интерфейсе
+// привязано более сотни переменных: цвета, прозрачности, эффекты, FSR,
+// генерация кадров и оптимизация под машину после перезапуска возвращались
+// к стандарту. Теперь список ключей, диапазоны и стандартные значения живут
+// в одной таблице, а сохранение, загрузка, сброс и профили берут данные из неё.
+// Формат файла прежний (`ключ=значение`), поэтому старые aeros_settings.ini
+// читаются без потерь.
+// =====================================================
 bool saveSettings(const std::string& path) {
     std::ofstream f(path);
     if (!f) return false;
     f << "# Aeros Engine v" AEROS_VERSION_STRING " Settings\n";
-    f << "flowSpeed=" << flowSpeed << "\n";
-    f << "flowAzimuth=" << flowAzimuth << "\n";
-    f << "flowElevation=" << flowElevation << "\n";
-    f << "altitude=" << altitude << "\n";
-    f << "timeScale=" << timeScale << "\n";
-    f << "strouhal=" << strouhal << "\n";
-    f << "wakeStrength=" << wakeStrength << "\n";
-    f << "wakeLength=" << wakeLength << "\n";
-    f << "aeroVisMode=" << (int)aeroVisMode << "\n";
-    f << "aeroColorMap=" << aeroColorMap << "\n";
-    f << "aeroGroundEffect=" << (aeroGroundEffect ? 1 : 0) << "\n";
-    f << "aeroGroundHeight=" << aeroGroundHeight << "\n";
-    f << "showParticles=" << (showParticles ? 1 : 0) << "\n";
-    f << "showStreamlines=" << (showStreamlines ? 1 : 0) << "\n";
-    f << "showPressure=" << (showPressure ? 1 : 0) << "\n";
-    f << "numParticles=" << numParticles << "\n";
-    f << "numStreamlines=" << numStreamlines << "\n";
-    f << "voxelResolution=" << voxelResolution << "\n";
-    f << "lbmEnabled=" << (lbmParams.enabled ? 1 : 0) << "\n";
-    f << "lbmTau=" << lbmParams.tau << "\n";
-    f << "lbmStepsPerFrame=" << lbmParams.stepsPerFrame << "\n";
-    f << "language=" << (int)currentLanguage << "\n";
-    f << "aeroShowParticleTrails=" << (aeroShowParticleTrails ? 1 : 0) << "\n";
-    f << "aeroAdaptiveLBM=" << (aeroAdaptiveLBM ? 1 : 0) << "\n";
-    f << "aeroUseRK4Particles=" << (aeroUseRK4Particles ? 1 : 0) << "\n";
-    // v1.27.0 — масштаб интерфейса: удобство панелей должно сохраняться между запусками
-    f << "uiScale=" << uiScale << "\n";
-    f << "tlFullscreen=" << (tlFullscreen ? 1 : 0) << "\n";
-    // v1.28.0 — компоновка панелей (навигатор / свойства / консоль) запоминается:
-    // инженер подгоняет её под свой монитор один раз и больше не трогает.
-    f << "uiDocked=" << (uiDocked ? 1 : 0) << "\n";
-    f << "uiShowTree=" << (uiShowTree ? 1 : 0) << "\n";
-    f << "uiShowProps=" << (uiShowProps ? 1 : 0) << "\n";
-    f << "uiShowConsole=" << (uiShowConsole ? 1 : 0) << "\n";
-    f << "uiSelectedLeaf=" << uiSelectedLeaf << "\n";
-    f << "uiTreeW=" << uiTreeW << "\n";
-    f << "uiPropsW=" << uiPropsW << "\n";
-    f << "uiBottomH=" << uiBottomH << "\n";
-    // v1.31.0 — компоновка оболочки CAD/CAE: рабочее пространство, активная
-    // вкладка, видимость панелей и их размеры. Ключи выше (uiShowTree/uiTreeW/...)
-    // продолжают писаться как зеркала, чтобы файл настроек читали и старые сборки.
+    settingsWrite(f);
+    // Ключи компоновки оболочки пишет ui_layout.h — единый источник состояния
+    // панелей; читаются они тем же uiLayoutApplyValue() при загрузке.
     uiLayoutWrite(f, uiLayoutState());
-    // v1.29.0 — фиксированный такт физики (Гц), как в BeamNG.drive
-    f << "physFixed=" << (physClock.fixed ? 1 : 0) << "\n";
-    f << "physHz=" << physClock.hz << "\n";
-    f << "physMaxSubsteps=" << physClock.maxSubsteps << "\n";
-    f << "physParticleSubsteps=" << physClock.particleSubsteps << "\n";
     return f.good();
 }
 
@@ -218,87 +188,29 @@ bool loadSettings(const std::string& path) {
     std::ifstream f(path);
     if (!f) return false;
     std::string line;
+    int applied = 0, unknown = 0, broken = 0;
     while (std::getline(f, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        auto pos = line.find('=');
-        if (pos == std::string::npos) continue;
-        std::string key = line.substr(0, pos);
-        std::string val = line.substr(pos + 1);
-        try {
-            // v1.31.0 — ключи компоновки оболочки (включая устаревшие имена
-            // v1.28: uiDocked/uiShowTree/uiShowProps/uiShowConsole/uiTreeW/
-            // uiPropsW/uiBottomH/uiScale). Глобальные ui* флаги обновляются из
-            // этого состояния каждый кадр в drawUI(), поэтому старые настройки
-            // не теряются и не расходятся с новыми.
-            if (uiLayoutApplyValue(uiLayoutState(), key, val)) { /* принято */ }
-            else if (key == "flowSpeed") flowSpeed = std::stof(val);
-            else if (key == "flowAzimuth") flowAzimuth = std::stof(val);
-            else if (key == "flowElevation") flowElevation = std::stof(val);
-            else if (key == "altitude") altitude = std::stof(val);
-            else if (key == "timeScale") timeScale = std::stof(val);
-            else if (key == "strouhal") strouhal = std::stof(val);
-            else if (key == "wakeStrength") wakeStrength = std::stof(val);
-            else if (key == "wakeLength") wakeLength = std::stof(val);
-            else if (key == "aeroVisMode") aeroVisMode = (AeroVisMode)std::stoi(val);
-            else if (key == "aeroColorMap") aeroColorMap = std::stoi(val);
-            else if (key == "aeroGroundEffect") aeroGroundEffect = (std::stoi(val) != 0);
-            else if (key == "aeroGroundHeight") aeroGroundHeight = std::stof(val);
-            else if (key == "showParticles") showParticles = (std::stoi(val) != 0);
-            else if (key == "showStreamlines") showStreamlines = (std::stoi(val) != 0);
-            else if (key == "showPressure") showPressure = (std::stoi(val) != 0);
-            else if (key == "numParticles") numParticles = std::stoi(val);
-            else if (key == "numStreamlines") numStreamlines = std::stoi(val);
-            else if (key == "voxelResolution") voxelResolution = std::stoi(val);
-            else if (key == "lbmEnabled") lbmParams.enabled = (std::stoi(val) != 0);
-            else if (key == "lbmTau") lbmParams.tau = std::stof(val);
-            else if (key == "lbmStepsPerFrame") lbmParams.stepsPerFrame = std::stoi(val);
-            else if (key == "language") currentLanguage = (Language)std::stoi(val);
-            else if (key == "aeroShowParticleTrails") aeroShowParticleTrails = (std::stoi(val) != 0);
-            else if (key == "aeroAdaptiveLBM") aeroAdaptiveLBM = (std::stoi(val) != 0);
-            else if (key == "aeroUseRK4Particles") aeroUseRK4Particles = (std::stoi(val) != 0);
-            else if (key == "uiScale") {
-                uiScale = std::stof(val);
-                if (!std::isfinite(uiScale) || uiScale < 0.8f) uiScale = 0.8f;
-                if (uiScale > 1.8f) uiScale = 1.8f;
-            }
-            else if (key == "tlFullscreen") tlFullscreen = (std::stoi(val) != 0);
-            else if (key == "uiDocked") uiDocked = (std::stoi(val) != 0);
-            else if (key == "uiShowTree") uiShowTree = (std::stoi(val) != 0);
-            else if (key == "uiShowProps") uiShowProps = (std::stoi(val) != 0);
-            else if (key == "uiShowConsole") uiShowConsole = (std::stoi(val) != 0);
-            else if (key == "uiSelectedLeaf") {
-                int v = std::stoi(val);
-                // v1.29.0 — узлов стало 21 (добавлен «Такт физики»); при мусоре
-                // в файле возвращаем прежний узел по умолчанию, а не случайный.
-                uiSelectedLeaf = (v >= 1 && v <= 21) ? v : 9;
-            }
-            else if (key == "uiTreeW") {
-                int v = std::stoi(val);
-                uiTreeW = (v >= 150 && v <= 600) ? v : 264;
-            }
-            else if (key == "uiPropsW") {
-                int v = std::stoi(val);
-                uiPropsW = (v >= 240 && v <= 1200) ? v : 470;
-            }
-            else if (key == "physFixed") physClock.fixed = (std::stoi(val) != 0);
-            else if (key == "physHz") {
-                float v = std::stof(val);
-                if (std::isfinite(v) && v >= 1.0f && v <= 5000.0f) physClock.hz = v;
-            }
-            else if (key == "physMaxSubsteps") {
-                int v = std::stoi(val);
-                physClock.maxSubsteps = (v >= 1 && v <= 4096) ? v : 64;
-            }
-            else if (key == "physParticleSubsteps") {
-                int v = std::stoi(val);
-                physClock.particleSubsteps = (v >= 1 && v <= 64) ? v : 8;
-            }
-            else if (key == "uiBottomH") {
-                int v = std::stoi(val);
-                uiBottomH = (v >= 90 && v <= 700) ? v : 200;
-            }
-        } catch (...) { /* ignore parse errors */ }
+        const std::string t = settingsTrim(line);
+        if (t.empty() || t[0] == '#') continue;
+        const size_t pos = t.find('=');
+        if (pos == std::string::npos) { ++broken; continue; }
+        const std::string key = settingsTrim(t.substr(0, pos));
+        const std::string val = settingsTrim(t.substr(pos + 1));
+        // Сначала ключи компоновки (включая устаревшие имена v1.28.0):
+        // состояние панелей одно, в ui_layout.h.
+        if (uiLayoutApplyValue(uiLayoutState(), key, val)) { ++applied; continue; }
+        const int r = settingsApplyLine(t);
+        if (r == 1) ++applied;
+        else if (r == 0) ++unknown;
+        else ++broken;
     }
+    // Мусор в файле больше не проходит молча: сколько принято и сколько
+    // пропущено — попадает в журнал отладки.
+    if (unknown > 0 || broken > 0)
+        DBG_WARN("настройки: применено %d, неизвестных ключей %d, испорченных строк %d",
+                 applied, unknown, broken);
+    else
+        DBG_INFO("настройки: применено ключей %d", applied);
     return true;
 }
 

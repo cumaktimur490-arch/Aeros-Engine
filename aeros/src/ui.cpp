@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "globals.h"
+#include "settings_store.h"   // v1.32.0 — реестр настроек: профили, сброс, сохранение
 #include "version.h"   // v1.31.2 — версия в строке состояния берётся из версии сборки
 #include "debug_log.h"   // v1.25.0 — панель «Отладка и журнал»
 #include "timelapse.h"   // v1.26.0 — панель «Режим вычислений: таймлапс физики»
@@ -532,11 +533,11 @@ struct UiLeaf { int group; int id; const char* ru; const char* en; };
 
 static const char* const kUiGroupRu[] = {
     "Расчёт", "Модели и среда", "Сетка и решатель", "Результаты",
-    "Мониторинг", "Вид", "Диагностика"
+    "Мониторинг", "Вид", "Диагностика", "Настройки"
 };
 static const char* const kUiGroupEn[] = {
     "Setup", "Models & medium", "Mesh & solver", "Results",
-    "Monitors", "View", "Diagnostics"
+    "Monitors", "View", "Diagnostics", "Settings"
 };
 
 static const UiLeaf kUiLeaves[] = {
@@ -561,6 +562,7 @@ static const UiLeaf kUiLeaves[] = {
     { 4, 18, "Режим тестов",                "Test mode" },
     { 5, 15, "Отображение",                 "Display" },
     { 6, 20, "Журнал и отладочный отчёт",   "Journal & debug report" },
+    { 7, 22, "Профили и сброс настроек",    "Profiles & settings reset" },
 };
 static const int kUiLeafCount = (int)(sizeof(kUiLeaves) / sizeof(kUiLeaves[0]));
 
@@ -1731,6 +1733,87 @@ if (uiSelectedLeaf == 10 && ImGui::CollapsingHeader(_TR("Atmosphere (ISA)", "А�
     }
     float q = 0.5f * airDensity * flowSpeed * flowSpeed;
     ImGui::Text("%s q: %.1f Pa | q*RefArea: %.1f N", _TR("Dynamic Pressure", "Динамическое давление"), q, q*aeroRefArea);
+}
+
+// ===== v1.32.0 — настройки: реестр, профили, сброс =====
+// Все переменные интерфейса собраны в один реестр (settings_store.h), поэтому
+// сохраняется и сбрасывается всё сразу, а не 28 ключей из сотни.
+if (uiSelectedLeaf == 22 && ImGui::CollapsingHeader(_TR("Settings & profiles v1.32.0",
+                                                       "Настройки и профили v1.32.0"),
+                                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("%s: %d", _TR("Keys in the settings registry", "Ключей в реестре настроек"),
+                settingsCount());
+    ImGui::Checkbox(_TR("Save settings on exit", "Сохранять настройки при выходе"), &aeroSaveSettings);
+
+    if (ImGui::Button(_TR("Save settings now", "Сохранить настройки сейчас"))) {
+        if (saveSettings("aeros_settings.ini"))
+            debugLogAction("настройки", "записано ключей %d в aeros_settings.ini", settingsCount());
+        else
+            DBG_WARN("не удалось записать aeros_settings.ini");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Reload from file", "Перечитать из файла"))) {
+        if (loadSettings("aeros_settings.ini")) {
+            initParticles();
+            debugLogAction("настройки", "настройки перечитаны из aeros_settings.ini");
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextWrapped("%s", _TR("A profile stores the whole setup under a name: "
+                                 "view, colors, effects, solvers, interface.",
+                                "Профиль хранит всю настройку под именем: вид, цвета, "
+                                "эффекты, решатели, интерфейс."));
+    static char profName[64] = "default";
+    ImGui::SetNextItemWidth(-120.0f);
+    ImGui::InputText(_TR("Name##profile", "Имя##profile"), profName, sizeof(profName));
+    if (ImGui::Button(_TR("Save profile", "Сохранить профиль"))) {
+        if (settingsProfileSave(profName))
+            debugLogAction("настройки", "профиль «%s» сохранён", profName);
+        else
+            DBG_WARN("профиль не сохранён: имя «%s» недопустимо (A-Z, a-z, 0-9, _-, до 40 знаков)", profName);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Load profile", "Загрузить профиль"))) {
+        if (settingsProfileLoad(profName)) {
+            initParticles();
+            debugLogAction("настройки", "профиль «%s» загружен", profName);
+        } else {
+            DBG_WARN("профиль «%s» не найден", profName);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(_TR("Delete profile", "Удалить профиль"))) {
+        if (settingsProfileDelete(profName))
+            debugLogAction("настройки", "профиль «%s» удалён", profName);
+        else
+            DBG_WARN("профиль «%s» удалить не удалось", profName);
+    }
+
+    const std::vector<std::string> profs = settingsProfileList();
+    if (profs.empty()) {
+        ImGui::TextDisabled("%s", _TR("No saved profiles yet.", "Сохранённых профилей пока нет."));
+    } else {
+        ImGui::Text("%s:", _TR("Saved profiles (click to pick)", "Сохранённые профили (щелчок — выбрать)"));
+        for (const std::string& n : profs) {
+            if (ImGui::Selectable(n.c_str(), false))
+                std::snprintf(profName, sizeof(profName), "%s", n.c_str());
+        }
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button(_TR("Reset ALL settings to defaults", "Сбросить ВСЕ настройки к стандартным"))) {
+        settingsResetDefaults();
+        initParticles();
+        computeStreamlines();
+        debugLogAction("настройки", "все %d настроек сброшены к стандартным", settingsCount());
+    }
+    ImGui::TextDisabled("%s", _TR("Layout (panel sizes, workspace) is reset separately: "
+                                  "View menu or the Layout node.",
+                                  "Компоновка (размеры панелей, рабочее пространство) "
+                                  "сбрасывается отдельно: меню «Вид» или узел «Компоновка»."));
+    ImGui::TextDisabled("%s", _TR("File: aeros_settings.ini, profiles in profiles\\*.ini",
+                                  "Файл: aeros_settings.ini, профили в profiles\\*.ini"));
 }
 
 if (uiSelectedLeaf == 11 && ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Частицы v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {

@@ -18,7 +18,9 @@
 #include <omp.h>
 #endif
 
-LBMParams lbmParams;
+// v1.32.0 — определение lbmParams перенесено в globals.cpp: все настройки,
+// которые попадают в реестр (settings_store.h), живут в одном месте, и реестр
+// линкуется без решателя LBM.
 bool lbmInitialized = false;
 bool lbmConverged = false;
 int lbmCurrentStep = 0;
