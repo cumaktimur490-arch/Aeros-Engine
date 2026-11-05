@@ -15,3 +15,12 @@ imgui.ini
 
 # IDE
 .vs/
+release/
+dist/
+
+# Режим отладки v1.25.0: создаётся программой во время работы
+logs/
+physics.csv
+Aeros-Debug-Report-*.txt
+# v1.26.0 — история таймлапса физики
+timelapse-*.csv
