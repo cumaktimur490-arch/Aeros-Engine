@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "globals.h"
+#include "version.h"   // v1.31.2 — версия в строке состояния берётся из версии сборки
 #include "debug_log.h"   // v1.25.0 — панель «Отладка и журнал»
 #include "timelapse.h"   // v1.26.0 — панель «Режим вычислений: таймлапс физики»
 #include "vulkan_renderer.h"
@@ -803,10 +804,10 @@ if (L.props.valid()) {
     // ===== рабочее пространство «Модель»: прежняя панель аэродинамики =====
     ImGui::SetWindowFontScale(uiFontScale);
 
-ImGui::Text("%s: %.1f | %s: %.2f ms | v1.19.0 [%s]",
+ImGui::Text("%s: %.1f | %s: %.2f ms | v%s [%s]",
     _TR("FPS", "Кадров/с"), deltaTime > 1e-6f ? 1.0f/deltaTime : 0.0f,
     _TR("Frame", "Кадр"), perfFrameMs,
-    getCurrentLanguageName());
+    AEROS_VERSION_STRING, getCurrentLanguageName());
 ImGui::Text("%s: %d | %s: %d | %s: %dx%dx%d",
     _TR("Vertices", "Вершин"), modelVertexCount,
     _TR("Tris", "Треугольников"), modelVertexCount/3,
