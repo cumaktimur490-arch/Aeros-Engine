@@ -970,6 +970,13 @@ if (!g_vertices.empty()) {
     ImGui::Text(_TR("Voxel grid: %dx%dx%d (%d across the largest side), %lld solid cells",
                     "Сетка: %dx%dx%d (разрешение %d по большей стороне), твёрдых ячеек %lld"),
                 g_voxNx, g_voxNy, g_voxNz, g_voxelUsedRes, g_voxelSolidCells);
+    // Сетка рендера (воксели объекта) и сетка расчёта (домен LBM с паддингом) —
+    // разные числа. Показываем оба, чтобы «разрешение 48» не принимали за
+    // размер расчётной области.
+    if (lbmInitialized)
+        ImGui::Text(_TR("Solver domain: %dx%dx%d cells, body resolution %d",
+                        "Домен расчёта: %dx%dx%d ячеек, разрешение тела %d"),
+                    lbmNx, lbmNy, lbmNz, g_voxelUsedRes);
     if (!g_voxelThinWarning.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.25f, 1.0f));
         ImGui::TextWrapped("%s", g_voxelThinWarning.c_str());
