@@ -392,6 +392,38 @@ int main() {
         check(first == g_voxelData, "маска вокселей побитово совпадает между прогонами");
     }
 
+    // ---------- 5b. План сетки и бюджет памяти ----------
+    std::printf("\n--- план сетки: бюджет памяти без молчаливого clamp ---\n");
+    {
+        const glm::vec3 size(1.0f, 0.5f, 0.25f);
+        const unsigned long long big = 8ull * 1024 * 1024 * 1024;   // 8 ГБ
+        const VoxelPlan p = voxelPlan(size, 64, big);
+        check(p.fits, "64³ в габарите 1×0.5×0.25 влезает в 8 ГБ");
+        check(p.nx == 64 && p.ny == 32 && p.nz == 16,
+              "пропорции сетки повторяют габарит (64×32×16), получено " +
+              std::to_string(p.nx) + "×" + std::to_string(p.ny) + "×" + std::to_string(p.nz));
+        check(p.cells == 64ll * 32 * 16, "число ячеек посчитано верно");
+
+        const VoxelPlan over = voxelPlan(glm::vec3(1.0f), 512, 512ull * 1024 * 1024);
+        check(!over.fits, "512³ при бюджете 512 МБ не влезает");
+        check(over.suggestedRes > 0 && over.suggestedRes < 512,
+              "предложено уменьшение до " + std::to_string(over.suggestedRes));
+        const VoxelPlan retry = voxelPlan(glm::vec3(1.0f), over.suggestedRes, 512ull * 1024 * 1024);
+        check(retry.fits, "предложенное разрешение действительно влезает в тот же бюджет");
+        check(over.bytes > 512ull * 1024 * 1024, "оценка памяти для 512³ больше бюджета");
+    }
+
+    // ---------- 5c. Предупреждение о тонких элементах ----------
+    std::printf("\n--- предупреждение о тонких элементах ---\n");
+    {
+        const std::vector<float> plate = makeBox(glm::vec3(0.3f, 0.003f, 0.2f));
+        voxelize(plate, 32);   // пластина тоньше ячейки
+        check(!g_voxelThinWarning.empty(),
+              "на грубой сетке программа предупреждает, а не молчит: " +
+              (g_voxelThinWarning.empty() ? std::string("(предупреждения нет)")
+                                          : g_voxelThinWarning.substr(0, 60) + "…"));
+    }
+
     // ---------- 6. Большая модель: 500k+ треугольников за секунды ----------
     std::printf("\n--- большая модель (вокселизация за секунды) ---\n");
     {

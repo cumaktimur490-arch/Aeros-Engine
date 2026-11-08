@@ -18,6 +18,7 @@
 #include "forces.h"
 #include "model.h"
 #include "demo_geometry.h"   // v1.34.0 — демо-тела главного меню
+#include "voxel_grid.h"      // v1.36.0 — статус вокселизации (g_voxelBuildError)
 #include "lbm.h"
 #include "atmosphere.h"
 
@@ -31,7 +32,18 @@
 // v1.34.0: вынесено из loadModel(), чтобы демо-тела не дублировали этот путь.
 // -----------------------------------------------------
 static bool applyLoadedGeometry(std::vector<float>& vertices, std::vector<float>& normals,
-                                const std::string& sourceLabel) {
+                                const std::string& sourceLabel, float unitScale = 1.0f) {
+    // v1.36.0 — единицы модели. STL не несёт единиц, поэтому масштаб задаёт
+    // пользователь (см. aeroModelUnits). Демо-тела строятся сразу в метрах и
+    // передают unitScale = 1. Раньше вместо этого координаты |x| > 1e6 молча
+    // обнулялись — модель в миллиметрах расплющивалась в плоскость.
+    if (unitScale != 1.0f && std::isfinite(unitScale) && unitScale > 0.0f) {
+        for (float& c : vertices) c *= unitScale;
+        std::cout << "[Model] Единицы модели: масштаб " << unitScale
+                  << " (габарит приведён к метрам)" << std::endl;
+        DBG_INFO("единицы модели %s: координаты умножены на %.4f", sourceLabel.c_str(), unitScale);
+    }
+
     // Нормализация модели — центрирование и проверка
     minBB = glm::vec3(FLT_MAX);
     maxBB = glm::vec3(-FLT_MAX);
@@ -158,6 +170,19 @@ static bool applyLoadedGeometry(std::vector<float>& vertices, std::vector<float>
     auto tVox1 = std::chrono::high_resolution_clock::now();
     perfVoxelMs = std::chrono::duration<float, std::milli>(tVox1-tVox0).count();
 
+    // v1.36.0 — сетка не построена (не хватает памяти или недопустимый размер):
+    // физику не запускаем. Модель остаётся на экране, причина — в журнале и в
+    // диалоге интерфейса; молчаливого уменьшения сетки больше нет.
+    if (!g_voxelBuildError.empty()) {
+        DBG_ERROR("модель загружена без расчёта: %s", g_voxelBuildError.c_str());
+        initParticles();
+        computeStreamlines();
+        updateVertexColors();
+        computeLiftDrag();
+        updateLiftDragArrows();
+        return true;
+    }
+
     // Авто ref area
     if (aeroAutoRefArea) {
         aeroRefArea = (maxBB.y - minBB.y) * (maxBB.z - minBB.z) * 0.6f;
@@ -218,7 +243,8 @@ bool loadModel(const std::string& path) {
     if (vertices.size() % 9 != 0) {
         std::cerr << "[Model] Warning: vertices not multiple of 9 (triangles)" << std::endl;
     }
-    return applyLoadedGeometry(vertices, normals, path);
+    // v1.36.0 — STL: применяем выбранные единицы (по умолчанию мм → м).
+    return applyLoadedGeometry(vertices, normals, path, aeroModelUnitScale());
 }
 
 // v1.34.0 — демонстрационное тело без файла. Геометрия строится аналитически

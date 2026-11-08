@@ -169,6 +169,9 @@ extern float g_voxMaxX;
 extern float g_voxMaxY;
 extern float g_voxMaxZ;
 extern int   voxelResolution;
+// v1.36.0 — единицы STL: 0 = мм, 1 = см, 2 = м (см. aeroModelUnitScale()).
+extern int   aeroModelUnits;
+float aeroModelUnitScale();
 extern bool  useVoxelCollision;
 
 // --- Performance metrics (v1.6.0+) ---

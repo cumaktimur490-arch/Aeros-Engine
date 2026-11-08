@@ -13,7 +13,9 @@
 #include "cuda_api.h"
 #include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "voxel_grid.h"
-#include "mesh_bvh.h"   // v1.36.0 — BVH вместо перебора всех треугольников
+#include "mesh_bvh.h"
+#include "mem_budget.h"
+#include "debug_log.h"   // v1.36.0 — BVH вместо перебора всех треугольников
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -138,6 +140,79 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
 // иррациональную долю ячейки и решение большинством.
 // =====================================================
 
+// -----------------------------------------------------
+// v1.36.0 — состояние последней вокселизации (см. voxel_grid.h).
+// -----------------------------------------------------
+std::string g_voxelBuildError;
+std::string g_voxelThinWarning;
+int g_voxelSuggestedRes = 0;
+long long g_voxelSolidCells = 0;
+int g_voxelUsedRes = 0;
+bool g_voxelDialogPending = false;
+
+namespace {
+constexpr unsigned long long kBytesPerCell = 224;   // см. комментарий в voxel_grid.h
+constexpr int kMinRes = 8;
+constexpr int kMaxRes = 512;
+
+// Объём замкнутого меша по формуле дивергенции.
+double meshVolumeOf(const std::vector<float>& v) {
+    double sum = 0.0;
+    for (size_t i = 0; i + 8 < v.size(); i += 9) {
+        const double ax = v[i],   ay = v[i+1], az = v[i+2];
+        const double bx = v[i+3], by = v[i+4], bz = v[i+5];
+        const double cx = v[i+6], cy = v[i+7], cz = v[i+8];
+        sum += ax * (by*cz - bz*cy) - ay * (bx*cz - bz*cx) + az * (bx*cy - by*cx);
+    }
+    return std::fabs(sum) / 6.0;
+}
+} // namespace
+
+VoxelPlan voxelPlan(const glm::vec3& size, int res, unsigned long long budgetBytes) {
+    VoxelPlan p;
+    p.requestedRes = res;
+    int r = res;
+    if (r < kMinRes) r = kMinRes;
+    if (r > kMaxRes) r = kMaxRes;
+
+    float sx = size.x, sy = size.y, sz = size.z;
+    if (!(sx > 1e-6f) || !std::isfinite(sx)) sx = 1.0f;
+    if (!(sy > 1e-6f) || !std::isfinite(sy)) sy = 1.0f;
+    if (!(sz > 1e-6f) || !std::isfinite(sz)) sz = 1.0f;
+    const float m = std::max(sx, std::max(sy, sz));
+
+    auto dimensions = [&](int rr, int& nx, int& ny, int& nz) {
+        nx = rr;
+        ny = (int)std::floor(rr * sy / m); if (ny < 4) ny = 4;
+        nz = (int)std::floor(rr * sz / m); if (nz < 4) nz = 4;
+    };
+
+    dimensions(r, p.nx, p.ny, p.nz);
+    p.cells = (long long)p.nx * p.ny * p.nz;
+    p.bytes = (unsigned long long)p.cells * kBytesPerCell;
+    p.fits = (budgetBytes == 0) || (p.bytes <= budgetBytes);
+
+    // Подбираем разрешение, при котором план влезает: кубический корень из
+    // отношения бюджет/нужно, с запасом 0.95 и повторной проверкой (ny/nz
+    // округляются вниз, поэтому оценка не точная).
+    if (!p.fits && budgetBytes > 0) {
+        double scale = std::cbrt((double)budgetBytes / (double)p.bytes) * 0.95;
+        int candidate = (int)(r * scale);
+        for (int guard = 0; guard < 64 && candidate >= kMinRes; ++guard, --candidate) {
+            int nx, ny, nz;
+            dimensions(candidate, nx, ny, nz);
+            const unsigned long long bytes =
+                (unsigned long long)nx * ny * nz * kBytesPerCell;
+            if (bytes <= budgetBytes) {
+                p.suggestedRes = candidate;
+                break;
+            }
+        }
+        if (p.suggestedRes < kMinRes) p.suggestedRes = 0;
+    }
+    return p;
+}
+
 void buildVoxelGrid(const std::vector<float>& verts, int res) {
     if (verts.empty()) {
         std::cerr << "[Voxel] Empty vertices" << std::endl;
@@ -146,7 +221,13 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     if (res < 8) res = 8;
     if (res > 256) res = 256;
 
-    std::cout << "Voxelizing at resolution " << res << "... (v1.19.0 Physics Logic Fix)" << std::endl;
+    g_voxelBuildError.clear();
+    g_voxelThinWarning.clear();
+    g_voxelSuggestedRes = 0;
+    g_voxelSolidCells = 0;
+    g_voxelUsedRes = 0;
+    g_voxelDialogPending = false;
+    std::cout << "Voxelizing at resolution " << res << " (BVH)" << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
     if (!std::isfinite(minBB.x) || !std::isfinite(maxBB.x) || glm::length(maxBB-minBB) < 1e-6f) {
@@ -166,21 +247,36 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     if (sizeX < 1e-6f) sizeX = 1.0f;
     if (sizeY < 1e-6f) sizeY = 1.0f;
     if (sizeZ < 1e-6f) sizeZ = 1.0f;
-    float m = fmaxf(sizeX, fmaxf(sizeY, sizeZ));
 
-    g_voxNx = res;
-    g_voxNy = (int)std::floor(res * sizeY / m); if (g_voxNy < 4) g_voxNy = 4;
-    g_voxNz = (int)std::floor(res * sizeZ / m); if (g_voxNz < 4) g_voxNz = 4;
-
-    long long totalLL = (long long)g_voxNx * g_voxNy * g_voxNz;
-    const long long MAX_CELLS = 10*1024*1024;
-    if (totalLL > MAX_CELLS) {
-        float scale = powf((float)MAX_CELLS / totalLL, 1.0f/3.0f);
-        g_voxNx = (int)std::floor(g_voxNx*scale); if (g_voxNx < 4) g_voxNx = 4;
-        g_voxNy = (int)std::floor(g_voxNy*scale); if (g_voxNy < 4) g_voxNy = 4;
-        g_voxNz = (int)std::floor(g_voxNz*scale); if (g_voxNz < 4) g_voxNz = 4;
-        std::cout << "[Voxel] Clamped to " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz << std::endl;
+    // v1.36.0 — план сетки и ЯВНЫЙ отказ вместо молчаливого уменьшения.
+    const glm::vec3 boxSize(sizeX, sizeY, sizeZ);
+    const unsigned long long budget = membudget::budgetBytes();
+    const VoxelPlan plan = voxelPlan(boxSize, res, budget);
+    if (!plan.fits) {
+        g_voxelSuggestedRes = plan.suggestedRes;
+        char msg[512];
+        std::snprintf(msg, sizeof(msg),
+                      "нужно %s памяти на сетку %dx%dx%d (%lld ячеек), доступно %s",
+                      membudget::formatBytes(plan.bytes).c_str(),
+                      plan.nx, plan.ny, plan.nz, plan.cells,
+                      membudget::formatBytes(budget).c_str());
+        g_voxelBuildError = msg;
+        std::cerr << "[Voxel] " << g_voxelBuildError << " — сетка не построена" << std::endl;
+        if (plan.suggestedRes > 0) {
+            std::cerr << "[Voxel] предложение: уменьшить разрешение до "
+                      << plan.suggestedRes << std::endl;
+            g_voxelBuildError += "; уменьшите разрешение до " +
+                                 std::to_string(plan.suggestedRes);
+        }
+        DBG_ERROR("вокселизация отменена: %s (бюджет памяти %s)", g_voxelBuildError.c_str(),
+                  membudget::formatBytes(budget).c_str());
+        g_voxelDialogPending = true;   // интерфейс покажет выбор: уменьшить или отменить
+        return;
     }
+    g_voxNx = plan.nx;
+    g_voxNy = plan.ny;
+    g_voxNz = plan.nz;
+
 
     float csx = sizeX / g_voxNx;
     float csy = sizeY / g_voxNy;
@@ -191,9 +287,12 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
 
     int total = g_voxNx * g_voxNy * g_voxNz;
     if (total <= 0 || total > 20*1024*1024) {
-        std::cerr << "[Voxel] Invalid total: " << total << std::endl;
+        g_voxelBuildError = "недопустимое число ячеек: " + std::to_string(total);
+        std::cerr << "[Voxel] " << g_voxelBuildError << std::endl;
+        DBG_ERROR("вокселизация: %s", g_voxelBuildError.c_str());
         return;
     }
+    g_voxelUsedRes = g_voxNx;
 
     try {
         g_voxelData.assign(total, 0);
@@ -239,6 +338,38 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                         g_voxelData[(k*g_voxNy + j)*g_voxNx + i] = 1;
                 }
             }
+        }
+    }
+
+    // v1.36.0 — предупреждение о тонких элементах. Сравниваем объём
+    // многогранника (по формуле дивергенции) с объёмом воксельного тела:
+    // если в сетке оказалось меньше 60 % объёма модели, элементы тоньше
+    // ячейки не попали в расчёт. Раньше это выглядело как «Cd = 0» без причины.
+    {
+        long long solid = 0;
+        for (int v : g_voxelData) if (v) ++solid;
+        g_voxelSolidCells = solid;
+        const double meshVol = meshVolumeOf(verts);
+        const double voxVol = (double)solid * (double)csx * (double)csy * (double)csz;
+        if (meshVol > 1e-12 && solid > 0 && voxVol < 0.6 * meshVol) {
+            char msg[512];
+            std::snprintf(msg, sizeof(msg),
+                          "объём тела в сетке %.0f %% от исходного (%.2f из %.2f м³) — "
+                          "элементы тоньше ячейки %.4f м не попали в расчёт; увеличьте разрешение",
+                          100.0 * voxVol / meshVol, voxVol, meshVol,
+                          std::fmin(csx, std::fmin(csy, csz)));
+            g_voxelThinWarning = msg;
+            std::cerr << "[Voxel] " << msg << std::endl;
+            DBG_WARN("вокселизация: %s", msg);
+        } else if (meshVol > 1e-12 && solid == 0) {
+            char msg[512];
+            std::snprintf(msg, sizeof(msg),
+                          "тело не попало в сетку: все элементы тоньше ячейки %.4f м "
+                          "(модель %.2f м³) — увеличьте разрешение",
+                          std::fmin(csx, std::fmin(csy, csz)), meshVol);
+            g_voxelThinWarning = msg;
+            std::cerr << "[Voxel] " << msg << std::endl;
+            DBG_WARN("вокселизация: %s", msg);
         }
     }
 

@@ -126,6 +126,20 @@ int   g_voxNx = 0, g_voxNy = 0, g_voxNz = 0;
 float g_voxMinX = 0, g_voxMinY = 0, g_voxMinZ = 0;
 float g_voxMaxX = 0, g_voxMaxY = 0, g_voxMaxZ = 0;
 int   voxelResolution = 48;
+
+// v1.36.0 — единицы модели STL. STL не хранит единиц вообще: один и тот же файл
+// может быть в мм, см или метрах. Молча угадывать нельзя, поэтому по умолчанию
+// мм (самый частый экспорт из CAD), а выбранное значение видно в интерфейсе и
+// сохраняется в настройках.
+int   aeroModelUnits = 0;   // 0 = мм, 1 = см, 2 = м
+
+float aeroModelUnitScale() {
+    switch (aeroModelUnits) {
+        case 0:  return 0.001f;   // мм → м
+        case 1:  return 0.01f;    // см → м
+        default: return 1.0f;     // м
+    }
+}
 bool  useVoxelCollision = true;
 
 float perfFrameMs = 0.0f;

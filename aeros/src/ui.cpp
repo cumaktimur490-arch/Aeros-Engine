@@ -22,6 +22,7 @@
 #include "particles.h"
 #include "streamlines.h"
 #include "voxel_grid.h"
+#include "mem_budget.h"     // v1.36.0 — оценка памяти и бюджета в интерфейсе
 #include "atmosphere.h"
 #include "test_mode.h"
 #include "lbm.h"
@@ -898,6 +899,94 @@ ImGui::Text("%s: %d | %s: %d | %s: %dx%dx%d",
     _TR("Vertices", "Вершин"), modelVertexCount,
     _TR("Tris", "Треугольников"), modelVertexCount/3,
     _TR("Voxel", "Вокселей"), g_voxNx, g_voxNy, g_voxNz);
+
+// ---------- v1.36.0 — что именно загружено и в каких единицах ----------
+// STL не хранит единиц: раньше программа молча обнуляла координаты > 1e6 и
+// никак не показывала, что приняла. Теперь единицы — явный выбор, а рядом
+// виден фактический размер модели в метрах и сетка, на которой идёт расчёт.
+if (!g_vertices.empty()) {
+    ImGui::Separator();
+    static const char* kUnitNamesRu[] = {"мм", "см", "м"};
+    static const char* kUnitNamesEn[] = {"mm", "cm", "m"};
+    const char* const* unitNames = (currentLanguage == Language::Russian)
+                                       ? kUnitNamesRu : kUnitNamesEn;
+    int units = aeroModelUnits;
+    ImGui::SetNextItemWidth(140.0f * uiFontScale);
+    if (ImGui::Combo(_TR("Model units", "Единицы модели"), &units, unitNames, 3)) {
+        if (units != aeroModelUnits) {
+            aeroModelUnits = units;
+            debugLogAction("модель", "единицы модели: %s", unitNames[units]);
+            // Перечитываем STL с новым масштабом. Демо-тела заданы в метрах —
+            // для них единицы не применяются (loadDemoBody передаёт масштаб 1).
+            if (aeroModelPath.size() > 4 &&
+                (aeroModelPath.rfind(".stl") == aeroModelPath.size() - 4 ||
+                 aeroModelPath.rfind(".STL") == aeroModelPath.size() - 4)) {
+                if (loadModel(aeroModelPath)) {
+                    caeSyncGeometry();
+                } else {
+                    debugLogAction("модель", "не удалось перечитать %s с новыми единицами",
+                                   aeroModelPath.c_str());
+                }
+            }
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", _TR("STL has no units. The selected value is applied when loading the file.",
+                                    "STL не хранит единицы. Выбранное значение применяется при загрузке файла."));
+    }
+    const glm::vec3 modelSize = maxBB - minBB;
+    ImGui::Text(_TR("Size: %.3f x %.3f x %.3f m", "Размер: %.3f x %.3f x %.3f м"),
+                modelSize.x, modelSize.y, modelSize.z);
+
+    // Пресеты точности: пользователь видит ИТОГОВУЮ сетку, память и оценку
+    // времени ДО запуска, а не узнаёт о грубой сетке из журнала после расчёта.
+    {
+        const int presets[3] = {24, 48, 96};
+        const char* labelRu[3] = {"Грубо (24)", "Средне (48)", "Точно (96)"};
+        const char* labelEn[3] = {"Coarse (24)", "Medium (48)", "Fine (96)"};
+        for (int i = 0; i < 3; ++i) {
+            if (i) ImGui::SameLine();
+            if (ImGui::SmallButton(currentLanguage == Language::Russian ? labelRu[i] : labelEn[i])) {
+                voxelResolution = presets[i];
+                if (loadModel(aeroModelPath)) caeSyncGeometry();
+            }
+        }
+        const VoxelPlan plan = voxelPlan(modelSize, voxelResolution, membudget::budgetBytes());
+        // Время оцениваем по замеру: ~0.4 с на 262k ячеек и 1M треугольников
+        // (см. docs/MODELS-2026-10-09.md). Оценка линейна по числу ячеек.
+        const double estSec = 0.4 * (double)plan.cells / 262144.0 *
+                              std::max(1.0, (double)(modelVertexCount / 3) / 1000000.0);
+        ImGui::Text(_TR("Plan: %dx%dx%d, ~%s RAM, ~%.1f s",
+                        "План: %dx%dx%d, ~%s ОЗУ, ~%.1f с"),
+                    plan.nx, plan.ny, plan.nz,
+                    membudget::formatBytes(plan.bytes).c_str(), estSec);
+        if (!plan.fits) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.38f, 1.0f));
+            ImGui::TextWrapped("%s", _TR("This grid does not fit in the memory budget — pick a coarser preset.",
+                                         "Эта сетка не влезает в бюджет памяти — выберите пресет грубее."));
+            ImGui::PopStyleColor();
+        }
+    }
+    ImGui::Text(_TR("Voxel grid: %dx%dx%d (%d across the largest side), %lld solid cells",
+                    "Сетка: %dx%dx%d (разрешение %d по большей стороне), твёрдых ячеек %lld"),
+                g_voxNx, g_voxNy, g_voxNz, g_voxelUsedRes, g_voxelSolidCells);
+    if (!g_voxelThinWarning.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.25f, 1.0f));
+        ImGui::TextWrapped("%s", g_voxelThinWarning.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::Button(_TR("Increase resolution", "Увеличить разрешение"))) {
+            const int next = std::min(512, std::max(8, g_voxelUsedRes * 2));
+            voxelResolution = next;
+            if (loadModel(aeroModelPath)) caeSyncGeometry();
+        }
+    }
+    if (!g_voxelBuildError.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.38f, 1.0f));
+        ImGui::TextWrapped("%s", g_voxelBuildError.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::Separator();
+}
 ImGui::Text("LBM: %dx%dx%d=%d | OpenMP: %d | %s", lbmNx, lbmNy, lbmNz, lbmNx*lbmNy*lbmNz, perfOpenMPThreads,
 #ifdef _OPENMP
     "ON"
@@ -2744,6 +2833,54 @@ if (L.status.valid()) {
 
 // ---------- 5) РАЗДЕЛИТЕЛИ ПАНЕЛЕЙ — тянутся мышью, размеры сохраняются ----------
 uiDockDrawSplitters(uiSt, L);
+
+// ---------- v1.36.0) СЕТКА НЕ ВЛЕЗЛА В ПАМЯТЬ — СПРАШИВАЕМ ----------
+//
+// Раньше в этой ситуации voxel_grid.cpp молча уменьшал сетку и продолжал
+// расчёт: пользователь не знал, что числа получены на другой сетке. Теперь
+// показывается выбор с фактическими числами: сколько нужно, сколько есть и до
+// какого разрешения уменьшить.
+if (g_voxelDialogPending) {
+    ImGui::OpenPopup(_TR("Voxel grid does not fit in memory", "Сетка не помещается в память"));
+    if (ImGui::BeginPopupModal(_TR("Voxel grid does not fit in memory",
+                                   "Сетка не помещается в память"),
+                               nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushTextWrapPos(560.0f * uiFontScale);
+        ImGui::TextWrapped("%s", g_voxelBuildError.c_str());
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", _TR("The model is loaded and visible, but the solver is not running.",
+                                      "Модель загружена и видна, но решатель не запущен."));
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (g_voxelSuggestedRes > 0) {
+            char label[192];
+            std::snprintf(label, sizeof(label),
+                          _TR("Reduce to %d and compute", "Уменьшить до %d и посчитать"),
+                          g_voxelSuggestedRes);
+            if (ImGui::Button(label)) {
+                voxelResolution = g_voxelSuggestedRes;
+                g_voxelDialogPending = false;
+                g_voxelBuildError.clear();
+                debugLogAction("вокселизация", "разрешение уменьшено до %d по выбору пользователя",
+                               voxelResolution);
+                if (!aeroModelPath.empty() && aeroModelPath.rfind("demo:", 0) != 0) {
+                    if (!loadModel(aeroModelPath))
+                        debugLogAction("вокселизация", "повторная загрузка %s не удалась",
+                                       aeroModelPath.c_str());
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+        }
+        if (ImGui::Button(_TR("Leave without computation", "Оставить без расчёта"))) {
+            g_voxelDialogPending = false;
+            debugLogAction("вокселизация", "пользователь отказался уменьшать сетку");
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
 
     // Экранный оверлей журнала (включается галочкой или F9) — виден, даже когда
     // панель свёрнута: удобно снимать видео проблемы.
