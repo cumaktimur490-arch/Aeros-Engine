@@ -57,10 +57,34 @@ jobs:
         # CPU_ONLY: на раннере нет nvcc/NVIDIA GPU. Это отключает только CUDA-
         # ядро — весь C++ (оба рендерера, ImGui, диалоги) собирается как обычно,
         # и именно это ловит платформенные ошибки вроде C2589.
-        run: cmake -S aeros -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAEROS_CPU_ONLY=ON -DAEROS_ENABLE_VULKAN=ON
+        # Вывод уходит в аннотации: скачать полный лог из отчёта о проверке
+        # удаётся не всегда, а причина падения должна быть видна сразу.
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cmake -S aeros -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                 -DAEROS_CPU_ONLY=ON -DAEROS_ENABLE_VULKAN=ON 2>&1 | tee /tmp/configure.log; then
+            tail -40 /tmp/configure.log | while IFS= read -r line; do
+              echo "::error::configure: $line"
+            done
+            exit 1
+          fi
 
       - name: CMake (build)
-        run: cmake --build build --parallel
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cmake --build build --parallel 2>&1 | tee /tmp/build.log; then
+            # Показываем первые ошибки компилятора: в конце лога обычно только
+            # «ninja: build stopped».
+            grep -E "error|Error|ошибка" /tmp/build.log | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -20 /tmp/build.log | while IFS= read -r line; do
+              echo "::error::build: $line"
+            done
+            exit 1
+          fi
 
       - name: Артефакт собран
         shell: bash
