@@ -10,6 +10,7 @@
 #include "ui_layout.h"   // v1.31.0 — F12 переключает состояние компоновки оболочки
 #include "input.h"
 #include "debug_log.h"
+#include "imgui.h"       // v1.34.0 — Esc не должен выходить из программы при открытом диалоге
 #include "timelapse.h"   // v1.26.0 — таймлапс физики (F7/F8)
 #include "forces.h"
 #include "streamlines.h"
@@ -107,8 +108,36 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
 
 void processInput(GLFWwindow* window) {
     if (!window) return;
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
+
+    // v1.34.0 — Esc: при открытом главном меню (стартовом экране) он закрывает
+    // ЭКРАН, а не программу. Раньше одно нажатие Esc выходило из приложения,
+    // даже если пользователь просто хотел убрать стартовый экран.
+    static bool escWasPressed = false;
+    const bool escPressed = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+    if (escPressed && !escWasPressed) {
+        // Открыт диалог (меню, «О программе», справка по клавишам, сообщение)?
+        // Тогда Esc принадлежит интерфейсу. Меню ImGui закрывает сам, модальные
+        // окна закрываются своим обработчиком Esc (см. cae_ui.h / ui.cpp).
+        // Раньше Esc в любом диалоге завершал программу — вместе с закрытием
+        // окна терялись несохранённое исследование и настройки сессии.
+        const bool popupOpen = ImGui::GetCurrentContext() != nullptr &&
+            ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+        if (aeroStartScreen) {
+            aeroStartScreen = false;
+            debugLogAction("клавиша", "Esc — закрыт стартовый экран");
+        } else if (!popupOpen) {
+            // Выход по-прежнему одним нажатием: это ожидаемое поведение в 3D-сцене.
+            glfwSetWindowShouldClose(window, true);
+        }
+    }
+    escWasPressed = escPressed;
+
+    // v1.34.0 — пока открыт стартовый экран или интерфейс забирает клавиатуру
+    // (поле ввода, комбо, переименование), клавиши камеры и функциональные
+    // хоткеи не обрабатываются. Раньше набор имени материала в поле ввода
+    // одновременно вёл камеру вперёд (W/S/A/D) — текст и камера спорили за
+    // одну клавиатуру.
+    if (aeroStartScreen || aeroUiWantsKeyboard) return;
 
     float cameraSpeed = 10.0f * deltaTime * cameraSpeedMultiplier;
     if (!std::isfinite(cameraSpeed) || cameraSpeed < 0) cameraSpeed = 0.1f;

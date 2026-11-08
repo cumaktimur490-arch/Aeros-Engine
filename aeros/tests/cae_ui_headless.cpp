@@ -45,6 +45,9 @@ extern "C" void setVoxelData(const int*, const float*, int, int, int, float, flo
 extern "C" int cudaConsumeError(char* buf, int sz) { if (buf && sz > 0) buf[0] = 0; return 0; }
 // загрузка STL живёт в model.cpp и требует OpenGL: в стенде модели нет
 bool loadModel(const std::string& path) { (void)path; return false; }
+// v1.34.0 — демо-тела тоже живут в model.cpp; в стенде они не загружаются.
+// Проверяются только пункты меню (они должны быть неактивны/безопасны).
+bool loadDemoBody(int kind) { (void)kind; return false; }
 // Диалоги файлов в тесте возвращают заданные пути, чтобы сохранение и загрузка
 // исследования проверялись по-настоящему, а не «отменены пользователем».
 static std::string g_openPath;

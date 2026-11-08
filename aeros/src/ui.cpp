@@ -34,6 +34,8 @@
 // и редактор исследований (cae_ui.h). Модули разделены намеренно: оболочка окна,
 // модель исследования, сетка, решатели и просмотр результатов — разные файлы.
 #include "cae_ui.h"
+#include "start_screen.h"   // v1.34.0 — главное меню (стартовый экран)
+#include "recent_files.h"   // v1.34.0 — недавние модели
 #include "fsr.h"
 #include "framegen.h"
 #include "interesting.h"
@@ -233,7 +235,7 @@ static void drawTimelapsePanel() {
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("%s", _TR("Nothing recorded yet. Press F7 or enable background history.",
                               "Записи ещё нет. Нажмите F7 или включите фоновую историю."));
-        if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
+        if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
     ImGui::SameLine();
@@ -754,7 +756,28 @@ const ImGuiWindowFlags dockFlags =
 (void)dockFlags;   // флаги теперь внутри ui_dock.h (uiDockPanelFlags)
 
 UiLayoutState& uiSt = uiLayoutState();
-caeHandleShortcuts(uiSt);                       // Ctrl+M, Ctrl+1/2/3, Ctrl+Enter
+
+// v1.34.0 — интерфейс сообщает движку, что забирает клавиатуру: набор текста в
+// поле ввода не должен одновременно двигать камеру (WASD) — раньше двигал.
+aeroUiWantsKeyboard = ImGui::GetIO().WantTextInput;
+
+// Главное меню: Esc закрывает экран (а не программу), Ctrl+O открывает модель
+// и из экрана, и из оболочки. Пока экран открыт, глобальные хоткеи оболочки
+// (Ctrl+1/2/3, Ctrl+Enter) не обрабатываются: они относятся к сцене под ним.
+if (aeroStartScreen) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        aeroStartScreen = false;
+        debugLogAction("главное меню", "закрыто клавишей Esc");
+    }
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+        if (startscreen::perform(startscreen::Action::OpenModel, uiSt)) aeroStartScreen = false;
+    }
+} else {
+    caeHandleShortcuts(uiSt);                   // Ctrl+M, Ctrl+1/2/3, Ctrl+Enter
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+        if (startscreen::perform(startscreen::Action::OpenModel, uiSt)) aeroStartScreen = false;
+    }
+}
 const UiLayoutRects L = uiLayoutCompute(uiSt, W, H);
 const float uiFontScale = glm::clamp(uiSt.fontScale, 0.7f, 2.0f);
 caeSyncLegacyLayout(uiSt);                      // прежние ui* флаги — зеркала
@@ -911,6 +934,16 @@ if (uiSelectedLeaf == 1 && ImGui::CollapsingHeader(_TR("Language / Язык", "�
         std::cout << "[Lang] Switched to: " << getCurrentLanguageName() << std::endl;
     }
     ImGui::Text("%s: %s", _TR("Current", "Текущий"), getCurrentLanguageName());
+    ImGui::Separator();
+    // v1.34.0 — стартовый экран: как открыть сейчас и показывать ли при запуске.
+    if (ImGui::Button(_TR("Open main menu now", "Открыть главное меню сейчас"))) {
+        aeroStartScreen = true;
+        debugLogAction("настройки", "стартовый экран открыт вручную");
+    }
+    ImGui::Checkbox(_TR("Show main menu on startup", "Показывать главное меню при запуске"),
+                    &aeroStartScreenOnStartup);
+    ImGui::TextDisabled("%s", _TR("The start screen lists recent models and demo bodies; Esc closes it.",
+                                  "Стартовый экран показывает недавние модели и демо-тела; Esc его закрывает."));
     ImGui::Separator();
     ImGui::TextWrapped("%s", _TR(
         "All UI elements support both English and Russian. Switch language anytime.",
@@ -2669,4 +2702,9 @@ uiDockDrawSplitters(uiSt, L);
 
     // v1.26.0 — окно таймлапса физики (графики истории и снимки поля давления)
     drawTimelapseWindow();
+
+    // v1.34.0 — ГЛАВНОЕ МЕНЮ рисуется последним: это полноэкранный оверлей,
+    // поэтому он перекрывает панели и первым получает мышь. Оболочка под ним
+    // продолжает строиться — при закрытии экрана состояние не пересоздаётся.
+    startscreen::draw(uiSt);
 }

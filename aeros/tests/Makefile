@@ -9,6 +9,9 @@
 #   make settings    только реестр настроек: сохранение, загрузка, сброс, профили (v1.32.0)
 #   make vulkan      только Vulkan-бэкенд: выбор swapchain/формата/режима, SPIR-V, геометрия сцены (v1.33.0)
 #   make particles   только физика частиц: устойчивость шага, терминальная скорость, единицы SDF (v1.34.0)
+#   make startup     только главное меню: стартовый экран, недавние модели, демо-тела (v1.34.0)
+#   make glyphs      покрытие глифов: все символы интерфейса есть в шрифте (v1.34.0)
+#   make hotkeys     таблица горячих клавиш совпадает с обработчиками (v1.34.0)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -20,8 +23,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui settings vulkan particles clean
-all: timelapse lbm physclock fem ui settings vulkan particles
+.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys clean
+all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -71,8 +74,8 @@ ui:
 	/tmp/aeros-test-ui
 
 clean:
-	rm -f /tmp/aeros-test-timelapse /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
-	      /tmp/aeros-test-fem /tmp/aeros-test-particles
+	rm -f /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
+	      /tmp/aeros-test-fem /tmp/aeros-test-particles /tmp/aeros-test-startup
 
 # Физика частиц (v1.34.0). Линкуется с настоящим particles.cpp: проверяется
 # именно тот код, который считает частицы в приложении. Заглушки — OpenGL/CUDA.
@@ -81,6 +84,31 @@ particles:
 	    $(SRC)/voxel_grid.cpp $(SRC)/lbm.cpp $(SRC)/atmosphere.cpp $(COMMON) \
 	    -o /tmp/aeros-test-particles -pthread
 	/tmp/aeros-test-particles
+
+# Главное меню (v1.34.0): стартовый экран рисуется настоящим ImGui, поэтому
+# ядро ImGui подключается к сборке. Движок не линкуется: загрузчики модели и
+# диалоги заменены управляемыми заглушками — проверяются действия экрана,
+# список недавних моделей и геометрия демо-тел.
+# Покрытие глифов: тест читает исходники интерфейса, вытаскивает все строковые
+# литералы и проверяет, что каждый не-ASCII символ есть и в таблице диапазонов
+# aerosUiGlyphRanges(), и в самом файле шрифта.
+glyphs:
+	g++ $(CXXFLAGS) -I$(IMGUI) ui_glyphs.cpp -o /tmp/aeros-test-glyphs
+	/tmp/aeros-test-glyphs $(SRC)
+
+# Таблица горячих клавиш: каждая строка обязана иметь обработчик в исходниках,
+# и каждая функциональная клавиша обязана быть в таблице.
+hotkeys:
+	g++ $(CXXFLAGS) -I$(IMGUI) hotkeys_headless.cpp -o /tmp/aeros-test-hotkeys
+	/tmp/aeros-test-hotkeys $(SRC)
+
+startup:
+	g++ $(CXXFLAGS) -I$(IMGUI) start_screen_headless.cpp \
+	    $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_widgets.cpp \
+	    $(IMGUI)/imgui_tables.cpp $(COMMON) $(SRC)/timelapse.cpp $(SRC)/lbm.cpp \
+	    $(SRC)/flow_field.cpp $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp \
+	    -o /tmp/aeros-test-startup -pthread
+	/tmp/aeros-test-startup
 
 # Vulkan-бэкенд (v1.33.0) — чистые модули: выбор swapchain/формата/режима показа,
 # проверка SPIR-V, раскладка вершины и геометрия сцены. GPU и Vulkan SDK не нужны:

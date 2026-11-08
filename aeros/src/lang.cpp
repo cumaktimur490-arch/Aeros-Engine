@@ -1,4 +1,5 @@
 #include "lang.h"
+#include "ui_font_ranges.h"   // v1.34.0 — полный набор глифов интерфейса
 #include "version.h"
 #include "imgui.h"
 
@@ -207,7 +208,7 @@ void initLocalization() {
         if (attrs == INVALID_FILE_ATTRIBUTES) continue;
 
         std::cout << "[Lang] Trying to load font: " << fontPaths[i] << std::endl;
-        ImFont* font = io.Fonts->AddFontFromFileTTF(fontPaths[i], 18.0f, nullptr, io.Fonts->GetGlyphRangesCyrillic());
+        ImFont* font = io.Fonts->AddFontFromFileTTF(fontPaths[i], 18.0f, nullptr, aerosUiGlyphRanges());
         if (font) {
             std::cout << "[Lang] Loaded font with Cyrillic: " << fontPaths[i] << std::endl;
             // Также добавляем дефолтный для латиницы как fallback? ImGui мержит автоматически если MergeMode
@@ -237,7 +238,7 @@ void initLocalization() {
         if (!f) continue;
         fclose(f);
         std::cout << "[Lang] Trying Linux font: " << linuxFonts[i] << std::endl;
-        ImFont* font = io.Fonts->AddFontFromFileTTF(linuxFonts[i], 18.0f, nullptr, io.Fonts->GetGlyphRangesCyrillic());
+        ImFont* font = io.Fonts->AddFontFromFileTTF(linuxFonts[i], 18.0f, nullptr, aerosUiGlyphRanges());
         if (font) {
             std::cout << "[Lang] Loaded Linux font with Cyrillic: " << linuxFonts[i] << std::endl;
             loaded = true;
@@ -250,6 +251,9 @@ void initLocalization() {
     }
 #endif
 
+    // v1.34.0 — набор глифов включает типографскую пунктуацию (— … «» → ≈),
+    // которой нет в GetGlyphRangesCyrillic(). Без неё эти символы рисовались
+    // пустыми ромбиками во всём интерфейсе.
     // Важно: не билдим атлас здесь, ImGui_ImplOpenGL3 сделает это позже
     std::cout << "[Lang] Localization initialized, fonts: " << io.Fonts->Fonts.Size << std::endl;
 }

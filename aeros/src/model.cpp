@@ -17,34 +17,21 @@
 #include "streamlines.h"
 #include "forces.h"
 #include "model.h"
+#include "demo_geometry.h"   // v1.34.0 — демо-тела главного меню
 #include "lbm.h"
 #include "atmosphere.h"
 
 // =====================================================
 // Загрузка модели v1.8.0 — исправлено + улучшения
 // =====================================================
-bool loadModel(const std::string& path) {
-    std::vector<float> vertices, normals;
-    if (!loadSTL(path, vertices, normals)) {
-        std::cerr << "[Model] Failed to load STL: " << path << std::endl;
-        DBG_ERROR("не удалось прочитать STL-файл: %s", path.c_str());
-        return false;
-    }
-    if (vertices.empty() || normals.empty()) {
-        std::cerr << "[Model] Empty model" << std::endl;
-        DBG_ERROR("модель пуста: %s (в файле нет треугольников)", path.c_str());
-        return false;
-    }
-    if (vertices.size() != normals.size()) {
-        std::cerr << "[Model] Vertex/normal size mismatch" << std::endl;
-        DBG_ERROR("несовпадение размеров вершин (%zu) и нормалей (%zu) в %s",
-                  vertices.size(), normals.size(), path.c_str());
-        return false;
-    }
-    if (vertices.size() % 9 != 0) {
-        std::cerr << "[Model] Warning: vertices not multiple of 9 (triangles)" << std::endl;
-    }
-
+// -----------------------------------------------------
+// Общая часть загрузки: принять готовые вершины/нормали (из STL или
+// аналитического демо-тела) и подготовить всю сцену — габарит, камеру,
+// видеопамять, воксельную сетку, SDF, решатель, частицы, линии тока.
+// v1.34.0: вынесено из loadModel(), чтобы демо-тела не дублировали этот путь.
+// -----------------------------------------------------
+static bool applyLoadedGeometry(std::vector<float>& vertices, std::vector<float>& normals,
+                                const std::string& sourceLabel) {
     // Нормализация модели — центрирование и проверка
     minBB = glm::vec3(FLT_MAX);
     maxBB = glm::vec3(-FLT_MAX);
@@ -59,7 +46,7 @@ bool loadModel(const std::string& path) {
     }
     if (!hasValid) {
         std::cerr << "[Model] No valid vertices" << std::endl;
-        DBG_ERROR("в модели %s нет ни одной конечной вершины (все NaN/Inf)", path.c_str());
+        DBG_ERROR("в модели %s нет ни одной конечной вершины (все NaN/Inf)", sourceLabel.c_str());
         return false;
     }
     center = (minBB + maxBB) * 0.5f;
@@ -149,13 +136,13 @@ bool loadModel(const std::string& path) {
     }
     modelVertexCount = (int)(vertices.size() / 3);
 
-    std::cout << "[Model] Loaded: " << path << " verts=" << modelVertexCount 
+    std::cout << "[Model] Loaded: " << sourceLabel << " verts=" << modelVertexCount 
               << " tris=" << modelVertexCount/3 
               << " BB=[" << minBB.x << "," << minBB.y << "," << minBB.z << "]-["
               << maxBB.x << "," << maxBB.y << "," << maxBB.z << "]"
               << " maxDim=" << maxDim << std::endl;
-    DBG_INFO("модель прочитана: %s, вершин %d, треугольников %d, габарит %.4f",
-             path.c_str(), modelVertexCount, modelVertexCount / 3, maxDim);
+    DBG_INFO("модель принята: %s, вершин %d, треугольников %d, габарит %.4f",
+             sourceLabel.c_str(), modelVertexCount, modelVertexCount / 3, maxDim);
 
     // v1.33.0 — VAO земли/сетки/габарита/осей нужны только OpenGL-ветке.
     // Vulkan строит ту же геометрию сам (vulkan_scene.cpp, scene_geometry.h).
@@ -209,3 +196,48 @@ bool loadModel(const std::string& path) {
              useCUDA ? "CUDA" : "CPU");
     return true;
 }
+
+bool loadModel(const std::string& path) {
+    std::vector<float> vertices, normals;
+    if (!loadSTL(path, vertices, normals)) {
+        std::cerr << "[Model] Failed to load STL: " << path << std::endl;
+        DBG_ERROR("не удалось прочитать STL-файл: %s", path.c_str());
+        return false;
+    }
+    if (vertices.empty() || normals.empty()) {
+        std::cerr << "[Model] Empty model" << std::endl;
+        DBG_ERROR("модель пуста: %s (в файле нет треугольников)", path.c_str());
+        return false;
+    }
+    if (vertices.size() != normals.size()) {
+        std::cerr << "[Model] Vertex/normal size mismatch" << std::endl;
+        DBG_ERROR("несовпадение размеров вершин (%zu) и нормалей (%zu) в %s",
+                  vertices.size(), normals.size(), path.c_str());
+        return false;
+    }
+    if (vertices.size() % 9 != 0) {
+        std::cerr << "[Model] Warning: vertices not multiple of 9 (triangles)" << std::endl;
+    }
+    return applyLoadedGeometry(vertices, normals, path);
+}
+
+// v1.34.0 — демонстрационное тело без файла. Геометрия строится аналитически
+// (demo_geometry.h), дальше — ТОТ ЖЕ путь, что у STL: центрирование, проверка
+// нормалей, воксельная сетка, SDF, LBM, частицы, линии тока. Отдельной
+// «упрощённой» ветки нет намеренно: иначе демо-режим проверял бы не тот код,
+// который работает с настоящими моделями.
+bool loadDemoBody(int kind) {
+    demogeom::Body b = demogeom::Body::Sphere;
+    if (kind == (int)demogeom::Body::Wing)    b = demogeom::Body::Wing;
+    if (kind == (int)demogeom::Body::Airship) b = demogeom::Body::Airship;
+
+    std::vector<float> vertices, normals;
+    if (!demogeom::build(b, vertices, normals)) {
+        DBG_ERROR("не удалось построить демонстрационное тело (вид %d)", kind);
+        return false;
+    }
+    char label[128];
+    std::snprintf(label, sizeof(label), "demo:%s", demogeom::nameEn(b));
+    return applyLoadedGeometry(vertices, normals, label);
+}
+

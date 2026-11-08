@@ -44,6 +44,9 @@
 #include "debug_log.h"
 #include "timelapse.h"      // самописец (пункты меню «Отладка»)
 #include "model.h"          // loadModel
+#include "demo_geometry.h"   // v1.34.0 — демо-тела
+#include "recent_files.h"
+#include "hotkeys.h"    // v1.34.0 — недавние модели
 #include "stl_loader.h"     // openFileDialog
 #include "vulkan_renderer.h"// saveFileDialogNative
 #include "forces.h"         // updateVertexColors / uploadVertexColorsToGPU
@@ -1765,6 +1768,34 @@ inline void caeDrawBottomMessages() {
 }
 
 // -----------------------------------------------------
+// v1.34.0 — открыть модель по известному пути: загрузка, сообщения и список
+// недавних в одном месте. Пункты меню «Недавние модели» и «Демо-тела»
+// вызывают ровно это, поэтому ведут себя одинаково (и одинаково логируются).
+// -----------------------------------------------------
+inline bool caeOpenModelPath(const std::string& path) {
+    if (path.empty()) return false;
+    if (!loadModel(path)) {
+        caeLog(2, "геометрия", "не удалось загрузить модель: %s", path.c_str());
+        return false;
+    }
+    recentfiles::add(path, recentfiles::defaultPath(), 6);
+    caeLog(0, "геометрия", "модель загружена: %s (вершин %d)", path.c_str(), modelVertexCount);
+    return true;
+}
+
+inline bool caeLoadDemoBody(int kind) {
+    if (!loadDemoBody(kind)) {
+        caeLog(2, "геометрия", "не удалось построить демо-тело (вид %d)", kind);
+        return false;
+    }
+    const char* name = (currentLanguage == Language::Russian)
+                           ? demogeom::nameRu((demogeom::Body)kind)
+                           : demogeom::nameEn((demogeom::Body)kind);
+    caeLog(0, "геометрия", "загружено демо-тело «%s» (%d вершин)", name, modelVertexCount);
+    return true;
+}
+
+// -----------------------------------------------------
 // Главное меню оболочки. Все пункты — реальные действия; неработающих режимов
 // в меню нет (модальный/нестационарный анализы появятся, когда будут готовы).
 // -----------------------------------------------------
@@ -1775,17 +1806,46 @@ inline void caeDrawMainMenu(UiLayoutState& st) {
     if (ImGui::BeginMenuBar()) {
         // ---------- ФАЙЛ ----------
         if (ImGui::BeginMenu(_TR("File", "Файл"))) {
-            if (ImGui::MenuItem(_TR("Open model (STL)…", "Открыть модель (STL)…"), nullptr)) {
-                std::string p = openFileDialog();
-                if (!p.empty()) {
-                    if (loadModel(p)) {
-                        caeLog(0, "геометрия", "модель загружена: %s (вершин %d)", p.c_str(), modelVertexCount);
-                        caeSyncGeometry();
-                        st.workspace = 0;
-                    } else {
-                        caeLog(2, "геометрия", "не удалось загрузить модель: %s", p.c_str());
+            if (ImGui::MenuItem(_TR("Open model (STL)…", "Открыть модель (STL)…"), "Ctrl+O")) {
+                const std::string p = openFileDialog();
+                if (p.empty()) caeLog(1, "геометрия", "файл не выбран — открытие отменено");
+                else if (caeOpenModelPath(p)) { caeSyncGeometry(); st.workspace = 0; }
+            }
+            // v1.34.0 — демо-тела: посмотреть обтекание, не ища STL на диске.
+            if (ImGui::BeginMenu(_TR("Demo bodies", "Демо-тела"))) {
+                for (int k = 0; k < demogeom::count(); ++k) {
+                    const char* nm = (currentLanguage == Language::Russian)
+                                         ? demogeom::nameRu((demogeom::Body)k)
+                                         : demogeom::nameEn((demogeom::Body)k);
+                    if (ImGui::MenuItem(nm, nullptr)) {
+                        if (caeLoadDemoBody(k)) { caeSyncGeometry(); st.workspace = 0; }
                     }
                 }
+                ImGui::EndMenu();
+            }
+            // v1.34.0 — недавние модели (список ведёт recent_files.h).
+            {
+                const std::vector<std::string> rec = recentfiles::load(recentfiles::defaultPath(), 6);
+                if (ImGui::BeginMenu(_TR("Recent models", "Недавние модели"), !rec.empty())) {
+                    for (size_t i = 0; i < rec.size(); ++i) {
+                        const std::string shortName = recentfiles::shortName(rec[i]);
+                        ImGui::PushID((int)i);
+                        if (ImGui::MenuItem(shortName.c_str())) {
+                            if (caeOpenModelPath(rec[i])) { caeSyncGeometry(); st.workspace = 0; }
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", rec[i].c_str());
+                        ImGui::PopID();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem(_TR("Clear list", "Очистить список")))
+                        recentfiles::clear(recentfiles::defaultPath());
+                    ImGui::EndMenu();
+                }
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem(_TR("Main menu (start screen)…", "Главное меню (стартовый экран)…"), nullptr)) {
+                aeroStartScreen = true;
+                caeLog(0, "интерфейс", "открыт стартовый экран");
             }
             ImGui::Separator();
             if (ImGui::MenuItem(_TR("Save study…", "Сохранить исследование…"), nullptr)) caeSaveStudy();
@@ -1966,6 +2026,8 @@ inline void caeDrawMainMenu(UiLayoutState& st) {
                 ImGui::OpenPopup("AerosAbout");
             if (ImGui::MenuItem(_TR("Method and limitations", "Методика и ограничения"), nullptr))
                 ImGui::OpenPopup("AerosLimits");
+            if (ImGui::MenuItem(_TR("Keyboard shortcuts", "Горячие клавиши"), nullptr))
+                ImGui::OpenPopup("AerosHotkeys");
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();
@@ -1981,7 +2043,8 @@ inline void caeDrawMainMenu(UiLayoutState& st) {
                                      "thermal analyses, results post-processing.",
                                      "Среда AoS CAD/CAE: редактор геометрии, CFD (LBM), прочностной и тепловой анализ "
                                      "МКЭ, постобработка результатов."));
-        if (ImGui::Button(_TR("Close", "Закрыть"), ImVec2(-1, 0))) ImGui::CloseCurrentPopup();
+        if (ImGui::Button(_TR("Close", "Закрыть"), ImVec2(-1, 0)) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal("AerosLimits", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -2020,9 +2083,12 @@ inline void caeDrawMainMenu(UiLayoutState& st) {
                                     "Точность не заявляется: программа показывает невязку, число итераций и "
                                     "предупреждения; сходимость по сетке проверяет пользователь."));
         ImGui::EndChild();
-        if (ImGui::Button(_TR("Close", "Закрыть"), ImVec2(-1, 0))) ImGui::CloseCurrentPopup();
+        if (ImGui::Button(_TR("Close", "Закрыть"), ImVec2(-1, 0)) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+    // v1.34.0 — полный список горячих клавиш (единая таблица hotkeys.h).
+    hotkeys::drawModal();
 }
 
 // -----------------------------------------------------
