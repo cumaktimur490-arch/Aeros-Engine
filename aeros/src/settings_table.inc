@@ -94,7 +94,7 @@ SET_X("lbmEnabled", (lbmParams.enabled), (lbmParams.enabled) = (v > 0.5), 0, 1, 
 SET_X("lbmTau", (double)(lbmParams.tau), (lbmParams.tau) = (float)v, 0.5, 2, 0.6)
 SET_X("lbmStepsPerFrame", (double)(lbmParams.stepsPerFrame), (lbmParams.stepsPerFrame) = (int)v, 1, 64, 3.0)
 SET_X("lbmAutoViscosity", (double)(lbmParams.autoViscosity ? 1 : 0), (lbmParams.autoViscosity) = (v > 0.5), 0, 1, 1.0)
-SET_X("lbmDomainPadding", (double)(lbmParams.domainPadding), (lbmParams.domainPadding) = (float)v, 0, 1, 1.0)
+SET_X("lbmDomainPadding", (double)(lbmParams.domainPadding), (lbmParams.domainPadding) = (float)v, 0.05, 1, 0.25)
 SET_B("aeroAdaptiveLBM", aeroAdaptiveLBM, 0, 1, 1.0)
 SET_B("aeroUseRK4Particles", aeroUseRK4Particles, 0, 1, 1.0)
 SET_I("voxelResolution", voxelResolution, 4, 512, 48.0)

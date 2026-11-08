@@ -2069,6 +2069,10 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     if (lbmParams.useGround) ImGui::SliderFloat(_TR("Ground Height##lbm", "Высота земли##lbm"), &lbmParams.groundHeight, -2.0f, 2.0f, "%.2f");
     ImGui::Separator();
     ImGui::Text("LBM Grid: %dx%dx%d = %d %s", lbmNx, lbmNy, lbmNz, lbmNx*lbmNy*lbmNz, _TR("cells", "ячеек"));
+    if (lbmNx*lbmNy*lbmNz > 2000000)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s",
+                           _TR("Large domain: cost grows with cells; lower Domain size for interactive rate",
+                               "Большой домен: время шага растёт с числом ячеек; уменьшите размер домена для интерактивности"));
     if (lbmBlockageRatio > 0.0f) {
         if (lbmBlockageRatio > 0.05f)
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s: %.1f%% (>5%%)",
