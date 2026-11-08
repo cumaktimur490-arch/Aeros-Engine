@@ -87,6 +87,11 @@ extern unsigned int particleVBO_pos;
 extern unsigned int particleVBO_col;
 extern std::vector<float> particlePositions;
 extern std::vector<float> particleColors;
+// v1.34.0 — скорость частицы, живущая между кадрами. Раньше её не было вообще:
+// каждый кадр скорость заново полагалась равной 0.9 скорости потока в точке,
+// поэтому инерция и релаксация частицы не существовали, а интегратор получал
+// заведомо «угнанное» начальное условие.
+extern std::vector<float> particleVelocities;
 extern int particleDrawCount;
 
 // --- Линии тока ---

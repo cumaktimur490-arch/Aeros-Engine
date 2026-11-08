@@ -73,6 +73,7 @@ unsigned int particleVBO_pos = 0, particleVBO_col = 0;
 std::vector<float> streamlineCpuVerts;
 std::vector<float> particlePositions;
 std::vector<float> particleColors;
+std::vector<float> particleVelocities;
 int particleDrawCount = 0;
 
 int   numStreamlines     = 24;
@@ -171,7 +172,9 @@ bool aeroExportCSV = false;
 bool aeroSaveSettings = true;
 bool aeroShowPerfGraph = false;
 float aeroMachThreshold = 0.3f;
-bool aeroUseRK4Particles = true;
+// v1.34.0 — по умолчанию аналитический шаг (устойчив при dt >> tau_p).
+// RK4 остаётся как альтернатива, но для аэрозоля 20 мкм требует подшагов.
+bool aeroUseRK4Particles = false;
 bool aeroShowTotalPressure = false;
 int aeroScreenshotFormat = 0;
 bool aeroShowMemoryUsage = false;

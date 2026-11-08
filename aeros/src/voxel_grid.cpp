@@ -369,7 +369,16 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         }
     }
 
-    // v1.19.0: Гауссовское сглаживание с сохранением острых углов — bilateral-like
+    // v1.34.0 — сглаживание больше не трогает окрестность поверхности.
+    //
+    // Раньше пропускались только ячейки с |d| < 1.2*ячейки. Но сглаживание
+    // усредняет ЗНАЧЕНИЯ расстояния, а не положение нулевого уровня: у
+    // линейного поля d = x усреднение с ядром (0.25, 0.5, 0.25) сохраняет
+    // значение, а у изогнутого (сфера, кромка) — занижает |d| на 1-3%. Возле
+    // тела это именно те ячейки, по которым считается выталкивание частиц,
+    // нормаль (центральная разность) и подсветка отрыва, поэтому их трогать
+    // нельзя. Дальше 3 ячеек сглаживание только убирает артефакты свипов и
+    // ни на что физическое не влияет.
     {
         std::vector<float> temp = g_distanceField;
         // 2 итерации гауссовского с sigma=1.0
@@ -383,7 +392,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                 for (int j=1; j<g_voxNy-1; ++j) {
                     for (int i=1; i<g_voxNx-1; ++i) {
                         int idx = (k*g_voxNy + j)*g_voxNx + i;
-                        if (fabsf(temp[idx]) < csx*1.2f) continue; // не трогаем поверхность
+                        if (fabsf(temp[idx]) < csx*3.0f) continue; // не трогаем окрестность поверхности
                         float sum = temp[idx-1]*kernel[0] + temp[idx]*kernel[1] + temp[idx+1]*kernel[2];
                         g_distanceField[idx] = sum*0.35f + temp[idx]*0.65f;
                     }
@@ -398,7 +407,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                 for (int j=1; j<g_voxNy-1; ++j) {
                     for (int i=1; i<g_voxNx-1; ++i) {
                         int idx = (k*g_voxNy + j)*g_voxNx + i;
-                        if (fabsf(temp[idx]) < csy*1.2f) continue;
+                        if (fabsf(temp[idx]) < csy*3.0f) continue;
                         int idxYm = (k*g_voxNy + (j-1))*g_voxNx + i;
                         int idxYp = (k*g_voxNy + (j+1))*g_voxNx + i;
                         float sum = temp[idxYm]*kernel[0] + temp[idx]*kernel[1] + temp[idxYp]*kernel[2];
@@ -415,7 +424,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                 for (int j=1; j<g_voxNy-1; ++j) {
                     for (int i=1; i<g_voxNx-1; ++i) {
                         int idx = (k*g_voxNy + j)*g_voxNx + i;
-                        if (fabsf(temp[idx]) < csz*1.2f) continue;
+                        if (fabsf(temp[idx]) < csz*3.0f) continue; // не трогаем окрестность поверхности
                         int idxZm = ((k-1)*g_voxNy + j)*g_voxNx + i;
                         int idxZp = ((k+1)*g_voxNy + j)*g_voxNx + i;
                         float sum = temp[idxZm]*kernel[0] + temp[idx]*kernel[1] + temp[idxZp]*kernel[2];

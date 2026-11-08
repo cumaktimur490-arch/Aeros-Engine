@@ -157,6 +157,8 @@ static bool exportForcesCSV(const std::string& path) {
     f << "LBM_Enabled," << (lbmParams.enabled ? 1 : 0) << ",\n";
     f << "LBM_Steps," << lbmCurrentStep << ",\n";
     f << "LBM_Reynolds," << lbmReynolds << ",\n";
+    f << "LBM_Reynolds_Lattice," << lbmReynoldsLB << ",\n";
+    f << "LBM_Tau," << lbmParams.tau << ",\n";
     f << "LBM_TKE," << lbmTKE << ",\n";
     return f.good();
 }
@@ -310,8 +312,12 @@ static void collectDebugFacts() {
                       physClock.saturated ? ", ОТСТАВАНИЕ (не успеваем)" : "");
         debugLogAddFact("Физика", "Модельное время", buf);
     }
-    std::snprintf(buf, sizeof(buf), "rho %.5f, vmax %.4f м/с, TKE %.5f, Re %.1f, сходимость %s",
-                  lbmAvgRho, lbmMaxVelocityWorld, lbmTKE, lbmReynolds,
+    // v1.34.0 — оба числа Рейнольдса рядом: физическое (что обтекается) и
+    // решёточное (что реально разрешает сетка). Расхождение — ограничение
+    // метода, и оно не должно выглядеть как одно и то же число.
+    std::snprintf(buf, sizeof(buf),
+                  "rho %.5f, vmax %.4f м/с, TKE %.5f, Re_phys %.1f, Re_LB %.1f (tau %.3f), сходимость %s",
+                  lbmAvgRho, lbmMaxVelocityWorld, lbmTKE, lbmReynolds, lbmReynoldsLB, lbmParams.tau,
                   lbmConverged ? "достигнута" : "нет");
     debugLogAddFact("Физика", "Состояние LBM", buf);
     std::snprintf(buf, sizeof(buf), "подъёмная (%.3f; %.3f; %.3f), сопротивление (%.3f; %.3f; %.3f), момент (%.3f; %.3f; %.3f)",

@@ -41,49 +41,69 @@ inline glm::vec3 safeVelocity(const glm::vec3& pos, const FlowParams& prm) {
     return v;
 }
 
-// RK4 с физичной скоростью
+// RK4 с физичной скоростью.
+//
+// v1.34.0 — убраны досрочные выходы из середины стадии. Раньше, если на
+// промежуточной стадии скорость оказывалась почти нулевой (рядом с точкой
+// торможения), функция возвращала p + k1 или p + k2 — то есть не результат
+// RK4, а один из промежуточных векторов. У поверхности это давало
+// систематический сдвиг линий тока в сторону потока. Теперь при вырожденной
+// стадии берётся скорость предыдущей стадии (предел непрерывности), и
+// комбинация RK4 остаётся корректной.
 inline glm::vec3 rk4StepPhys(const glm::vec3& p, float dt, const FlowParams& prm) {
     if (!std::isfinite(p.x) || dt < 1e-8f) return p;
     glm::vec3 v1 = safeVelocity(p, prm);
     if (glm::length(v1) < 1e-8f) return p;
     glm::vec3 k1 = v1 * dt;
-    glm::vec3 p2 = p + k1 * 0.5f;
-    glm::vec3 v2 = safeVelocity(p2, prm);
-    if (glm::length(v2) < 1e-8f) return p + k1;
+    glm::vec3 v2 = safeVelocity(p + k1 * 0.5f, prm);
+    if (glm::length(v2) < 1e-8f) v2 = v1;
     glm::vec3 k2 = v2 * dt;
-    glm::vec3 p3 = p + k2 * 0.5f;
-    glm::vec3 v3 = safeVelocity(p3, prm);
-    if (glm::length(v3) < 1e-8f) return p + k2;
+    glm::vec3 v3 = safeVelocity(p + k2 * 0.5f, prm);
+    if (glm::length(v3) < 1e-8f) v3 = v2;
     glm::vec3 k3 = v3 * dt;
-    glm::vec3 p4 = p + k3;
-    glm::vec3 v4 = safeVelocity(p4, prm);
-    if (glm::length(v4) < 1e-8f) return p + k3;
+    glm::vec3 v4 = safeVelocity(p + k3, prm);
+    if (glm::length(v4) < 1e-8f) v4 = v3;
     glm::vec3 k4 = v4 * dt;
     glm::vec3 res = p + (k1 + 2.0f*k2 + 2.0f*k3 + k4) * (1.0f/6.0f);
     if (!std::isfinite(res.x)) return p + k1;
     return res;
 }
 
-// RK45 с оценкой ошибки для адаптивного шага
+// RK45 (Dormand–Prince 5(4)) с настоящей вложенной оценкой ошибки.
+//
+// v1.34.0 — раньше здесь стояла «оценка ошибки» из пяти слагаемых с
+// коэффициентами 0.1/0.2/0.3/0.2/0.2, не являющаяся ни одним известным
+// методом: сравнивались две произвольные комбинации, и полученное число не
+// было ошибкой шага. Адаптивный шаг подбирался по этому числу, то есть
+// управлялся шумом. Теперь используется стандартная пара Dormand–Prince:
+// пятого порядка решение y5 и вложенное четвёртого порядка y4, разность
+// которых и есть оценка локальной ошибки. Коэффициенты — классические
+// (Dormand & Prince, 1980), их можно сверить с любой книгой по ЧМ.
 inline std::pair<glm::vec3,float> rk45Step(const glm::vec3& p, float dt, const FlowParams& prm) {
-    // RK4
-    glm::vec3 v1 = safeVelocity(p, prm);
-    glm::vec3 k1 = v1 * dt;
-    glm::vec3 v2 = safeVelocity(p + k1*0.5f, prm);
-    glm::vec3 k2 = v2 * dt;
-    glm::vec3 v3 = safeVelocity(p + k2*0.5f, prm);
-    glm::vec3 k3 = v3 * dt;
-    glm::vec3 v4 = safeVelocity(p + k3, prm);
-    glm::vec3 k4 = v4 * dt;
-    glm::vec3 rk4 = p + (k1 + 2.0f*k2 + 2.0f*k3 + k4)*(1.0f/6.0f);
+    glm::vec3 k1 = safeVelocity(p, prm);
+    if (glm::length(k1) < 1e-8f) return {p, 0.0f};
+    k1 *= dt;
 
-    // RK5 (Dormand-Prince упрощенный) — оценка через midpoint
-    glm::vec3 vMid = safeVelocity(p + k1*0.5f + k2*0.25f, prm);
-    glm::vec3 kMid = vMid * dt;
-    glm::vec3 rk5 = p + (k1*0.1f + k2*0.2f + kMid*0.3f + k3*0.2f + k4*0.2f);
+    glm::vec3 k2 = safeVelocity(p + k1 * (1.0f/5.0f), prm) * dt;
+    glm::vec3 k3 = safeVelocity(p + (k1*(3.0f/40.0f) + k2*(9.0f/40.0f)), prm) * dt;
+    glm::vec3 k4 = safeVelocity(p + (k1*(44.0f/45.0f) - k2*(56.0f/15.0f) + k3*(32.0f/9.0f)), prm) * dt;
+    glm::vec3 k5 = safeVelocity(p + (k1*(19372.0f/6561.0f) - k2*(25360.0f/2187.0f)
+                                     + k3*(64448.0f/6561.0f) - k4*(212.0f/729.0f)), prm) * dt;
+    glm::vec3 k6 = safeVelocity(p + (k1*(9017.0f/3168.0f) - k2*(355.0f/33.0f)
+                                     + k3*(46732.0f/5247.0f) + k4*(49.0f/176.0f)
+                                     - k5*(5103.0f/18656.0f)), prm) * dt;
 
-    float err = glm::length(rk4 - rk5);
-    return {rk4, err};
+    glm::vec3 y5 = p + k1*(35.0f/384.0f) + k3*(500.0f/1113.0f) + k4*(125.0f/192.0f)
+                     - k5*(2187.0f/6784.0f) + k6*(11.0f/84.0f);
+
+    glm::vec3 k7 = safeVelocity(y5, prm) * dt;
+    glm::vec3 y4 = p + k1*(5179.0f/57600.0f) + k3*(7571.0f/16695.0f) + k4*(393.0f/640.0f)
+                     - k5*(92097.0f/339200.0f) + k6*(187.0f/2100.0f) + k7*(1.0f/40.0f);
+
+    float err = glm::length(y5 - y4);
+    if (!std::isfinite(err)) err = 1e9f;
+    if (!std::isfinite(y5.x)) y5 = p;
+    return {y5, err};
 }
 
 void computeStreamlines() {
@@ -244,20 +264,21 @@ void computeStreamlines() {
             if (curDt > 0.12f) curDt = 0.12f;
             if (curDt < 0.0008f) curDt = 0.0008f;
 
-            // RK45 с контролем ошибки
+            // RK45 с контролем ошибки. Допуск задаётся в долях пройденного
+            // пути, а не абсолютным числом метров: иначе на крупной модели
+            // шаг всегда «точный», а на мелкой — всегда неточный.
             auto [pNext, err] = rk45Step(p, curDt, flowParams);
-            // Адаптация: если ошибка большая, уменьшаем dt и повторяем
-            int adaptIter = 0;
-            while (err > 0.01f && adaptIter < 3) {
-                curDt *= 0.5f;
-                auto res = rk45Step(p, curDt, flowParams);
-                pNext = res.first;
-                err = res.second;
-                adaptIter++;
-            }
-            if (err < 0.001f && adaptIter==0) {
-                // Можно увеличить шаг
-                curDt *= 1.2f;
+            {
+                float stepLen = glm::length(pNext - p);
+                float tol = std::max(0.002f, 0.02f * stepLen);
+                int adaptIter = 0;
+                while (err > tol && adaptIter < 4) {
+                    curDt *= 0.5f;
+                    auto res = rk45Step(p, curDt, flowParams);
+                    pNext = res.first;
+                    err = res.second;
+                    adaptIter++;
+                }
             }
             dt = curDt;
 

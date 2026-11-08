@@ -153,51 +153,21 @@ void updateFlowParams() {
     }
 }
 
-// Вспомогательная: корректный потенциал эллипсоида
-// Трансформируем в сферу радиуса 1, считаем дублет, трансформируем обратно
-// Для сферы радиуса a: V = U + (a³ / r³) * (3(U·r̂)r̂ - U)/2 ??? Точная формула:
-// Потенциал: phi = U·x * (1 + a³/(2r³)), скорость: V = U + (a³/(2r³))*(3(U·r̂)r̂ - U) ??? Проверим:
-// Для сферы: phi = U·x (1 + a³/(2r³)), V = grad phi = U + (a³/(2r³))(U - 3(U·r̂)r̂) ??? Знак зависит от определения.
-// Мы используем классическую: V = U + (a³/r³)*( (3(U·r̂)r̂ - U)/2 )
-// Внутри эллипсоида — 0 (no-slip)
-static inline glm::vec3 ellipsoidPotential(const glm::vec3& p, const glm::vec3& c, const glm::vec3& rad, const glm::vec3& Uinf) {
-    glm::vec3 d = p - c;
-    // Избегаем деления на 0
-    float rx = rad.x + 1e-6f, ry = rad.y + 1e-6f, rz = rad.z + 1e-6f;
-    // Нормализованные координаты: сфера радиуса 1
-    glm::vec3 dn(d.x / rx, d.y / ry, d.z / rz);
-    float r2 = glm::dot(dn, dn);
-    if (r2 < 1.0f) {
-        // Внутри эллипсоида — возвращаем -Uinf чтобы в сумме с Uinf дать 0
-        return -Uinf;
-    }
-    if (r2 < 1e-8f) return glm::vec3(0);
-    float r = sqrtf(r2);
-    float r3 = r2 * r;
-    // Характерный радиус в норм. пространстве =1, a³=1
-    float a3_r3 = 1.0f / r3;
+// Потенциал эллипсоида — вынесен в potential_flow.h: там же вывод формулы,
+// исправленный знак дублета и объяснение, почему форма тела учитывается самим
+// преобразованием координат, а не подгоночным множителем.
+#include "potential_flow.h"
 
-    // Трансформируем Uinf в нормированное пространство: Un = U * (1/rad) ??? 
-    // Для сохранения дивергенции: если x' = x/rx, то U' = U/rx ??? Но для потенциала используем ту же трансформацию
-    // Чтобы корректно: вычисляем в норм. пространстве, потом обратно масштабируем
-    glm::vec3 Un(Uinf.x / rx, Uinf.y / ry, Uinf.z / rz);
-    glm::vec3 rhat = dn / r;
-    float UdotR = glm::dot(Un, rhat);
-    // Поправка в норм. пространстве: (a³/r³)*(3(U·r̂)r̂ - U)/2
-    glm::vec3 upert_n = a3_r3 * (3.0f * UdotR * rhat - Un) * 0.5f;
-    // Обратно в мировую систему: умножаем на rad
-    glm::vec3 upert(upert_n.x * rx, upert_n.y * ry, upert_n.z * rz);
-
-    // Коррекция формы: для вытянутых эллипсоидов уменьшаем влияние
-    // elongation factor: если rx >> ry,rz — тело обтекаемое, потенциал меньше
-    float maxR = fmaxf(rx, fmaxf(ry, rz));
-    float minR = fminf(rx, fminf(ry, rz));
-    float elong = maxR / (minR + 1e-6f);
-    float shapeFactor = 1.0f / (1.0f + 0.15f * (elong - 1.0f)); // 1 для сферы, <1 для вытянутых
-    shapeFactor = glm::clamp(shapeFactor, 0.4f, 1.0f);
-    upert *= shapeFactor;
-
-    return upert;
+// Скорость невозмущённого потока плюс возмущение от эллипсоида.
+static inline glm::vec3 ellipsoidVelocity(const glm::vec3& p, const glm::vec3& c,
+                                          const glm::vec3& rad, const glm::vec3& Uinf) {
+    const float pf[3] = {p.x, p.y, p.z};
+    const float cf[3] = {c.x, c.y, c.z};
+    const float rf[3] = {rad.x, rad.y, rad.z};
+    const float uf[3] = {Uinf.x, Uinf.y, Uinf.z};
+    float out[3];
+    aeros_potential::ellipsoidVelocity(pf, cf, rf, uf, out);
+    return glm::vec3(out[0], out[1], out[2]);
 }
 
 // Дивергенция-free шум через curl (для турбулентности)
@@ -303,7 +273,7 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
 
     // Базовый потенциал эллипсоида
     glm::vec3 rad(prm.radiusX, prm.radiusY, prm.radiusZ);
-    glm::vec3 v = Uinf + ellipsoidPotential(p, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
+    glm::vec3 v = ellipsoidVelocity(p, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
 
     // Сжимаемость: Prandtl-Glauert — трансформация координат, не только скорости
     float machInf = vInf / (prm.speedOfSound + 1e-6f);
@@ -317,7 +287,7 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
         glm::vec3 cross = dr - flowDir * along;
         cross /= beta; // поперечные координаты растягиваются
         glm::vec3 pComp = glm::vec3(prm.centerX, prm.centerY, prm.centerZ) + flowDir * along + cross;
-        glm::vec3 vComp = Uinf + ellipsoidPotential(pComp, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
+        glm::vec3 vComp = ellipsoidVelocity(pComp, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
         // Поправка скорости: поперечная компонента / beta
         glm::vec3 vDiff = vComp - Uinf;
         glm::vec3 vAlong = flowDir * glm::dot(vDiff, flowDir);
@@ -356,7 +326,7 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
         // Метод изображений: для no-penetration на земле y=groundY, зеркалим и инвертируем нормальную компоненту
         if (distGround < maxDim*0.6f) {
             glm::vec3 pMirror(p.x, groundY - distGround, p.z);
-            glm::vec3 vMirror = Uinf + ellipsoidPotential(pMirror, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
+            glm::vec3 vMirror = ellipsoidVelocity(pMirror, glm::vec3(prm.centerX, prm.centerY, prm.centerZ), rad, Uinf);
             // Инвертируем нормальную (y) компоненту зеркала
             vMirror.y = -vMirror.y;
             float mirrorInfluence = expf(-distGround / (maxDim*0.18f));

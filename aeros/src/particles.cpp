@@ -39,6 +39,74 @@ static inline float sphereCd(float Re_p) {
     else return 0.1f; // drag crisis
 }
 
+// Вязкость воздуха по Сазерленду (та же формула, что в particleAcceleration и
+// в lbm.cpp; вынесена, чтобы не расходились константы).
+static inline float particleAirViscosity(float T) {
+    const float T0s = 273.15f, S = 110.4f, mu0 = 1.716e-5f;
+    if (!std::isfinite(T) || T < 1.0f) T = 288.15f;
+    float mu = mu0 * powf(T / T0s, 1.5f) * (T0s + S) / (T + S);
+    if (!std::isfinite(mu) || mu < 1e-6f) mu = 1.81e-5f;
+    return mu;
+}
+
+void particleAdvanceAnalytic(const glm::vec3& pos, const glm::vec3& vel,
+                             const glm::vec3& vFluid,
+                             float d_p, float rho_p, float rho_f, float mu,
+                             float dt, glm::vec3& outPos, glm::vec3& outVel) {
+    outPos = pos;
+    outVel = vel;
+    if (!std::isfinite(dt) || dt <= 0.0f) return;
+    if (!(d_p > 0.0f) || !std::isfinite(d_p)) return;
+    if (!(rho_p > 0.0f) || !std::isfinite(rho_p)) return;
+    if (!(rho_f > 0.0f) || !std::isfinite(rho_f)) rho_f = 1.225f;
+    if (!(mu > 0.0f) || !std::isfinite(mu)) mu = 1.8e-5f;
+
+    const float pi = 3.14159265358979f;
+    const float vol = pi / 6.0f * d_p * d_p * d_p;
+    const float m_p = rho_p * vol;
+    const float A = pi * 0.25f * d_p * d_p;
+
+    const glm::vec3 vrel = vFluid - vel;
+    const float vrelMag = glm::length(vrel);
+
+    // Время релаксации: из линеаризованного сопротивления при текущей
+    // относительной скорости. При v_rel -> 0 переходим на стоксово tau_p,
+    // чтобы не делить на ноль (предел совпадает).
+    float tau;
+    if (vrelMag > 1e-9f) {
+        float Re_p = rho_f * vrelMag * d_p / mu;
+        // Нижняя граница — только против деления на ноль. Раньше стояло 0.01,
+        // и для медленных частиц (Re_p < 0.01) Cd = 24/Re_p оказывался занижен,
+        // то есть сопротивление завышалось... вернее, занижалось: Cd меньше —
+        // время релаксации больше, и частица оседала в 2.3 раза быстрее, чем
+        // требует закон Стокса. В зажиме нет нужды: при Re_p -> 0 формула
+        // 24/Re_p сокращается с |v_rel| и даёт ровно 3*pi*mu*d.
+        Re_p = glm::clamp(Re_p, 1e-6f, 1e6f);
+        const float Cd = sphereCd(Re_p);
+        const float Fcoef = 0.5f * Cd * rho_f * A * vrelMag;   // Н на (м/с)
+        tau = (Fcoef > 1e-18f) ? (m_p / Fcoef) : (rho_p * d_p * d_p / (18.0f * mu));
+    } else {
+        tau = rho_p * d_p * d_p / (18.0f * mu);
+    }
+    if (!std::isfinite(tau) || tau <= 0.0f) tau = 1e-6f;
+    if (tau > 1e6f) tau = 1e6f;
+
+    // Установившаяся скорость: поток плюс гравитация за вычетом Архимеда.
+    const glm::vec3 gEff(0.0f, -(1.0f - rho_f / rho_p) * 9.81f, 0.0f);
+    const glm::vec3 vEq = vFluid + gEff * tau;
+
+    const float E = expf(-dt / tau);          // устойчиво при любом dt
+    const glm::vec3 dv = vel - vEq;
+
+    outVel = vEq + dv * E;
+    outPos = pos + vEq * dt + dv * (tau * (1.0f - E));
+
+    if (!std::isfinite(outVel.x) || !std::isfinite(outVel.y) || !std::isfinite(outVel.z))
+        outVel = vel;
+    if (!std::isfinite(outPos.x) || !std::isfinite(outPos.y) || !std::isfinite(outPos.z))
+        outPos = pos;
+}
+
 static inline glm::vec3 particleAcceleration(const glm::vec3& pPos, const glm::vec3& pVel, const FlowParams& prm, float d_p, float rho_p) {
     glm::vec3 vFluid = computeVelocityFieldCPU(pPos, prm);
     if (!std::isfinite(vFluid.x)) vFluid = glm::vec3(prm.vx, prm.vy, prm.vz);
@@ -156,11 +224,13 @@ void initParticles() {
         try {
             particlePositions.resize(numParticles*3);
             particleColors.resize(numParticles*3);
+            particleVelocities.assign(numParticles*3, 0.0f);
         } catch (const std::bad_alloc&) {
             numParticles = 1000;
             particleDrawCount = numParticles;
             particlePositions.resize(numParticles*3);
             particleColors.resize(numParticles*3);
+            particleVelocities.assign(numParticles*3, 0.0f);
         }
         float z = flowParams.minZ + 0.1f * (flowParams.maxZ - flowParams.minZ);
         if (!std::isfinite(z)) z = flowParams.minZ;
@@ -190,6 +260,11 @@ void initParticles() {
             particleColors[3*i] = 0.3f;
             particleColors[3*i+1] = 0.8f;
             particleColors[3*i+2] = 1.0f;
+            // Начальное условие: частица уже увлечена потоком (иначе первый кадр
+            // даёт нефизичный бросок). Дальше скорость живёт между кадрами.
+            particleVelocities[3*i]   = flowParams.vx;
+            particleVelocities[3*i+1] = flowParams.vy;
+            particleVelocities[3*i+2] = flowParams.vz;
         }
     }
     // v1.33.0 — в Vulkan-режиме VBO не нужны: позиции и цвета остаются в
@@ -292,6 +367,24 @@ void updateParticles(float dt) {
         // Particle properties — аэрозоль, плотность ~1000 кг/м3, диаметр 10-100 мкм
         float d_p_base = 20e-6f; // 20 мкм базовый
         float rho_p = 1000.0f; // вода
+        float muAir = particleAirViscosity(flowParams.airTemperature);
+        float rhoAir = flowParams.airDensity;
+        if (!std::isfinite(rhoAir) || rhoAir < 1e-3f) rhoAir = 1.225f;
+        float dtAdv = dt * timeScale;
+
+        // Массив скоростей обязан соответствовать числу частиц. Если размеры
+        // разошлись (частиц добавили без переинициализации) — пересоздаём и
+        // стартуем с увлечения потоком, а не с нуля: это то же начальное
+        // условие, что в initParticles().
+        if ((int)particleVelocities.size() != 3 * n) {
+            particleVelocities.assign((size_t)3 * n, 0.0f);
+            for (int i = 0; i < n; ++i) {
+                particleVelocities[3*i]   = flowParams.vx;
+                particleVelocities[3*i+1] = flowParams.vy;
+                particleVelocities[3*i+2] = flowParams.vz;
+            }
+        }
+        float* velPtr = particleVelocities.data();
 
         #ifdef _OPENMP
         #pragma omp parallel for
@@ -316,29 +409,39 @@ void updateParticles(float dt) {
             float d_p = d_p_base * (0.5f + sizeRand*1.0f); // 10-30 мкм
 
             glm::vec3 pPos(px, py, pz);
-            // Оценка скорости частицы из предыдущего кадра через цвет? Упростим — скорость = скорость потока
             glm::vec3 vFluid = computeVelocityFieldCPU(pPos, flowParams);
             if (!std::isfinite(vFluid.x)) vFluid = glm::vec3(vxInf, vyInf, vzInf);
-            // Предполагаем что частица уже имеет скорость близкую к потоку, но с инерцией
-            glm::vec3 pVel = vFluid * 0.9f; // начальная
 
-            ParticleState state; state.pos = pPos; state.vel = pVel;
+            // v1.34.0 — скорость БЕРЁТСЯ ИЗ ПРОШЛОГО КАДРА, а не назначается
+            // заново. Прежняя строка «pVel = vFluid * 0.9f» означала, что у
+            // частицы нет собственной скорости: она не может ни отставать от
+            // потока, ни разгоняться, а любой интегратор всё равно стартует с
+            // навязанного значения. Для аэрозоля 20 мкм (tau_p ~ 1 мс) это не
+            // мелочь: именно релаксация скорости к потоку и есть физика.
+            glm::vec3 pVel(velPtr[3*i], velPtr[3*i+1], velPtr[3*i+2]);
+            if (!std::isfinite(pVel.x) || !std::isfinite(pVel.y) || !std::isfinite(pVel.z))
+                pVel = vFluid;
+
             ParticleState newState;
             if (aeroUseRK4Particles) {
-                newState = particleRK4(state, dt * timeScale, flowParams, d_p, rho_p);
+                // RK4 — эталонная альтернатива. Явный RK4 неустойчив, когда шаг
+                // больше времени релаксации (а для 20 мкм это всегда так:
+                // dt = 4 мс против tau_p = 1.2 мс), поэтому шаг дробится так,
+                // чтобы h/tau <= 0.25. Иначе частицы «звенят» и разлетаются.
+                const float tauStokes = rho_p * d_p * d_p / (18.0f * muAir);
+                int nSub = 1;
+                if (tauStokes > 1e-9f) nSub = (int)std::ceil(dtAdv / (0.25f * tauStokes));
+                nSub = glm::clamp(nSub, 1, 8);
+                const float h = dtAdv / (float)nSub;
+                ParticleState st; st.pos = pPos; st.vel = pVel;
+                for (int k = 0; k < nSub; ++k) st = particleRK4(st, h, flowParams, d_p, rho_p);
+                newState = st;
             } else {
-                glm::vec3 acc = particleAcceleration(pPos, pVel, flowParams, d_p, rho_p);
-                newState.vel = pVel + acc * dt * timeScale;
-                newState.pos = pPos + newState.vel * dt * timeScale;
-                // v1.26.0 — путь Эйлера вообще не проверял результат: при
-                // вырожденных d_p/rho_p ускорение могло стать NaN, и частица
-                // навсегда оставалась с неконечной позицией.
-                if (!std::isfinite(newState.pos.x) || !std::isfinite(newState.pos.y) ||
-                    !std::isfinite(newState.pos.z))
-                    newState.pos = pPos;
-                if (!std::isfinite(newState.vel.x) || !std::isfinite(newState.vel.y) ||
-                    !std::isfinite(newState.vel.z))
-                    newState.vel = glm::vec3(vxInf, vyInf, vzInf);
+                // Аналитическое решение уравнения с линеаризованным
+                // сопротивлением: устойчиво при любом шаге и точно в стоксовом
+                // пределе (см. particleAdvanceAnalytic).
+                particleAdvanceAnalytic(pPos, pVel, vFluid, d_p, rho_p, rhoAir, muAir,
+                                        dtAdv, newState.pos, newState.vel);
             }
 
             glm::vec3 np = newState.pos;
@@ -358,7 +461,13 @@ void updateParticles(float dt) {
                         float rawDist = distField[idx];
                         if (!std::isfinite(rawDist)) rawDist = 1000.0f;
                         if (rawDist > 1e4f || rawDist < -1e4f) rawDist = 1000.0f;
-                        surfDist = rawDist * csx;
+                        // g_distanceField хранится в МЕТРАХ (инициализация
+                        // поверхности ±0.5*ячейки, веса 26 соседей в метрах).
+                        // Здесь стояло умножение на csx — расстояние ошибочно
+                        // уменьшалось в 1/cs раз (при ячейке 0.25 м — в 16 раз),
+                        // поэтому выталкивание из тела было почти нулевым и
+                        // частицы «залипали» внутри поверхности.
+                        surfDist = rawDist;
                         if (rawDist < 0.0f) {
                             glm::vec3 nrm = sdfNormalCPU(np);
                             if (!std::isfinite(nrm.x)) nrm = glm::vec3(0,1,0);
@@ -429,6 +538,9 @@ void updateParticles(float dt) {
             }
 
             posPtr[3*i] = np.x; posPtr[3*i+1] = np.y; posPtr[3*i+2] = np.z;
+            if (!std::isfinite(nv.x) || !std::isfinite(nv.y) || !std::isfinite(nv.z))
+                nv = glm::vec3(vxInf, vyInf, vzInf);
+            velPtr[3*i] = nv.x; velPtr[3*i+1] = nv.y; velPtr[3*i+2] = nv.z;
 
             // Цвет по скорости + по Re_p + по размеру
             glm::vec3 vFlow = computeVelocityFieldCPU(np, flowParams);

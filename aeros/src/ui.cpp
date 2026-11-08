@@ -1226,7 +1226,7 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         ImGui::SliderFloat(_TR("Trail Opacity", "Прозрачность следа"), &aeroParticleTrailOpacity, 0.1f, 1.0f);
     }
     ImGui::Checkbox(_TR("Surface Streamlines", "Поверхностные линии тока"), &aeroSurfaceStreamlines);
-    ImGui::Checkbox(_TR("Use RK4 for Particles (accurate)", "Использовать RK4 для частиц (точно)"), &aeroUseRK4Particles);
+    ImGui::Checkbox(_TR("Particles: RK4 integrator (slow, substepped)", "Частицы: интегратор RK4 (медленно, с подшагами)"), &aeroUseRK4Particles);
     ImGui::Checkbox(_TR("Adaptive LBM Steps", "Адаптивные шаги LBM"), &aeroAdaptiveLBM);
     ImGui::Checkbox(_TR("Show Helicity", "Показывать спиральность"), &aeroShowHelicity);
     ImGui::Checkbox(_TR("Show Total Pressure", "Показывать полное давление"), &aeroShowTotalPressure);
@@ -1837,7 +1837,9 @@ if (uiSelectedLeaf == 11 && ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Ч
     ImGui::SliderFloat(_TR("Size", "Размер"), &particleSize, 1.0f, 8.0f);
     ImGui::SliderFloat(_TR("Max Speed Color", "Макс. скорость для цвета"), &maxSpeedForColor, 0.5f, 20.0f);
     ImGui::Checkbox(_TR("Particle Trails (NEW)", "Следы частиц (НОВОЕ)"), &aeroShowParticleTrails);
-    ImGui::Checkbox(_TR("RK4 Advection (NEW, accurate)", "RK4 адвекция (НОВОЕ, точно)"), &aeroUseRK4Particles);
+    ImGui::Checkbox(_TR("RK4 Advection (optional, slower)", "RK4 адвекция (опционально, медленнее)"), &aeroUseRK4Particles);
+    ImGui::TextDisabled("%s", _TR("Default: analytic drag step (stable at dt > particle relaxation time)",
+                                  "По умолчанию: аналитический шаг с сопротивлением (устойчив при dt > времени релаксации)"));
     if (ImGui::Button(_TR("Reset Particles", "Сбросить частицы"))) initParticles();
     ImGui::SameLine(); if (ImGui::Button("5000")) { numParticles=5000; initParticles(); }
     ImGui::SameLine(); if (ImGui::Button("15000")) { numParticles=15000; initParticles(); }
@@ -2009,12 +2011,37 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     } else {
         ImGui::SliderInt(_TR("Steps per Frame", "Шагов за кадр"), &lbmParams.stepsPerFrame, 1, 50);
     }
-    ImGui::SliderFloat(_TR("Tau (relaxation)", "Тау (релаксация)"), &lbmParams.tau, 0.51f, 1.5f, "%.3f");
+    // v1.34.0 — вязкость либо выводится из физического Re, либо задаётся вручную.
+    // Раньше значение ползунка молча подставлялось, когда расчётная tau выходила
+    // за предел устойчивости, а в отчёте оставался физический Re: показанное и
+    // посчитанное числа не совпадали. Теперь режим виден, а рядом стоят оба Re.
+    ImGui::Checkbox(_TR("Auto viscosity from Re", "Авто-вязкость из Re"), &lbmParams.autoViscosity);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (lbmParams.autoViscosity) lbmParams.tau = 0.6f;
+    }
+    if (lbmParams.autoViscosity) {
+        ImGui::BeginDisabled(true);
+        ImGui::SliderFloat(_TR("Tau (from Re)", "Тау (из Re)"), &lbmParams.tau, 0.51f, 1.5f, "%.4f");
+        ImGui::EndDisabled();
+    } else {
+        ImGui::SliderFloat(_TR("Tau (relaxation)", "Тау (релаксация)"), &lbmParams.tau, 0.51f, 1.5f, "%.3f");
+    }
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (!std::isfinite(lbmParams.tau) || lbmParams.tau < 0.51f) lbmParams.tau = 0.6f;
         lbmParams.viscosity = (lbmParams.tau - 0.5f) * 0.333333f;
+        // tau входит в равновесие и вязкость. Переинициализацию не делаем прямо
+        // здесь (это кадр интерфейса): помечаем решатель остановленным, и
+        // updateLBM() пересоздаст его на ближайшем кадре физики.
+        shutdownLBM();
     }
+    ImGui::TextDisabled("%s", _TR("Tau is the relaxation time; viscosity = (tau - 0.5)/3",
+                                  "Тау — время релаксации; вязкость = (тау - 0.5)/3"));
     ImGui::SliderFloat(_TR("U0 (lattice speed)", "U0 (скорость решетки)"), &lbmParams.U0, 0.01f, 0.25f, "%.3f");
+    // v1.34.0 — размер внешней области. Полный (1.0) — 2L/4L/2.5L; меньше —
+    // быстрее, но с ростом перекрытия домена (показывается ниже).
+    ImGui::SliderFloat(_TR("Domain size (2L/4L/2.5L)", "Размер домена (2L/4L/2.5L)"),
+                       &lbmParams.domainPadding, 0.1f, 1.0f, "%.2f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) shutdownLBM();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (!std::isfinite(lbmParams.U0) || lbmParams.U0 < 0.01f) lbmParams.U0 = 0.1f;
     }
@@ -2042,9 +2069,23 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     if (lbmParams.useGround) ImGui::SliderFloat(_TR("Ground Height##lbm", "Высота земли##lbm"), &lbmParams.groundHeight, -2.0f, 2.0f, "%.2f");
     ImGui::Separator();
     ImGui::Text("LBM Grid: %dx%dx%d = %d %s", lbmNx, lbmNy, lbmNz, lbmNx*lbmNy*lbmNz, _TR("cells", "ячеек"));
+    if (lbmBlockageRatio > 0.0f) {
+        if (lbmBlockageRatio > 0.05f)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s: %.1f%% (>5%%)",
+                               _TR("Domain blockage", "Перекрытие домена"), lbmBlockageRatio * 100.0f);
+        else
+            ImGui::Text("%s: %.1f%%", _TR("Domain blockage", "Перекрытие домена"), lbmBlockageRatio * 100.0f);
+    }
     ImGui::Text("%s: %d | %s: %s | TKE: %.4f", _TR("Steps", "Шагов"), lbmCurrentStep, _TR("Converged", "Сходимость"), lbmConverged ? _TR("YES","ДА") : _TR("NO","НЕТ"), lbmTKE);
     ImGui::Text("Avg Rho: %.4f | Kinetic: %.6f | MaxVel LB %.3f", lbmAvgRho, lbmAvgKineticEnergy, lbmMaxVelocityLB);
-    ImGui::Text("Max Vel World: %.2f m/s | Reynolds: %.1f | Conv: %.2e", lbmMaxVelocityWorld, lbmReynolds, lbmConvergence);
+    ImGui::Text("Max Vel World: %.2f m/s | Re_phys: %.1f | Re_LB: %.1f | Conv: %.2e",
+                lbmMaxVelocityWorld, lbmReynolds, lbmReynoldsLB, lbmConvergence);
+    if (lbmReynoldsLB > 0.0f && lbmReynolds > 0.0f &&
+        (lbmReynolds / lbmReynoldsLB > 10.0f || lbmReynoldsLB / lbmReynolds > 10.0f)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s",
+                           _TR("Physical Re is not resolved by this grid: the solver runs at Re_LB",
+                               "Физический Re не разрешается этой сеткой: решатель считает при Re_LB"));
+    }
     ImGui::Text("%s: (%.4f, %.4f, %.4f) | Time: %.1f ms", _TR("Cell Size", "Размер ячейки"), lbmCellSizeX, lbmCellSizeY, lbmCellSizeZ, lbmTimeMs);
     if (ImGui::Button(_TR("Init / Reset LBM", "Инициализация / Сброс LBM"))) {
         debugLogAction("кнопка LBM", "инициализация/сброс, сетка %dx%dx%d", lbmNx, lbmNy, lbmNz);

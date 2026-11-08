@@ -19,6 +19,7 @@
 #include "atmosphere.h"
 #include "voxel_grid.h"
 #include "flow_field.h"
+#include "potential_flow.h"
 #include "debug_log.h"
 #include <cmath>
 #include <cstdio>
@@ -62,17 +63,25 @@ static void makeSphereCase(float radius) {
 
 int main() {
     debugLogInit("/tmp/tl/phys");
-    std::printf("=== headless-прогон LBM (v1.27.0) ===\n");
+    std::printf("=== headless-прогон LBM (v1.34.0) ===\n");
 
     flowSpeed = 20.0f; flowAzimuth = 0.0f; flowElevation = 0.0f;
     altitude = 0.0f; timeScale = 1.0f;
     aeroMachEffects = false;
     lbmParams.enabled = true;
     lbmParams.tau = 0.55f;
+    // v1.34.0 — фиксируем tau пользователя: проверки ниже относятся к решателю,
+    // а не к выбору вязкости. Авто-вязкость из Re проверяется отдельным тестом.
+    lbmParams.autoViscosity = false;
     lbmParams.U0 = 0.08f;
     lbmParams.stepsPerFrame = 1;
     lbmParams.smagorinskyC = 0.14f;
     lbmParams.useGround = false;
+    // v1.34.0: полный внешний домен (2L/4L/2.5L) для этого теста — это 3.5 млн
+    // ячеек вместо 14 тыс. и минуты счёта на каждый прогон. Для проверок самого
+    // решателя масштаб уменьшен, а размеры домена проверяются отдельным тестом
+    // ниже с полным масштабом (без шагов счёта).
+    lbmParams.domainPadding = 0.25f;
     voxelResolution = 24;
 
     makeSphereCase(0.7f);
@@ -174,6 +183,35 @@ int main() {
     initLBM();
     lbmParams.useTurbulence = true;
     for (int i = 0; i < 60; ++i) stepLBMCPU(1);
+    // ---- v1.34.0: след за телом внутри домена ---------------------------
+    // Раньше это было невозможно проверить: домен кончался на границе бокса
+    // (x = +3 при теле радиусом 0.7), и «след» сразу упирался в выходную
+    // границу. Теперь есть 4L вниз по потоку, и поле должно восстанавливаться
+    // постепенно, а не обрываться.
+    {
+        const float uNear = glm::length(getLBMVelocityWorld(glm::vec3(1.0f, 0.0f, 0.0f)));
+        const float u12   = glm::length(getLBMVelocityWorld(glm::vec3(1.2f, 0.0f, 0.0f)));
+        const float u2    = glm::length(getLBMVelocityWorld(glm::vec3(2.0f, 0.0f, 0.0f)));
+        const float u3    = glm::length(getLBMVelocityWorld(glm::vec3(3.0f, 0.0f, 0.0f)));
+        const float u5    = glm::length(getLBMVelocityWorld(glm::vec3(5.0f, 0.0f, 0.0f)));
+        char nm[512];
+        std::snprintf(nm, sizeof(nm),
+                      "след: за телом скорость %.2f м/с против %.0f в потоке (дефицит)", uNear, flowSpeed);
+        check(uNear < 0.5f * flowSpeed, nm);
+        std::snprintf(nm, sizeof(nm),
+                      "след восстанавливается монотонно: %.2f < %.2f < %.2f < %.2f", u12, u2, u3, u5);
+        check(u12 < u2 && u2 < u3 && u3 < u5, nm);
+        std::snprintf(nm, sizeof(nm),
+                      "на 4L вниз по потоку скорость %.2f м/с стремится к %.0f", u5, flowSpeed);
+        check(std::fabs(u5 - flowSpeed) < 0.05f * flowSpeed, nm);
+        // Точка, лежавшая вне старого домена (x > 3), теперь имеет данные.
+        float pFar = 0.0f;
+        check(getLBMPressureWorldChecked(glm::vec3(4.0f, 0.0f, 0.0f), &pFar),
+              "точка за прежней границей бокса теперь внутри домена");
+        check(!getLBMPressureWorldChecked(glm::vec3(20.0f, 0.0f, 0.0f), &pFar),
+              "и всё ещё честно сообщает о выходе за домен");
+    }
+
     glm::vec3 probe(1.6f, 0.35f, 0.0f);
     float pA = 0, pB = 0;
     bool okA = getLBMPressureWorldChecked(probe, &pA);
@@ -400,6 +438,117 @@ int main() {
               std::fabs(lbmMaxVelocityWorld - vmaxOff) < 1e-4f &&
               std::fabs(lbmPressureMax - pOff) < 1e-2f, nm);
         lbmParams.useMRT = false; lbmParams.useZouHeBC = false; lbmParams.useRegularized = false;
+    }
+
+    // ---- v1.34.0: внешняя область вокруг модели --------------------------
+    // До этой версии расчётная область LBM совпадала с воксельным боксом: вход
+    // стоял на первой ячейке перед телом, выход — на последней за ним, то есть
+    // ни следа, ни восстановления давления за телом не существовало в принципе.
+    // Проверяем именно геометрию домена и то, что маска тела не «растянулась».
+    {
+        shutdownLBM();
+        lbmParams.domainPadding = 1.0f;
+        makeSphereCase(0.7f);
+        initLBM();
+
+        const float Lref = 6.0f;   // габарит бокса [-3..3]
+        char nm[512];
+        std::snprintf(nm, sizeof(nm),
+                      "домен: вход отстоит на %.2f L (нужно 2), выход на %.2f L (нужно 4)",
+                      (g_voxMinX - lbmMinX) / Lref, (lbmMaxX - g_voxMaxX) / Lref);
+        check(std::fabs((g_voxMinX - lbmMinX) - 2.0f * Lref) < 0.3f &&
+              std::fabs((lbmMaxX - g_voxMaxX) - 4.0f * Lref) < 0.3f, nm);
+
+        std::snprintf(nm, sizeof(nm),
+                      "домен: по бокам %.2f L с каждой стороны (нужно 2.5)",
+                      (g_voxMinY - lbmMinY) / Lref);
+        check(std::fabs((g_voxMinY - lbmMinY) - 2.5f * Lref) < 0.3f &&
+              std::fabs((lbmMaxY - g_voxMaxY) - 2.5f * Lref) < 0.3f &&
+              std::fabs((g_voxMinZ - lbmMinZ) - 2.5f * Lref) < 0.3f, nm);
+
+        // Ключевая регрессия: ячейки объекта не должны масштабироваться на весь
+        // домен. Число твёрдых ячеек обязано совпасть с числом твёрдых вокселей
+        // (шаг сетки одинаковый и бокс выровнен).
+        long voxSolid = 0, lbmSolid = 0;
+        for (int i = 0; i < (int)g_voxelData.size(); ++i) if (g_voxelData[i] == 1) ++voxSolid;
+        for (int i = 0; i < (int)lbmIsSolid.size(); ++i) if (lbmIsSolid[i]) ++lbmSolid;
+        std::snprintf(nm, sizeof(nm),
+                      "домен: маска тела сохранена (%ld твёрдых ячеек против %ld вокселей)",
+                      lbmSolid, voxSolid);
+        check(voxSolid > 0 && lbmSolid == voxSolid, nm);
+
+        std::snprintf(nm, sizeof(nm), "домен: размер %dx%dx%d, ожидался больше исходных 24x24x24",
+                      lbmNx, lbmNy, lbmNz);
+        check(lbmNx >= 160 && lbmNy >= 140 && lbmNz >= 140, nm);
+
+        const float blockageFull = lbmBlockageRatio;
+        std::snprintf(nm, sizeof(nm), "перекрытие домена телом %.2f %% (< 5 %% у внешнего обтекания)",
+                      blockageFull * 100.0f);
+        check(blockageFull > 0.0f && blockageFull < 0.05f, nm);
+
+        shutdownLBM();
+        lbmParams.domainPadding = 0.25f;
+        makeSphereCase(0.7f);
+        initLBM();
+        std::snprintf(nm, sizeof(nm),
+                      "при уменьшенном домене перекрытие растёт: %.2f %% > %.2f %%",
+                      lbmBlockageRatio * 100.0f, blockageFull * 100.0f);
+        check(lbmBlockageRatio > blockageFull, nm);
+    }
+
+    // ---- v1.34.0: аналитический потенциал эллипсоида --------------------
+    // Раньше здесь не было ни одной проверки физики поля: тесты смотрели только
+    // на LBM. Между тем в flow_field.cpp возмущение складывалось с набегающим
+    // потоком (знак дублета перевёрнут), из-за чего на поверхности сферы
+    // нормальная скорость равнялась 2U, а в носовой точке скорость была 2U
+    // вместо 0. Условие непротекания — это определение обтекания, и оно
+    // проверяется здесь напрямую.
+    {
+        const float U[3] = {10.0f, 0.0f, 0.0f};
+        const float c[3] = {0.0f, 0.0f, 0.0f};
+        float v[3];
+
+        // (а) шар: носовая точка торможения u = 0, экватор u = 1.5U.
+        //     Сэмплируем чуть снаружи (k = 1.001): ровно на поверхности
+        //     функция обязана вернуть покой, это отдельная проверка ниже.
+        const float sph[3] = {1.0f, 1.0f, 1.0f};
+        const float kOut = 1.001f;
+        aeros_potential::ellipsoidVelocity((const float[3]){-kOut, 0.0f, 0.0f}, c, sph, U, v);
+        char nm[512];
+        std::snprintf(nm, sizeof(nm), "потенциал: точка торможения сферы u = %.4f (нужно 0)", v[0]);
+        check(std::fabs(v[0]) < 0.02f * 10.0f, nm);
+        aeros_potential::ellipsoidVelocity((const float[3]){0.0f, kOut, 0.0f}, c, sph, U, v);
+        std::snprintf(nm, sizeof(nm), "потенциал: экватор сферы u = %.4f (нужно 15)", v[0]);
+        check(std::fabs(v[0] - 15.0f) < 0.05f, nm);
+
+        // (б) непротекание на поверхности: перебираем направления по сфере,
+        //     включая вытянутый эллипсоид 4:0.5:0.5, на котором подгоночный
+        //     shapeFactor раньше давал до 51 % U нормальной скорости.
+        const float shapes[3][3] = {{1.0f, 1.0f, 1.0f}, {4.0f, 0.5f, 0.5f}, {2.0f, 1.0f, 0.3f}};
+        const char* names[3] = {"шар 1:1:1", "эллипсоид 4:0.5:0.5", "эллипсоид 2:1:0.3"};
+        for (int si = 0; si < 3; ++si) {
+            float worst = 0.0f;
+            for (int i = 0; i < 200; ++i) {
+                const float th = 3.14159265f * (float)i / 199.0f;
+                const float ph = 2.39996323f * (float)i;      // золотое сечение по азимуту
+                const float dir[3] = {std::sin(th) * std::cos(ph),
+                                      std::cos(th),
+                                      std::sin(th) * std::sin(ph)};
+                float un = aeros_potential::surfaceNormalVelocity(dir, c, shapes[si], U) / 10.0f;
+                if (std::fabs(un) > std::fabs(worst)) worst = un;
+            }
+            std::snprintf(nm, sizeof(nm), "непротекание (%s): max|u·n|/U = %.4f", names[si], std::fabs(worst));
+            check(std::fabs(worst) < 0.01f, nm);
+        }
+
+        // (в) вдали от тела поле стремится к набегающему потоку
+        aeros_potential::ellipsoidVelocity((const float[3]){0.0f, 400.0f, 0.0f}, c, sph, U, v);
+        std::snprintf(nm, sizeof(nm), "потенциал: вдали от тела u = %.4f (нужно 10)", v[0]);
+        check(std::fabs(v[0] - 10.0f) < 0.01f, nm);
+
+        // (г) внутри тела скорость покоя, а не «минус набегающий поток»
+        aeros_potential::ellipsoidVelocity((const float[3]){0.0f, 0.0f, 0.0f}, c, sph, U, v);
+        check(v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f, "внутри тела скорость = 0");
     }
 
     std::printf("\n=== %s (ошибок: %d) ===\n", g_failed == 0 ? "ФИЗИКА В ПОРЯДКЕ" : "ЕСТЬ ПРОВАЛЫ", g_failed);

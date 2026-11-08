@@ -1153,7 +1153,9 @@ bool testNewFeaturesV19() {
     aeroAdaptiveLBM = savedAdaptive;
 
     // Test RK4 particles flag
-    if (!aeroUseRK4Particles) logTestWarn("  WARN: RK4 particles disabled");
+    // v1.34.0: RK4 больше не обязателен — по умолчанию используется
+    // аналитический шаг, устойчивый при dt >> tau_p. Предупреждения нет.
+    (void)aeroUseRK4Particles;
 
     // Test screenshot request flag
     aeroScreenshotRequested = false;

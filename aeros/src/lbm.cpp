@@ -29,6 +29,8 @@ float lbmAvgKineticEnergy = 0.0f;
 float lbmMaxVelocityLB = 0.0f;
 float lbmMaxVelocityWorld = 0.0f;
 float lbmReynolds = 0.0f;
+float lbmReynoldsLB = 0.0f;
+float lbmBlockageRatio = 0.0f;
 float lbmConvergence = 0.0f;
 // v1.27.0 — диагностика устойчивости решателя: сколько популяций за шаг ушло в
 // отрицательные значения и сколько было заменено как нефизические. Нули — норма.
@@ -46,6 +48,14 @@ int lbmNx = 0, lbmNy = 0, lbmNz = 0;
 float lbmMinX = 0, lbmMinY = 0, lbmMinZ = 0;
 float lbmMaxX = 0, lbmMaxY = 0, lbmMaxZ = 0;
 float lbmCellSizeX = 0.1f, lbmCellSizeY = 0.1f, lbmCellSizeZ = 0.1f;
+
+// v1.34.0 — бокс самой модели на момент инициализации. Нужен, чтобы понять,
+// что воксельная сетка изменилась: раньше сравнивались lbmNx и g_voxNx, но
+// теперь домен намеренно больше объекта, и такая проверка перезапускала бы
+// решатель каждый кадр.
+static float sBodyMin[3] = {0,0,0}, sBodyMax[3] = {-1,-1,-1};
+static int   sBodyN[3] = {0,0,0};
+static bool  sHasBody = false;
 
 std::vector<float> lbmRho;
 std::vector<float> lbmUx, lbmUy, lbmUz;
@@ -368,6 +378,22 @@ void initLBM() {
     std::cout << "[LBM] Initializing v1.11.0 Physics Fix..." << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
+    // v1.34.0 — ДОМЕН БОЛЬШЕ ОБЪЕКТА.
+    //
+    // Раньше расчётная область в точности совпадала с воксельным боксом модели.
+    // Это значит, что входная граница (равновесие со скоростью потока) стояла на
+    // первой же ячейке перед телом, а выходная — на последней ячейке за ним:
+    // места для возмущения просто не было, и любой след/вихрь срезался границей.
+    // Визуально поле выглядело «нормально», но это было обтекание бесконечно
+    // тонкого канала, а не тела в потоке: сопротивление считалось по ячейкам,
+    // где ещё не восстановилось давление, а Cp за телом был искажён.
+    //
+    // Теперь строится стандартная внешняя область: 2L вверх по потоку, 4L вниз,
+    // 2.5L по бокам и сверху (L = характерный размер модели). Ячейки объекта не
+    // укрупняются: разрешение тела и, значит, Re_LB и силы остаются прежними.
+    // Если бюджет памяти не позволяет такую область, паддинг уменьшается
+    // ступенями и в журнал пишется фактический размер — без молчаливого
+    // «сделаем вид, что домен есть».
     if (g_voxelData.empty() || g_voxNx <= 0) {
         lbmNx = voxelResolution;
         lbmNy = voxelResolution;
@@ -376,12 +402,89 @@ void initLBM() {
         lbmMinY = -1.0f; lbmMaxY = 1.0f;
         lbmMinZ = -1.0f; lbmMaxZ = 1.0f;
     } else {
-        lbmNx = g_voxNx;
-        lbmNy = g_voxNy;
-        lbmNz = g_voxNz;
-        lbmMinX = g_voxMinX; lbmMaxX = g_voxMaxX;
-        lbmMinY = g_voxMinY; lbmMaxY = g_voxMaxY;
-        lbmMinZ = g_voxMinZ; lbmMaxZ = g_voxMaxZ;
+        const int bodyNx = g_voxNx, bodyNy = g_voxNy, bodyNz = g_voxNz;
+        float csx = (g_voxMaxX - g_voxMinX) / std::max(1, bodyNx);
+        float csy = (g_voxMaxY - g_voxMinY) / std::max(1, bodyNy);
+        float csz = (g_voxMaxZ - g_voxMinZ) / std::max(1, bodyNz);
+        if (!std::isfinite(csx) || csx < 1e-6f) csx = 0.1f;
+        if (!std::isfinite(csy) || csy < 1e-6f) csy = 0.1f;
+        if (!std::isfinite(csz) || csz < 1e-6f) csz = 0.1f;
+
+        // Характерный размер: габарит модели, а не диагональ бокса (диагональ
+        // раздувала бы домен в 1.7 раза без пользы для физики).
+        float Lref = std::max(std::max(g_voxMaxX - g_voxMinX, g_voxMaxY - g_voxMinY),
+                              g_voxMaxZ - g_voxMinZ);
+        if (!std::isfinite(Lref) || Lref < 1e-6f) Lref = 1.0f;
+
+        int flowAxis, flowSign;
+        glm::vec3 fdir;
+        computeFlowAxis(flowAxis, flowSign, fdir);
+
+        float padUser = lbmParams.domainPadding;
+        if (!std::isfinite(padUser)) padUser = 1.0f;
+        padUser = glm::clamp(padUser, 0.0f, 1.0f);
+
+        float padsMin[3], padsMax[3];
+        for (int i = 0; i < 3; ++i) {
+            const float d = std::isfinite(fdir[i]) ? fdir[i] : 0.0f;
+            const float upstream = 2.0f * Lref * std::fabs(d) * padUser;
+            const float downstream = 4.0f * Lref * std::fabs(d) * padUser;
+            const float lateral = 2.5f * Lref * (1.0f - std::fabs(d)) * padUser;
+            padsMin[i] = std::max(d > 0.0f ? upstream : downstream, lateral);
+            padsMax[i] = std::max(d > 0.0f ? downstream : upstream, lateral);
+        }
+
+        // Бюджет ячеек: сам объект + паддинг. 8M ячеек при D3Q19 и двух наборах
+        // популяций — это ~1.2 ГБ, выше уже нет смысла для интерактивного счёта.
+        const int MAX_CELLS = 8*1024*1024;
+        const float cs[3] = {csx, csy, csz};
+        const int bodyN[3] = {bodyNx, bodyNy, bodyNz};
+        auto totalFor = [&](float scale) {
+            long long total = 1;
+            for (int i = 0; i < 3; ++i) {
+                int extra = (int)std::lround((padsMin[i] + padsMax[i]) * scale / cs[i]);
+                if (extra < 0) extra = 0;
+                total *= (long long)(bodyN[i] + extra);
+            }
+            return total;
+        };
+        float padScale = 1.0f;
+        while (padScale > 0.05f && totalFor(padScale) > MAX_CELLS) padScale *= 0.75f;
+        if (totalFor(padScale) > MAX_CELLS) padScale = 0.0f;   // не влезает даже минимум
+        if (padScale < 0.999f) {
+            char msg[256];
+            std::snprintf(msg, sizeof(msg),
+                          "LBM: домен урезан бюджетом памяти (%.0f%% паддинга, ожидалось %lld ячеек при лимите %d)",
+                          padScale * 100.0f, (long long)totalFor(1.0f), MAX_CELLS);
+            DBG_PHYS("%s", msg);
+            std::cout << "[LBM] " << msg << std::endl;
+        }
+
+        lbmMinX = g_voxMinX - padsMin[0] * padScale;
+        lbmMinY = g_voxMinY - padsMin[1] * padScale;
+        lbmMinZ = g_voxMinZ - padsMin[2] * padScale;
+        const float minS[3] = {lbmMinX, lbmMinY, lbmMinZ};
+        int nOut[3];
+        for (int i = 0; i < 3; ++i) {
+            int extraMin = (int)std::ceil((padsMin[i] * padScale - 1e-9f) / cs[i]);
+            int extraMax = (int)std::ceil((padsMax[i] * padScale - 1e-9f) / cs[i]);
+            if (padScale <= 0.0f) { extraMin = extraMax = 0; }
+            nOut[i] = bodyN[i] + std::max(0, extraMin) + std::max(0, extraMax);
+            if (nOut[i] < 8) nOut[i] = 8;
+            (void)minS[i];
+        }
+        lbmNx = nOut[0]; lbmNy = nOut[1]; lbmNz = nOut[2];
+        // Максимумы выводим из числа ячеек и шага, чтобы шаг остался ровно
+        // воксельным: иначе мягкое округление сдвигало поверхность тела
+        // относительно маски твёрдых ячеек.
+        lbmMaxX = lbmMinX + lbmNx * csx;
+        lbmMaxY = lbmMinY + lbmNy * csy;
+        lbmMaxZ = lbmMinZ + lbmNz * csz;
+        lbmCellSizeX = csx; lbmCellSizeY = csy; lbmCellSizeZ = csz;
+        sBodyMin[0] = g_voxMinX; sBodyMin[1] = g_voxMinY; sBodyMin[2] = g_voxMinZ;
+        sBodyMax[0] = g_voxMaxX; sBodyMax[1] = g_voxMaxY; sBodyMax[2] = g_voxMaxZ;
+        sBodyN[0] = bodyNx; sBodyN[1] = bodyNy; sBodyN[2] = bodyNz;
+        sHasBody = true;
     }
 
     const int MAX_CELLS = 8*1024*1024;
@@ -392,11 +495,20 @@ void initLBM() {
         lbmNy = (int)(lbmNy*scale); if (lbmNy < 8) lbmNy = 8;
         lbmNz = (int)(lbmNz*scale); if (lbmNz < 8) lbmNz = 8;
         std::cout << "[LBM] Clamped grid to " << lbmNx << "x" << lbmNy << "x" << lbmNz << std::endl;
+        // После укрупнения максимумы обязаны соответствовать новому числу
+        // ячеек, иначе координата ячейки (lbmMin + i*cs) перестанет совпадать
+        // с физической областью, и давление/скорость будут читаться не там.
+        lbmMaxX = lbmMinX + lbmNx * lbmCellSizeX;
+        lbmMaxY = lbmMinY + lbmNy * lbmCellSizeY;
+        lbmMaxZ = lbmMinZ + lbmNz * lbmCellSizeZ;
     }
 
-    lbmCellSizeX = (lbmMaxX - lbmMinX) / std::max(1, lbmNx);
-    lbmCellSizeY = (lbmMaxY - lbmMinY) / std::max(1, lbmNy);
-    lbmCellSizeZ = (lbmMaxZ - lbmMinZ) / std::max(1, lbmNz);
+    if (!(lbmCellSizeX > 1e-6f) || !std::isfinite(lbmCellSizeX))
+        lbmCellSizeX = (lbmMaxX - lbmMinX) / std::max(1, lbmNx);
+    if (!(lbmCellSizeY > 1e-6f) || !std::isfinite(lbmCellSizeY))
+        lbmCellSizeY = (lbmMaxY - lbmMinY) / std::max(1, lbmNy);
+    if (!(lbmCellSizeZ > 1e-6f) || !std::isfinite(lbmCellSizeZ))
+        lbmCellSizeZ = (lbmMaxZ - lbmMinZ) / std::max(1, lbmNz);
     if (!std::isfinite(lbmCellSizeX) || lbmCellSizeX < 1e-6f) lbmCellSizeX = 0.1f;
     if (!std::isfinite(lbmCellSizeY) || lbmCellSizeY < 1e-6f) lbmCellSizeY = 0.1f;
     if (!std::isfinite(lbmCellSizeZ) || lbmCellSizeZ < 1e-6f) lbmCellSizeZ = 0.1f;
@@ -435,31 +547,34 @@ void initLBM() {
         return;
     }
 
-    if (!g_voxelData.empty() && (int)g_voxelData.size() == total) {
+    // Маска твёрдого тела переносится ПО ФИЗИЧЕСКИМ КООРДИНАТАМ центра ячейки.
+    // Прежний «nearest»-путь масштабировал индексы пропорционально размеру
+    // массива, что после добавления паддинга растянуло бы тело на весь домен:
+    // домен стал бы больше, а объект — тоже, и разрешение тела изменилось бы.
+    // Ячейки вне воксельного бокса остаются жидкими (свободный поток).
+    if (!g_voxelData.empty() && g_voxNx > 0 && g_voxNy > 0 && g_voxNz > 0) {
+        const float bx = (g_voxMaxX - g_voxMinX) / (float)g_voxNx;
+        const float by = (g_voxMaxY - g_voxMinY) / (float)g_voxNy;
+        const float bz = (g_voxMaxZ - g_voxMinZ) / (float)g_voxNz;
         const int* vox = g_voxelData.data();
-        char* solid = lbmIsSolid.data();
-        #ifdef _OPENMP
-        #pragma omp parallel for
-        #endif
-        for (int i = 0; i < total; ++i) solid[i] = (vox[i] == 1) ? 1 : 0;
-    } else if (!g_voxelData.empty()) {
-        std::cout << "[LBM] Voxel size mismatch " << g_voxelData.size() << " vs " << total << " — using nearest" << std::endl;
+        const int voxTotal = (int)g_voxelData.size();
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
         for (int z = 0; z < lbmNz; ++z) {
+            const float pz = lbmMinZ + (z + 0.5f) * lbmCellSizeZ;
+            int gz = (int)std::floor((pz - g_voxMinZ) / (bz > 1e-9f ? bz : 1e-9f));
             for (int y = 0; y < lbmNy; ++y) {
+                const float py = lbmMinY + (y + 0.5f) * lbmCellSizeY;
+                int gy = (int)std::floor((py - g_voxMinY) / (by > 1e-9f ? by : 1e-9f));
                 for (int x = 0; x < lbmNx; ++x) {
-                    int gz = (int)((float)z / lbmNz * g_voxNz);
-                    int gy = (int)((float)y / lbmNy * g_voxNy);
-                    int gx = (int)((float)x / lbmNx * g_voxNx);
-                    gz = glm::clamp(gz, 0, g_voxNz-1);
-                    gy = glm::clamp(gy, 0, g_voxNy-1);
-                    gx = glm::clamp(gx, 0, g_voxNx-1);
+                    const float px = lbmMinX + (x + 0.5f) * lbmCellSizeX;
+                    int gx = (int)std::floor((px - g_voxMinX) / (bx > 1e-9f ? bx : 1e-9f));
+                    if (gx < 0 || gx >= g_voxNx || gy < 0 || gy >= g_voxNy || gz < 0 || gz >= g_voxNz)
+                        continue;                      // вне тела — свободный поток
                     int gIdx = (gz*g_voxNy + gy)*g_voxNx + gx;
-                    int lIdx = (z*lbmNy + y)*lbmNx + x;
-                    if (gIdx >=0 && gIdx < (int)g_voxelData.size())
-                        lbmIsSolid[lIdx] = (g_voxelData[gIdx]==1)?1:0;
+                    if (gIdx < 0 || gIdx >= voxTotal) continue;
+                    lbmIsSolid[(z*lbmNy + y)*lbmNx + x] = (vox[gIdx] == 1) ? 1 : 0;
                 }
             }
         }
@@ -569,27 +684,88 @@ void initLBM() {
     float L_LB = L / cellSizeAvg; // объект в клетках
     if (L_LB < 5.0f) L_LB = 5.0f;
     if (L_LB > 200.0f) L_LB = 200.0f;
+    // ---- v1.34.0: связка Re <-> tau без подмены результата ----------------
+    //
+    // Сколько вязкости нужно, чтобы точно воспроизвести физический Re при
+    // текущем разрешении:
+    //     nu_LB = U0 * L_LB / Re_phys,   tau = 0.5 + nu_LB / cs2
+    // Для реального самолёта (Re ~ 1e6) и сетки в десятки ячеек это даёт
+    // tau = 0.5 + ~1e-6, то есть состояние, в котором явная схема BGK
+    // неустойчива. Решётка физически не в состоянии разрешить такой Re — это
+    // ограничение метода, а не настройка.
+    //
+    // Раньше в этом месте стояла тихая подстановка: если tau из физики < 0.52,
+    // бралась пользовательская tau, но в отчёте всё равно печатался физический
+    // Re. Пользователь видел Re = 1.9e6, а рассчитывалось течение с Re ~ 100:
+    // числа в отчёте не имели отношения к тому, что моделировалось.
+    //
+    // Теперь оба числа считаются и показываются явно:
+    //   Re_phys — что обтекается (по Сазерленду и скорости потока);
+    //   Re_LB   — что реально разрешает решётка при выбранной tau.
+    // Если они расходятся, это видно в журнале, панели и отчёте, а не спрятано.
+    const float tauMin = 0.51f, tauMax = 1.5f;   // предел устойчивости явной BGK
     float nuLB_fromRe = (U0tmp * L_LB) / RePhys;
-    // Смешиваем с пользовательским tau, но ограничиваем физически
     float tauFromPhys = nuLB_fromRe / cs2 + 0.5f;
-    // Если tau из физики в разумных пределах, используем его, иначе пользовательский
-    float tauUser = lbmParams.tau;
-    if (!std::isfinite(tauUser) || tauUser < 0.51f) tauUser = 0.55f;
-    if (tauUser > 1.5f) tauUser = 1.5f;
-    // Выбираем более стабильный: max физического и пользовательского, но в пределах
-    float tauFinal = tauFromPhys;
-    if (tauFinal < 0.51f) tauFinal = 0.51f;
-    if (tauFinal > 1.5f) tauFinal = 1.5f;
-    // Если физический дает слишком маленькую вязкость (высокий Re), используем пользовательский для стабильности
-    if (tauFromPhys < 0.52f) tauFinal = tauUser;
+    if (!std::isfinite(tauFromPhys)) tauFromPhys = tauMax;
+
+    float tauFinal;
+    if (lbmParams.autoViscosity) {
+        tauFinal = glm::clamp(tauFromPhys, tauMin, tauMax);
+        if (tauFromPhys < tauMin) {
+            DBG_PHYS("LBM: Re_phys %.0f при сетке L_LB=%.1f и U0=%.3f требует tau=%.6f ниже предела "
+                     "устойчивости %.2f — расчёт идёт при tau=%.3f (Re_LB=%.0f); "
+                     "разрешить Re_phys можно только измельчением сетки",
+                     RePhys, L_LB, U0tmp, tauFromPhys, tauMin, tauFinal,
+                     U0tmp * L_LB / std::max(1e-12f, (tauFinal - 0.5f) * cs2));
+        }
+    } else {
+        tauFinal = lbmParams.tau;
+        if (!std::isfinite(tauFinal)) tauFinal = 0.6f;
+        tauFinal = glm::clamp(tauFinal, tauMin, tauMax);
+    }
 
     lbmParams.tau = tauFinal;
     lbmParams.viscosity = (lbmParams.tau - 0.5f) * cs2;
     lbmParams.U0 = U0tmp;
 
+    {
+        const float nuLB_actual = (tauFinal - 0.5f) * cs2;
+        lbmReynoldsLB = (nuLB_actual > 1e-12f) ? (U0tmp * L_LB / nuLB_actual) : 0.0f;
+        if (!std::isfinite(lbmReynoldsLB)) lbmReynoldsLB = 0.0f;
+    }
+
     lbmCurrentStep = 0;
     lbmConverged = false;
     lbmInitialized = true;
+
+    // ---- v1.34.0: перекрытие домена телом -------------------------------
+    // Отношение фронтальной площади к площади сечения домена. Величина не
+    // «для красоты»: при большом перекрытии границы домена сами поджимают
+    // поток (как стенки аэродинамической трубы), и Cd растёт вместе с
+    // размером модели, а не отражает её форму. Теперь это видно сразу.
+    {
+        lbmBlockageRatio = 0.0f;
+        int ax, sgn;
+        glm::vec3 fd;
+        computeFlowAxis(ax, sgn, fd);
+        float sectionArea = 0.0f;
+        if (ax == 0) sectionArea = (lbmNy * lbmCellSizeY) * (lbmNz * lbmCellSizeZ);
+        else if (ax == 1) sectionArea = (lbmNx * lbmCellSizeX) * (lbmNz * lbmCellSizeZ);
+        else sectionArea = (lbmNx * lbmCellSizeX) * (lbmNy * lbmCellSizeY);
+        float frontal = computeLBMRefArea();
+        if (std::isfinite(sectionArea) && sectionArea > 1e-9f &&
+            std::isfinite(frontal) && frontal > 0.0f) {
+            lbmBlockageRatio = frontal / sectionArea;
+            if (lbmBlockageRatio > 0.05f) {
+                std::cout << "[LBM] Blockage ratio " << (lbmBlockageRatio * 100.0f)
+                          << "% (>5%) — границы домена влияют на силы; увеличьте domainPadding"
+                          << std::endl;
+                DBG_PHYS("LBM: перекрытие домена %.1f%% (>5%%) — Cd/Cl зависят от размера области; "
+                         "увеличьте масштаб паддинга или уменьшите разрешение",
+                         lbmBlockageRatio * 100.0f);
+            }
+        }
+    }
 
     lbmReynolds = RePhys;
     aeroReNumber = lbmReynolds;
@@ -599,13 +775,15 @@ void initLBM() {
     std::cout << "[LBM] Initialized Physics Ultra v1.14.0: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
               << " mu=" << muSuth << " nuPhys=" << nuPhys
               << " cells, tau=" << lbmParams.tau << " nu=" << lbmParams.viscosity
-              << " Re_phys=" << lbmReynolds << " in " << lbmTimeMs << " ms"
+              << " Re_phys=" << lbmReynolds << " Re_LB=" << lbmReynoldsLB
+              << " (" << (lbmParams.autoViscosity ? "auto" : "user tau") << ")"
+              << " in " << lbmTimeMs << " ms"
 #ifdef _OPENMP
               << " [OpenMP " << omp_get_max_threads() << " threads]"
 #endif
               << std::endl;
-    DBG_PHYS("LBM инициализирован: сетка %dx%dx%d (%d ячеек), tau %.4f, nu %.6f, Re %.1f, время %.1f мс",
-             lbmNx, lbmNy, lbmNz, total, lbmParams.tau, lbmParams.viscosity, lbmReynolds, lbmTimeMs);
+    DBG_PHYS("LBM инициализирован: сетка %dx%dx%d (%d ячеек), tau %.4f, nu %.6f, Re_phys %.1f, Re_LB %.1f, время %.1f мс",
+             lbmNx, lbmNy, lbmNz, total, lbmParams.tau, lbmParams.viscosity, lbmReynolds, lbmReynoldsLB, lbmTimeMs);
 }
 
 void resetLBM() {
@@ -619,6 +797,7 @@ void resetLBM() {
 void shutdownLBM() {
     if (lbmInitialized) DBG_PHYS("LBM: остановлен на шаге %d", lbmCurrentStep);
     lbmInitialized = false;
+    sHasBody = false;
     lbmCurrentStep = 0;
     lbmConverged = false;
 }
@@ -1247,14 +1426,30 @@ float lbmLatticeDtWorld() {
 void updateLBM(float deltaTime, int forceSteps) {
     if (!lbmParams.enabled) return;
     if (!lbmInitialized) { initLBM(); return; }
-    if (lbmNx != g_voxNx || lbmNy != g_voxNy || lbmNz != g_voxNz) {
-        if (abs(lbmNx - g_voxNx) > 2 || abs(lbmNy - g_voxNy) > 2 || abs(lbmNz - g_voxNz) > 2) {
+    // v1.34.0 — домен намеренно больше воксельного бокса (см. initLBM), поэтому
+    // сравнение lbmNx с g_voxNx перезапускало бы решатель каждый кадр. Следим
+    // за боксом самой модели: его изменение и есть повод для переинициализации.
+    {
+        const bool haveBody = !(g_voxelData.empty() || g_voxNx <= 0 || g_voxNy <= 0 || g_voxNz <= 0);
+        bool changed = false;
+        if (haveBody != sHasBody) {
+            changed = true;
+        } else if (haveBody) {
+            changed = sBodyN[0] != g_voxNx || sBodyN[1] != g_voxNy || sBodyN[2] != g_voxNz ||
+                      std::fabs(sBodyMin[0] - g_voxMinX) > 1e-4f ||
+                      std::fabs(sBodyMin[1] - g_voxMinY) > 1e-4f ||
+                      std::fabs(sBodyMin[2] - g_voxMinZ) > 1e-4f ||
+                      std::fabs(sBodyMax[0] - g_voxMaxX) > 1e-4f ||
+                      std::fabs(sBodyMax[1] - g_voxMaxY) > 1e-4f ||
+                      std::fabs(sBodyMax[2] - g_voxMaxZ) > 1e-4f;
+        }
+        if (changed) {
             std::cout << "[LBM] Voxel grid changed, reinit" << std::endl;
             DBG_PHYS("LBM: воксельная сетка изменилась (%dx%dx%d -> %dx%dx%d), переустановка решателя",
-                     lbmNx, lbmNy, lbmNz, g_voxNx, g_voxNy, g_voxNz);
+                     sBodyN[0], sBodyN[1], sBodyN[2], g_voxNx, g_voxNy, g_voxNz);
             initLBM();
+            return;
         }
-        return;
     }
     int steps;
     if (forceSteps >= 0) {

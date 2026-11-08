@@ -211,9 +211,12 @@ __device__ bool sampleSDF(float3 p, float* dist, int nx, int ny, int nz,
         *outD = 1000.0f;
         return false;
     }
-    // Поле хранится в ВОКСЕЛЯХ (шаг BFS = 1), переводим в мировые единицы,
-    // иначе зоны влияния зависят от разрешения сетки.
-    *outD = dist[(iz*ny + iy)*nx + ix] * csX;
+    // v1.34.0 — поле расстояний в МЕТРАХ, как его строит voxel_grid.cpp
+    // (инициализация поверхности ±0.5*ячейки, веса соседей в метрах).
+    // Здесь стояло умножение на csX: расстояние уменьшалось в 1/cs раз, и
+    // зоны влияния/выталкивание зависели от разрешения сетки, а частицы
+    // проникали внутрь тела почти без сопротивления. Умножения быть не должно.
+    *outD = dist[(iz*ny + iy)*nx + ix];
     return true;
 }
 
@@ -412,18 +415,103 @@ __global__ void initParticlesKernel(float3* pos, float3* col, int n, FlowParams 
     col[i] = make_float3(0.3f, 0.8f, 1.0f);
 }
 
-__global__ void updateParticlesKernel(float3* pos, float3* col, int n,
+// Начальное условие скорости: частицы вносятся потоком, поэтому стартуют
+// увлечёнными (v = поток), а не с нуля — иначе первый кадр даёт бросок.
+__global__ void initVelocitiesKernel(float3* vel, int n, FlowParams prm)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    vel[i] = make_float3(prm.vx, prm.vy, prm.vz);
+}
+
+// v1.34.0 — ядро шага частицы.
+//
+// Что изменилось и почему:
+//  1) скорость частицы хранится в отдельном буфере и живёт между кадрами.
+//     Раньше v было просто скоростью жидкости в точке (трассер без инерции):
+//     частица не могла отставать от потока, а «столкновительная» velocity
+//     использовалась только для цвета и терялась к следующему кадру;
+//  2) шаг — аналитическое решение уравнения с линеаризованным сопротивлением:
+//         v+ = vEq + (v - vEq) e^(-dt/tau),  vEq = vFluid + tau*g_eff
+//         x+ = x + vEq dt + (v - vEq) tau (1 - e^(-dt/tau))
+//     Для 20 мкм dt/tau ~ 3.4, и явная схема здесь неустойчива;
+//  3) при ударе о поверхность больше нет множителя slideBoost = 1.2..2.0,
+//     который ДОБАВЛЯЛ энергию: касательная скорость могла вырасти почти вдвое
+//     от одного касания. Теперь нормальная составляющая гасится (e = 0.1),
+//     касательная — с трением 0.85, без источников энергии.
+__device__ __forceinline__ float dragCdSphere(float Re)
+{
+    if (Re < 1e-6f) return 0.0f;
+    if (Re < 0.1f) return 24.0f / Re;
+    if (Re < 1.0f) return (24.0f / Re) * (1.0f + 0.15f * powf(Re, 0.687f));
+    if (Re < 1000.0f)
+        return (24.0f / Re) * (1.0f + 0.15f * powf(Re, 0.687f)) +
+               0.42f / (1.0f + 42500.0f * powf(Re, -1.16f));
+    if (Re < 2e5f) return 0.44f;
+    return 0.1f;
+}
+
+__global__ void updateParticlesKernel(float3* pos, float3* vel, float3* col, int n,
                                        FlowParams prm, float dt, float* dDist)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
 
     float3 p = pos[i];
-    float3 v = fullField(p, prm, dDist);
+    float3 v = vel[i];
 
-    float3 np = make_float3(p.x + v.x * dt * prm.timeScale,
-                            p.y + v.y * dt * prm.timeScale,
-                            p.z + v.z * dt * prm.timeScale);
+    // Скорость жидкости в точке (то, что раньше ошибочно считалось скоростью
+    // самой частицы).
+    float3 vf = fullField(p, prm, dDist);
+    if (!isfinite(vf.x) || !isfinite(vf.y) || !isfinite(vf.z))
+        vf = make_float3(prm.vx, prm.vy, prm.vz);
+    if (!isfinite(v.x) || !isfinite(v.y) || !isfinite(v.z)) v = vf;
+
+    // Свойства аэрозоля — те же, что в CPU-пути (particles.cpp).
+    const float d_p = 20e-6f;
+    const float rho_p = 1000.0f;
+    float rho_f = prm.airDensity;
+    if (!isfinite(rho_f) || rho_f < 1e-3f) rho_f = 1.225f;
+    float T = prm.airTemperature;
+    if (!isfinite(T) || T < 1.0f) T = 288.15f;
+    const float mu = 1.716e-5f * powf(T / 273.15f, 1.5f) * (273.15f + 110.4f) / (T + 110.4f);
+    const float pi = 3.14159265f;
+    const float vol = pi / 6.0f * d_p * d_p * d_p;
+    const float m_p = rho_p * vol;
+    const float area = pi * 0.25f * d_p * d_p;
+
+    float3 vrel = make_float3(vf.x - v.x, vf.y - v.y, vf.z - v.z);
+    float vrelMag = sqrtf(vrel.x * vrel.x + vrel.y * vrel.y + vrel.z * vrel.z);
+    float tau;
+    if (vrelMag > 1e-9f) {
+        float Re = rho_f * vrelMag * d_p / mu;
+        if (!isfinite(Re) || Re < 1e-6f) Re = 1e-6f;
+        if (Re > 1e6f) Re = 1e6f;
+        float cd = dragCdSphere(Re);
+        float fcoef = 0.5f * cd * rho_f * area * vrelMag;   // Н на (м/с)
+        tau = (fcoef > 1e-18f) ? (m_p / fcoef) : (rho_p * d_p * d_p / (18.0f * mu));
+    } else {
+        tau = rho_p * d_p * d_p / (18.0f * mu);
+    }
+    if (!isfinite(tau) || tau <= 0.0f) tau = 1e-6f;
+
+    // dt уже в модельных секундах; timeScale — пользовательский масштаб времени
+    // адвекции частиц (тот же, что на CPU: updateParticles получает dt и
+    // умножает его на flowParams.timeScale).
+    float dtl = dt * prm.timeScale;
+    if (!isfinite(dtl) || dtl <= 0.0f) dtl = 0.0f;
+    if (dtl > 1.0f) dtl = 1.0f;
+
+    float gEff = -(1.0f - rho_f / rho_p) * 9.81f;
+    float3 vEq = make_float3(vf.x, vf.y + gEff * tau, vf.z);
+    float E = expf(-dtl / tau);
+    float3 dv = make_float3(v.x - vEq.x, v.y - vEq.y, v.z - vEq.z);
+    v = make_float3(vEq.x + dv.x * E, vEq.y + dv.y * E, vEq.z + dv.z * E);
+    float3 np = make_float3(p.x + vEq.x * dtl + dv.x * tau * (1.0f - E),
+                            p.y + vEq.y * dtl + dv.y * tau * (1.0f - E),
+                            p.z + vEq.z * dtl + dv.z * tau * (1.0f - E));
+    if (!isfinite(np.x) || !isfinite(np.y) || !isfinite(np.z)) np = p;
+    if (!isfinite(v.x) || !isfinite(v.y) || !isfinite(v.z)) v = vf;
 
     bool collided = false;
     float surfDist = 1000.0f;
@@ -444,43 +532,24 @@ __global__ void updateParticlesKernel(float3* pos, float3* col, int n,
         np.z += nrm.z * push;
         collided = true;
 
-        // Улучшенное скольжение вдоль поверхности
-        float vmag = sqrtf(prm.vx*prm.vx + prm.vy*prm.vy + prm.vz*prm.vz);
-        if (vmag < 1e-4f) vmag = 1e-4f;
-
-        // Нормальная компонента потока
-        float vinf_n = prm.vx*nrm.x + prm.vy*nrm.y + prm.vz*nrm.z;
-        // Тангенциальная составляющая потока (вдоль поверхности)
-        float3 vinf_t = make_float3(prm.vx - vinf_n*nrm.x,
-                                    prm.vy - vinf_n*nrm.y,
-                                    prm.vz - vinf_n*nrm.z);
-
-        // Убираем нормальную составляющую скорости частицы
+        // Отскок с потерями. Нормальная составляющая гасится (e = 0.1 —
+        // аэрозоль почти прилипает), касательная — трение 0.85. Никаких
+        // множителей больше единицы: столкновение не может добавить энергию.
         float vn = v.x*nrm.x + v.y*nrm.y + v.z*nrm.z;
-        v.x -= vn * nrm.x;
-        v.y -= vn * nrm.y;
-        v.z -= vn * nrm.z;
-
-        // При ударе под 90° (перпендикулярно) даём сильный тангенциальный импульс
-        float perpFactor = fabsf(vinf_n) / (vmag + 1e-6f);
-        float slideBoost = 1.2f + 0.8f * perpFactor;
-
-        v.x += vinf_t.x * slideBoost * 0.6f;
-        v.y += vinf_t.y * slideBoost * 0.6f;
-        v.z += vinf_t.z * slideBoost * 0.6f;
-
-        // Если скорость частицы совсем мала — полностью заменяем на касательный поток
-        float spd = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
-        if (spd < 0.3f * vmag) {
-            v.x = vinf_t.x * slideBoost;
-            v.y = vinf_t.y * slideBoost;
-            v.z = vinf_t.z * slideBoost;
+        if (vn < 0.0f) {
+            const float eN = 0.1f, fT = 0.85f;
+            float3 vnVec = make_float3(nrm.x * vn, nrm.y * vn, nrm.z * vn);
+            float3 vt = make_float3(v.x - vnVec.x, v.y - vnVec.y, v.z - vnVec.z);
+            v = make_float3(vt.x * fT - vnVec.x * eN,
+                            vt.y * fT - vnVec.y * eN,
+                            vt.z * fT - vnVec.z * eN);
         }
     } else if (ok && d < 1.5f * prm.cellSizeX) {
         collided = true;
     }
 
     pos[i] = np;
+    vel[i] = v;
 
     float speed = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
     float spdT = fminf(speed / (prm.maxSpeed + 1e-6f), 1.0f);
@@ -726,6 +795,9 @@ static void validateDistField(const FlowParams& prm) {
 // завершении (cudaReleaseAll).
 // =====================================================
 static float3* g_dPos   = nullptr; static size_t g_capPos   = 0;
+// v1.34.0 — скорость частицы как состояние (раньше её не было вовсе).
+static float3* g_dVel   = nullptr; static size_t g_capVel   = 0;
+static int     g_velCount = 0;   // для скольких частиц скорость валидна
 static float3* g_dCol   = nullptr; static size_t g_capCol   = 0;
 static float3* g_dVerts = nullptr; static size_t g_capVerts = 0;
 static float3* g_dNorms = nullptr; static size_t g_capNorms = 0;
@@ -745,6 +817,7 @@ static bool ensureBuffer(float3** pp, size_t* cap, size_t need) {
 
 extern "C" void cudaReleaseAll() {
     if (g_dPos)   { cudaFree(g_dPos);   g_dPos = nullptr;   g_capPos = 0; }
+    if (g_dVel)   { cudaFree(g_dVel);   g_dVel = nullptr;   g_capVel = 0; g_velCount = 0; }
     if (g_dCol)   { cudaFree(g_dCol);   g_dCol = nullptr;   g_capCol = 0; }
     if (g_dVerts) { cudaFree(g_dVerts); g_dVerts = nullptr; g_capVerts = 0; }
     if (g_dNorms) { cudaFree(g_dNorms); g_dNorms = nullptr; g_capNorms = 0; }
@@ -761,9 +834,13 @@ extern "C" void initParticlesCUDA(std::vector<float>& pos, std::vector<float>& c
     } catch (...) { return; }
     if (!ensureBuffer(&g_dPos, &g_capPos, (size_t)n)) return;
     if (!ensureBuffer(&g_dCol, &g_capCol, (size_t)n)) return;
+    if (!ensureBuffer(&g_dVel, &g_capVel, (size_t)n)) return;
     int bs = 256, nb = (n + bs - 1) / bs;
     initParticlesKernel<<<nb, bs>>>(g_dPos, g_dCol, n, prm);
     CUDA_CHECK(cudaGetLastError());
+    initVelocitiesKernel<<<nb, bs>>>(g_dVel, n, prm);
+    CUDA_CHECK(cudaGetLastError());
+    g_velCount = n;
     CUDA_CHECK(cudaMemcpy(pos.data(), g_dPos, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(col.data(), g_dCol, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
 }
@@ -775,11 +852,19 @@ extern "C" void updateParticlesCUDA(std::vector<float>& pos, std::vector<float>&
     if ((int)pos.size() < n * 3 || (int)col.size() < n * 3) return;
     if (!ensureBuffer(&g_dPos, &g_capPos, (size_t)n)) return;
     if (!ensureBuffer(&g_dCol, &g_capCol, (size_t)n)) return;
+    if (!ensureBuffer(&g_dVel, &g_capVel, (size_t)n)) { g_velCount = 0; return; }
     validateDistField(prm);
+    // Число частиц изменилось — прежние скорости к новым индексам не относятся.
+    if (g_velCount != n) {
+        int bs0 = 256, nb0 = (n + bs0 - 1) / bs0;
+        initVelocitiesKernel<<<nb0, bs0>>>(g_dVel, n, prm);
+        CUDA_CHECK(cudaGetLastError());
+        g_velCount = n;
+    }
     CUDA_CHECK(cudaMemcpy(g_dPos, pos.data(), (size_t)n * 3 * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(g_dCol, col.data(), (size_t)n * 3 * sizeof(float), cudaMemcpyHostToDevice));
     int bs = 256, nb = (n + bs - 1) / bs;
-    updateParticlesKernel<<<nb, bs>>>(g_dPos, g_dCol, n, prm, dt, g_dDist);
+    updateParticlesKernel<<<nb, bs>>>(g_dPos, g_dVel, g_dCol, n, prm, dt, g_dDist);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaMemcpy(pos.data(), g_dPos, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(col.data(), g_dCol, (size_t)n * 3 * sizeof(float), cudaMemcpyDeviceToHost));
