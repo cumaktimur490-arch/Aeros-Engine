@@ -271,9 +271,10 @@ endif()
 install(TARGETS aeros-engine DESTINATION .)
 if(WIN32)
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/bin/glfw3.dll DESTINATION . OPTIONAL)
-    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/bin/sl.common.dll DESTINATION . OPTIONAL)
-    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/bin/sl.dlss.dll DESTINATION . OPTIONAL)
-    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/bin/sl.interposer.dll DESTINATION . OPTIONAL)
+    # v1.36.0 — sl.{dlss,interposer,common}.dll удалены из репозитория: код их
+    # никогда не загружал (в коде нет LoadLibrary/Streamline), а лицензии NVIDIA
+    # на них в проекте не было, то есть распространять их было нельзя. Установщики
+    # и portable-скрипт уже были написаны без них — противоречие устранено здесь.
 endif()
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin/ DESTINATION . FILES_MATCHING PATTERN "*.stl" OPTIONAL)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE DESTINATION . RENAME LICENSE.txt OPTIONAL)

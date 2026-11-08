@@ -209,7 +209,6 @@ Source: "..\aeros\bin\main.exe";     ...; Check: not FileExists(ExpandConstant('
 
 DLL в установщиках — тоже только свои: шаблон `..\aeros\bin\*.dll` убран,
 потому что в `bin` лежат `glfw3-x86.dll` / `glfw3-arm64.dll` (чужие архитектуры)
-и неиспользуемые NVIDIA Streamline `sl.*.dll` (код их не загружает — FrameGen
 реализован внутри движка).
 
 ## 🐛 Troubleshooting

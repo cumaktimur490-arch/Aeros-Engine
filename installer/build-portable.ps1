@@ -98,7 +98,7 @@ function Build-Portable($archSuffix) {
     }
 
     # DLLs: glfw строго своей архитектуры (x64 лежит как glfw3.dll, остальные — с суффиксом).
-    # Общие *.dll из bin не копируем: там чужие архитектуры и неиспользуемые sl.*.dll.
+    # Общие *.dll из bin не копируем: там библиотеки чужих архитектур.
     $glfwName = if ($archSuffix -eq "x64") { "glfw3.dll" } else { "glfw3-$archSuffix.dll" }
     $glfwSrc = Join-Path $BinDir $glfwName
     if (Test-Path $glfwSrc) {

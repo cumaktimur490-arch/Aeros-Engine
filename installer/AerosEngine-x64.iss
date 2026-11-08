@@ -69,7 +69,7 @@ Source: "..\aeros\bin\main-x64.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"
 ; DLL — только x64. glfw3.dll здесь как страховка (сборка линкует GLFW статически);
 ; cudart64*.dll — если CUDA-рантайм всё же оказался динамическим.
 ; Общий шаблон *.dll не используется: в bin лежат чужие архитектуры (glfw3-x86.dll,
-; glfw3-arm64.dll) и неиспользуемые NVIDIA Streamline DLL (sl.*.dll).
+; glfw3-arm64.dll) — они относятся к другим архитектурам.
 Source: "..\aeros\bin\glfw3.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\aeros\bin\cudart64*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Модели STL — примеры

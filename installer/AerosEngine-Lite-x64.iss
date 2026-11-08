@@ -70,7 +70,7 @@ Name: "install_deps"; Description: "Download all required dependencies (GLFW, GL
 ; Если main-lite-x64.exe не собран, ISCC упадёт при компиляции — это и нужно.
 Source: "..\aeros\bin\main-lite-x64.exe"; DestDir: "{app}"; DestName: "{#LiteExeName}"; Flags: ignoreversion
 Source: "..\aeros\bin\aeros-engine-lite-x64.exe"; DestDir: "{app}"; DestName: "aeros-engine-lite-x64.exe"; Flags: ignoreversion skipifsourcedoesntexist
-; DLL — только x64 (шаблон *.dll тащил бы glfw3-x86.dll/glfw3-arm64.dll и неиспользуемые sl.*.dll)
+; DLL — только x64 (шаблон *.dll тащил бы glfw3-x86.dll/glfw3-arm64.dll — чужие архитектуры)
 Source: "..\aeros\bin\glfw3.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Models
 Source: "..\aeros\bin\*.stl"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist

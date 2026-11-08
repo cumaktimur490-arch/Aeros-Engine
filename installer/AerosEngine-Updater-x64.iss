@@ -53,7 +53,7 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 ; (fallback и давал «CreateProcess сбой; код 216» на ПК пользователя).
 Source: "..\aeros\bin\main-x64.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
 ; DLL — только x64 (общий шаблон *.dll тащил бы чужие архитектуры: glfw3-x86.dll,
-; glfw3-arm64.dll и неиспользуемые NVIDIA Streamline sl.*.dll)
+; glfw3-arm64.dll — чужая архитектура)
 Source: "..\aeros\bin\glfw3.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\aeros\bin\cudart64*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\VERSION"; DestDir: "{app}"; DestName: "VERSION.txt"; Flags: ignoreversion skipifsourcedoesntexist
