@@ -276,14 +276,22 @@ if(WIN32)
     # на них в проекте не было, то есть распространять их было нельзя. Установщики
     # и portable-скрипт уже были написаны без них — противоречие устранено здесь.
 endif()
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin/ DESTINATION . FILES_MATCHING PATTERN "*.stl" OPTIONAL)
+# OPTIONAL обязан стоять ДО FILES_MATCHING/PATTERN — иначе CMake 4.x
+# останавливает конфигурацию («install DIRECTORY does not allow OPTIONAL after
+# PATTERN»). Именно это и валило job сборки, начиная с коммита с удалением sl.*.
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin/ DESTINATION . OPTIONAL
+        FILES_MATCHING PATTERN "*.stl")
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE DESTINATION . RENAME LICENSE.txt OPTIONAL)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../README.md DESTINATION . RENAME README.txt OPTIONAL)
 
 # For Linux, also install desktop file
 if(UNIX AND NOT APPLE)
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../packaging/aeros-engine.desktop.in ${CMAKE_BINARY_DIR}/aeros-engine.desktop @ONLY OPTIONAL)
-    install(FILES ${CMAKE_BINARY_DIR}/aeros-engine.desktop DESTINATION share/applications OPTIONAL)
+    # configure_file не принимает OPTIONAL: проверяем наличие файла сами.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/aeros-engine.desktop.in)
+        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../packaging/aeros-engine.desktop.in
+                       ${CMAKE_BINARY_DIR}/aeros-engine.desktop @ONLY)
+        install(FILES ${CMAKE_BINARY_DIR}/aeros-engine.desktop DESTINATION share/applications OPTIONAL)
+    endif()
 endif()
 
 set(CPACK_PACKAGE_NAME "Aeros-Engine")
