@@ -23,6 +23,83 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  # ===================================================
+  # v1.36.0 — СБОРКА НАСТОЯЩЕГО ТАРГЕТА.
+  #
+  # Headless-наборы линкуют заглушки вместо OpenGL/GLFW/CUDA и поэтому в
+  # принципе не видят ошибок компиляции платформенного кода. Цена уже была
+  # уплачена: `fix(windows): open_url.h ... min/max` лечил MSVC C2589, который
+  # тесты поймать не могли. Здесь проект собирается настоящим компилятором
+  # (MSVC на windows-latest и GCC на ubuntu-latest) без запуска.
+  # ===================================================
+  build:
+    name: Сборка (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Зависимости (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev \
+            xorg-dev libomp-dev
+
+      - name: CMake (configure)
+        # CPU_ONLY: на раннере нет nvcc/NVIDIA GPU. Это отключает только CUDA-
+        # ядро — весь C++ (оба рендерера, ImGui, диалоги) собирается как обычно,
+        # и именно это ловит платформенные ошибки вроде C2589.
+        run: cmake -S aeros -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAEROS_CPU_ONLY=ON -DAEROS_ENABLE_VULKAN=ON
+
+      - name: CMake (build)
+        run: cmake --build build --parallel
+
+      - name: Артефакт собран
+        shell: bash
+        run: |
+          find build -maxdepth 2 -type f \( -name "aeros-engine*" -o -name "main-*" \) -print
+          test -n "$(find build -maxdepth 2 -type f \( -name 'aeros-engine*' -o -name 'main-*' \) -print -quit)"
+
+  # ===================================================
+  # v1.36.0 — те же наборы под AddressSanitizer + UBSan.
+  #
+  # Заглушки не мешают: проверяются переполнения буферов, use-after-free и
+  # неопределённое поведение в собственном коде решателей. Шум из вендоренного
+  # ImGui не глушится глобально — если он появится, подавлять нужно точечно.
+  # ===================================================
+  sanitizers:
+    name: ASan + UBSan (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Зависимости
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libomp-dev fonts-dejavu-core
+
+      - name: Версия g++
+        run: g++ --version | head -1
+
+      - name: Headless-наборы под ASan/UBSan
+        working-directory: aeros/tests
+        env:
+          EXTRA_CXXFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=0:abort_on_error=0:print_stacktrace=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=0"
+          OMP_NUM_THREADS: "2"
+        run: ./run-suites.sh
+
   tests:
     name: Headless-тесты (Linux, g++)
     runs-on: ubuntu-latest
@@ -51,21 +128,7 @@ jobs:
         # Каждый набор запускается отдельно: так видно, какой именно упал, а
         # хвост его вывода уходит в аннотацию (`::error`), потому что скачать
         # лог из отчёта о проверке не всегда возможно.
-        run: |
-          set -o pipefail
-          fail=0
-          for t in timelapse lbm physclock fem ui settings vulkan particles \
-                   startup glyphs hotkeys validate; do
-            echo "===== $t"
-            if ! make "$t" 2>&1 | tee "/tmp/$t.log"; then
-              echo "::error::набор '$t' завершился с ошибкой"
-              tail -12 "/tmp/$t.log" | while IFS= read -r line; do
-                echo "::error file=aeros/tests/Makefile::[$t] $line"
-              done
-              fail=1
-            fi
-          done
-          exit $fail
+        run: ../tests/run-suites.sh
 
       - name: Компиляция всех единиц трансляции (без линковки)
         working-directory: aeros/src

@@ -19,7 +19,10 @@
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
 SRC := ../src
 INC := -I$(SRC) -I../../libs/glm -I../../libs/glad/include -I../../libs/glfw/include
-CXXFLAGS := -std=c++17 -O1 -fopenmp -Wall -Wextra -Wno-unused-parameter $(INC)
+# EXTRA_CXXFLAGS — для CI-прогона под ASan/UBSan, не меняя остальные флаги:
+#   make EXTRA_CXXFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+EXTRA_CXXFLAGS ?=
+CXXFLAGS := -std=c++17 -O1 -fopenmp -Wall -Wextra -Wno-unused-parameter $(INC) $(EXTRA_CXXFLAGS)
 
 COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
