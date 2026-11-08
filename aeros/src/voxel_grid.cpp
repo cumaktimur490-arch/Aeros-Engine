@@ -13,6 +13,7 @@
 #include "cuda_api.h"
 #include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "voxel_grid.h"
+#include "mesh_bvh.h"   // v1.36.0 — BVH вместо перебора всех треугольников
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -127,41 +128,15 @@ glm::vec3 sdfNormalCPU(const glm::vec3& p) {
 // - Гауссовское сглаживание вместо box blur
 // - Сохранение острых углов
 // =====================================================
-static inline bool rayTri(const glm::vec3& orig, const glm::vec3& dir,
-                   const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2) {
-    glm::vec3 e1 = v1-v0, e2 = v2-v0;
-    glm::vec3 pv = glm::cross(dir, e2);
-    float det = glm::dot(e1, pv);
-    if (fabsf(det) < 1e-8f) return false;
-    float inv = 1.0f/det;
-    glm::vec3 tv = orig - v0;
-    float u = glm::dot(tv, pv)*inv;
-    if (u < 0.0f || u > 1.0f) return false;
-    glm::vec3 qv = glm::cross(tv, e1);
-    float v = glm::dot(dir, qv)*inv;
-    if (v < 0.0f || u+v > 1.0f) return false;
-    float t = glm::dot(e2, qv)*inv;
-    return t > 1e-6f;
-}
-
-struct TriAABB {
-    glm::vec3 v0,v1,v2;
-    glm::vec3 minB, maxB;
-};
-
-static bool insideMeshOptimized(const glm::vec3& p, const std::vector<TriAABB>& tris, const glm::vec3& dir) {
-    int hits = 0;
-    for (const auto& tri : tris) {
-        if (p.y < tri.minB.y || p.y > tri.maxB.y) continue;
-        if (p.z < tri.minB.z || p.z > tri.maxB.z) continue;
-        if (tri.maxB.x < p.x) continue;
-        glm::vec3 e1 = tri.v1 - tri.v0;
-        glm::vec3 e2 = tri.v2 - tri.v0;
-        if (glm::length(glm::cross(e1,e2)) < 1e-12f) continue;
-        if (rayTri(p, dir, tri.v0, tri.v1, tri.v2)) hits++;
-    }
-    return (hits % 2) == 1;
-}
+// =====================================================
+// v1.36.0 — тест «внутри/снаружи» через BVH (meshbvh) и голосование трёх лучей.
+//
+// Было: полный перебор всех треугольников для каждого вокселя + ОДИН луч вдоль
+// +X. Первое давало часы на большой модели, второе — дырки в теле там, где луч
+// проходит ровно по ребру (на 500k треугольников это не редкость, а норма).
+// Стало: BVH (O(log N) на запрос) + три луча по осям со сдвигом начала на
+// иррациональную долю ячейки и решение большинством.
+// =====================================================
 
 void buildVoxelGrid(const std::vector<float>& verts, int res) {
     if (verts.empty()) {
@@ -227,42 +202,40 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         return;
     }
 
-    std::vector<TriAABB> tris;
+    std::vector<meshbvh::Triangle> tris;
     tris.reserve(verts.size()/9 + 1);
     for (size_t i = 0; i + 8 < verts.size(); i += 9) {
-        float x0=verts[i], y0=verts[i+1], z0=verts[i+2];
-        float x1=verts[i+3], y1=verts[i+4], z1=verts[i+5];
-        float x2=verts[i+6], y2=verts[i+7], z2=verts[i+8];
-        if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(z0)) continue;
-        TriAABB t;
-        t.v0 = glm::vec3(x0,y0,z0);
-        t.v1 = glm::vec3(x1,y1,z1);
-        t.v2 = glm::vec3(x2,y2,z2);
-        t.minB = glm::vec3(std::min({t.v0.x, t.v1.x, t.v2.x}),
-                           std::min({t.v0.y, t.v1.y, t.v2.y}),
-                           std::min({t.v0.z, t.v1.z, t.v2.z}));
-        t.maxB = glm::vec3(std::max({t.v0.x, t.v1.x, t.v2.x}),
-                           std::max({t.v0.y, t.v1.y, t.v2.y}),
-                           std::max({t.v0.z, t.v1.z, t.v2.z}));
-        if (glm::length(glm::cross(t.v1-t.v0, t.v2-t.v0)) < 1e-12f) continue;
+        const glm::vec3 a(verts[i],   verts[i+1], verts[i+2]);
+        const glm::vec3 b(verts[i+3], verts[i+4], verts[i+5]);
+        const glm::vec3 c(verts[i+6], verts[i+7], verts[i+8]);
+        if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z) ||
+            !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.z) ||
+            !std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z)) continue;
+        meshbvh::Triangle t = meshbvh::makeTriangle(a, b, c);
+        if (meshbvh::isDegenerate(t)) continue;
         tris.push_back(t);
     }
 
-    glm::vec3 rayDir(1,0,0);
+    auto tBvh0 = std::chrono::high_resolution_clock::now();
+    meshbvh::BVH bvh;
+    if (!tris.empty()) bvh.build(tris);
+    auto tBvh1 = std::chrono::high_resolution_clock::now();
+    const double bvhMs = std::chrono::duration<double, std::milli>(tBvh1 - tBvh0).count();
 
+    const glm::vec3 cell(csx, csy, csz);
     if (tris.empty()) {
         std::cerr << "[Voxel] No valid triangles for voxelization" << std::endl;
     } else {
         #ifdef _OPENMP
-        #pragma omp parallel for collapse(3) schedule(dynamic)
+        #pragma omp parallel for collapse(3) schedule(dynamic, 4)
         #endif
         for (int k = 0; k < g_voxNz; k++) {
             for (int j = 0; j < g_voxNy; j++) {
                 for (int i = 0; i < g_voxNx; i++) {
-                    glm::vec3 p(g_voxMinX + (i+0.5f)*csx,
-                                g_voxMinY + (j+0.5f)*csy,
-                                g_voxMinZ + (k+0.5f)*csz);
-                    if (insideMeshOptimized(p, tris, rayDir))
+                    const glm::vec3 p(g_voxMinX + (i+0.5f)*csx,
+                                      g_voxMinY + (j+0.5f)*csy,
+                                      g_voxMinZ + (k+0.5f)*csz);
+                    if (bvh.inside(p, cell))
                         g_voxelData[(k*g_voxNy + j)*g_voxNx + i] = 1;
                 }
             }
@@ -459,12 +432,17 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-    std::cout << "Voxelized v1.19.0 Physics Logic Fix: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
-              << " (" << total << " cells, " << tris.size() << " tris) in " << ms << " ms"
+    std::cout << "Voxelized: " << g_voxNx << "x" << g_voxNy << "x" << g_voxNz
+              << " (" << total << " cells, " << tris.size() << " tris, BVH "
+              << bvh.nodeCount() << " nodes) in " << ms << " ms"
 #ifdef _OPENMP
-              << " [OpenMP] [26-neighbor Euclidean]"
+              << " [OpenMP]"
 #endif
-              << std::endl;
-    DBG_PHYS("вокселизация: сетка %dx%dx%d, ячеек %d, треугольников %zu, время %.1f мс",
-             g_voxNx, g_voxNy, g_voxNz, total, tris.size(), ms);
+              << " [BVH, 3-ray vote]" << std::endl;
+    // v1.36.0 — BVH отдельно от вокселизации: по этим двум числам видно, что
+    // именно ускорилось (дерево строится один раз на модель).
+    std::cout << "[Voxel] BVH built in " << bvhMs << " ms" << std::endl;
+    DBG_PHYS("вокселизация: сетка %dx%dx%d, ячеек %d, треугольников %zu, BVH %zu узлов "
+             "(%.1f мс), всего %.1f мс",
+             g_voxNx, g_voxNy, g_voxNz, total, tris.size(), bvh.nodeCount(), bvhMs, ms);
 }
