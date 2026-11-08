@@ -463,7 +463,6 @@ void initLBM() {
         lbmMinX = g_voxMinX - padsMin[0] * padScale;
         lbmMinY = g_voxMinY - padsMin[1] * padScale;
         lbmMinZ = g_voxMinZ - padsMin[2] * padScale;
-        const float minS[3] = {lbmMinX, lbmMinY, lbmMinZ};
         int nOut[3];
         for (int i = 0; i < 3; ++i) {
             int extraMin = (int)std::ceil((padsMin[i] * padScale - 1e-9f) / cs[i]);
@@ -471,7 +470,6 @@ void initLBM() {
             if (padScale <= 0.0f) { extraMin = extraMax = 0; }
             nOut[i] = bodyN[i] + std::max(0, extraMin) + std::max(0, extraMax);
             if (nOut[i] < 8) nOut[i] = 8;
-            (void)minS[i];
         }
         lbmNx = nOut[0]; lbmNy = nOut[1]; lbmNz = nOut[2];
         // Максимумы выводим из числа ячеек и шага, чтобы шаг остался ровно
