@@ -12,8 +12,25 @@
 #include <string>
 
 #ifdef _WIN32
-#include <windows.h>
-#include <shellapi.h>
+// windows.h объявляет min()/max() макросами, а этот заголовок подключается из
+// общих TU (cae_ui.h) — после него `std::max(a, b)` перестаёт компилироваться
+// (MSVC: C2589 «illegal token on right side of '::'»). NOMINMAX просит Windows
+// их не объявлять; undef нужен на случай, если windows.h уже был включён
+// раньше без этого макроса.
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  include <shellapi.h>
+#  ifdef min
+#    undef min
+#  endif
+#  ifdef max
+#    undef max
+#  endif
 #endif
 
 inline bool aerosOpenUrl(const char* url) {
