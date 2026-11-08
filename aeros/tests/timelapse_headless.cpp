@@ -68,7 +68,9 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
 
 // ---- проверки ------------------------------------------------------------
 static int g_failed = 0;
+static int g_checks = 0;
 static void check(bool cond, const std::string& what) {
+    ++g_checks;
     if (!cond) { std::printf("  FAIL: %s\n", what.c_str()); ++g_failed; }
     else       { std::printf("  ok:   %s\n", what.c_str()); }
 }
@@ -215,6 +217,6 @@ int main() {
     timelapseShutdown();
     check(!timelapseReady(), "после shutdown модуль не готов");
 
-    std::printf("\n=== %s (ошибок: %d) ===\n", g_failed == 0 ? "ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ" : "ЕСТЬ ПРОВАЛЫ", g_failed);
+    std::printf("\n=== %s (проверок: %d, ошибок: %d) ===\n", g_failed == 0 ? "ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ" : "ЕСТЬ ПРОВАЛЫ", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

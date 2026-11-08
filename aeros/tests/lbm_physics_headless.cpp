@@ -28,8 +28,10 @@
 #include <vector>
 
 static int g_failed = 0;
+static int g_checks = 0;
 static void check(bool cond, const char* what) {
     std::printf("  %s  %s\n", cond ? "ok:  " : "FAIL:", what);
+    ++g_checks;
     if (!cond) ++g_failed;
 }
 
@@ -551,6 +553,6 @@ int main() {
         check(v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f, "внутри тела скорость = 0");
     }
 
-    std::printf("\n=== %s (ошибок: %d) ===\n", g_failed == 0 ? "ФИЗИКА В ПОРЯДКЕ" : "ЕСТЬ ПРОВАЛЫ", g_failed);
+    std::printf("\n=== %s (проверок: %d, ошибок: %d) ===\n", g_failed == 0 ? "ФИЗИКА В ПОРЯДКЕ" : "ЕСТЬ ПРОВАЛЫ", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
