@@ -494,20 +494,35 @@ void initLBM() {
         sHasBody = true;
     }
 
+    // v1.36.0 — БЕЗ МОЛЧАЛИВОГО УМЕНЬШЕНИЯ СЕТКИ.
+    //
+    // Было: если домен больше 8M ячеек, все три размера умножались на
+    // cbrt(8M/всего), печаталась одна строка в stdout, и расчёт продолжался
+    // на другой сетке — но в интерфейсе, отчёте и числе Рейнольдса оставалось
+    // исходное разрешение. Пользователь узнавал об этом только из журнала.
+    //
+    // Теперь решатель НЕ запускается, причина и фактическое число ячеек
+    // показываются в окне «Сетка не помещается в память» с кнопкой уменьшения
+    // разрешения (тот же путь, что у вокселизации, см. voxel_grid.cpp).
     const int MAX_CELLS = 8*1024*1024;
-    int totalEst = lbmNx*lbmNy*lbmNz;
+    const int totalEst = lbmNx*lbmNy*lbmNz;
     if (totalEst > MAX_CELLS) {
-        float scale = powf((float)MAX_CELLS / totalEst, 1.0f/3.0f);
-        lbmNx = (int)(lbmNx*scale); if (lbmNx < 8) lbmNx = 8;
-        lbmNy = (int)(lbmNy*scale); if (lbmNy < 8) lbmNy = 8;
-        lbmNz = (int)(lbmNz*scale); if (lbmNz < 8) lbmNz = 8;
-        std::cout << "[LBM] Clamped grid to " << lbmNx << "x" << lbmNy << "x" << lbmNz << std::endl;
-        // После укрупнения максимумы обязаны соответствовать новому числу
-        // ячеек, иначе координата ячейки (lbmMin + i*cs) перестанет совпадать
-        // с физической областью, и давление/скорость будут читаться не там.
-        lbmMaxX = lbmMinX + lbmNx * lbmCellSizeX;
-        lbmMaxY = lbmMinY + lbmNy * lbmCellSizeY;
-        lbmMaxZ = lbmMinZ + lbmNz * lbmCellSizeZ;
+        const double ratio = (double)MAX_CELLS / (double)totalEst;
+        int suggested = (int)std::floor((double)voxelResolution * std::cbrt(ratio));
+        suggested = std::max(8, (suggested / 2) * 2);      // чётное и не меньше 8
+        char msg[384];
+        std::snprintf(msg, sizeof(msg),
+                      "Домен LBM %dx%dx%d = %d ячеек не помещается в лимит %d "
+                      "(память под два набора популяций). Расчёт не запущен; "
+                      "уменьшите разрешение примерно до %d.",
+                      lbmNx, lbmNy, lbmNz, totalEst, MAX_CELLS, suggested);
+        DBG_ERROR("%s", msg);
+        std::cout << "[LBM] " << msg << std::endl;
+        g_voxelBuildError = msg;
+        g_voxelSuggestedRes = suggested;
+        g_voxelDialogPending = true;
+        lbmInitialized = false;
+        return;
     }
 
     if (!(lbmCellSizeX > 1e-6f) || !std::isfinite(lbmCellSizeX))
@@ -751,6 +766,11 @@ void initLBM() {
     lbmCurrentStep = 0;
     lbmConverged = false;
     lbmInitialized = true;
+    // Решатель запустился — снимаем статус «сетка не влезла», если он остался
+    // от предыдущей попытки с другим разрешением.
+    g_voxelBuildError.clear();
+    g_voxelSuggestedRes = 0;
+    g_voxelDialogPending = false;
 
     // ---- v1.34.0: перекрытие домена телом -------------------------------
     // Отношение фронтальной площади к площади сечения домена. Величина не
