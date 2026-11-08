@@ -1,6 +1,7 @@
 #include "vulkan_renderer.h"
 #include "globals.h"
 #include "stl_loader.h"
+#include "proc_util.h"   // v1.36.0 — диалоги и glslc без shell
 
 // Заголовки Vulkan лежат в репозитории (libs/vulkan/include), поэтому сборка с
 // Vulkan не требует установленного Vulkan SDK. Флаг AEROS_HAS_VULKAN обычно
@@ -345,10 +346,17 @@ std::vector<std::string> getVulkanDevices() {
 bool hasGlslc() {
     // glslc нужен только разработчику шейдеров: в поставку вкомпилирован SPIR-V
     // (aeros/src/vulkan_scene_spv.h), поэтому на машине пользователя его нет.
+    //
+    // v1.36.0 — без shell: на Windows ищем через SearchPathA, на остальных
+    // платформах спрашиваем сам glslc (`glslc --version`), а не `which`:
+    // так проверяется именно возможность запустить нужную программу, а не
+    // наличие одноимённого файла где-то в PATH.
 #ifdef _WIN32
-    return std::system("where glslc >nul 2>&1") == 0;
+    char found[MAX_PATH] = {0};
+    return SearchPathA(nullptr, "glslc.exe", nullptr,
+                       (DWORD)sizeof(found), found, nullptr) > 0;
 #else
-    return std::system("which glslc >/dev/null 2>&1") == 0;
+    return procutil::run({"glslc", "--version"}).ok;
 #endif
 }
 
@@ -369,8 +377,18 @@ std::vector<uint32_t> compileGLSLtoSPIRV(const std::string& glsl, const std::str
     f << glsl;
     f.close();
 
+    // v1.36.0 — argv вместо командной строки. Все элементы здесь наши
+    // (временные пути в /tmp и имя стадии из фиксированного набора), но и
+    // случайно сломанное имя не должно превращаться в команду оболочки.
+#ifdef _WIN32
+    // Windows: exec-путь procutil не поддерживается (см. proc_util.h);
+    // строка целиком построена из констант и путей, созданных этой функцией.
     std::string cmd = "glslc -fshader-stage=" + stage + " " + tmpGLSL + " -o " + tmpSPV + " 2>&1";
     if (std::system(cmd.c_str()) != 0) return spirv;
+#else
+    if (!procutil::run({"glslc", "-fshader-stage=" + stage, tmpGLSL, "-o", tmpSPV}).ok)
+        return spirv;
+#endif
 
     std::ifstream spvFile(tmpSPV, std::ios::binary | std::ios::ate);
     if (!spvFile) return spirv;
@@ -1927,36 +1945,31 @@ RendererAPI getRendererAPI() { return g_currentAPI; }
 // =====================================================
 // Диалоги выбора файлов — между платформами
 // =====================================================
+namespace {
+#ifndef _WIN32
+// v1.36.0 — общий безопасный запуск zenity/kdialog (без shell).
+// Возвращает строку из stdout; пусто = отмена или диалог не установлен.
+std::string runDialogCapture(const std::vector<std::string>& argv) {
+    const procutil::Result r = procutil::runCapture(argv);
+    if (!r.ok) return "";
+    return procutil::firstLine(r.output);
+}
+#endif
+} // namespace
+
 std::string openFileDialogNative() {
 #ifdef _WIN32
     return openFileDialog();
 #else
-    FILE* fp = popen("zenity --file-selection --file-filter='STL files | *.stl *.STL' "
-                     "--title='Открыть модель STL' 2>/dev/null", "r");
-    if (fp) {
-        char path[1024] = {0};
-        if (fgets(path, sizeof(path), fp)) {
-            pclose(fp);
-            std::string s(path);
-            s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
-            s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
-            if (!s.empty()) return s;
-        } else {
-            pclose(fp);
-        }
-    }
-    fp = popen("kdialog --getopenfilename . '*.stl | STL Models' 2>/dev/null", "r");
-    if (fp) {
-        char path[1024] = {0};
-        if (fgets(path, sizeof(path), fp)) {
-            pclose(fp);
-            std::string s(path);
-            s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
-            s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
-            if (!s.empty()) return s;
-        } else {
-            pclose(fp);
-        }
+    // v1.36.0 — без shell: argv передаётся execvp напрямую (см. proc_util.h).
+    {
+        std::string s = runDialogCapture({
+            "zenity", "--file-selection",
+            "--file-filter=STL files | *.stl *.STL",
+            "--title=Открыть модель STL"});
+        if (!s.empty()) return s;
+        s = runDialogCapture({"kdialog", "--getopenfilename", ".", "*.stl | STL Models"});
+        if (!s.empty()) return s;
     }
     std::cout << "[FileDialog] Нативный диалог не найден, проверяем ./models/ и ./bin/" << std::endl;
     const std::vector<std::string> candidates = {
@@ -1980,7 +1993,15 @@ std::string saveFileDialogNative(const std::string& defaultName) {
 #ifdef _WIN32
     OPENFILENAMEA ofn;
     char szFile[260] = {0};
-    strncpy(szFile, defaultName.c_str(), sizeof(szFile) - 1);
+    // v1.36.0 — раньше длинное имя молча обрезалось strncpy(): диалог
+    // открывался с усечённым именем, и файл сохранялся не под тем именем,
+    // которое показала программа. Теперь это явный отказ с сообщением.
+    if (defaultName.size() >= sizeof(szFile)) {
+        std::cerr << "[FileDialog] имя файла длиннее " << (sizeof(szFile) - 1)
+                  << " символов — диалог сохранения не открыт" << std::endl;
+        return "";
+    }
+    std::memcpy(szFile, defaultName.c_str(), defaultName.size() + 1);
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.lpstrFile = szFile;
@@ -1994,18 +2015,13 @@ std::string saveFileDialogNative(const std::string& defaultName) {
     if (GetSaveFileNameA(&ofn)) return std::string(szFile);
     return "";
 #else
-    FILE* fp = popen(("zenity --file-selection --save --confirm-overwrite --filename='" +
-                      defaultName + "' 2>/dev/null").c_str(), "r");
-    if (fp) {
-        char path[1024] = {0};
-        if (fgets(path, sizeof(path), fp)) {
-            pclose(fp);
-            std::string s(path);
-            s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
-            return s;
-        }
-        pclose(fp);
-    }
+    // v1.36.0 — было popen("... --filename='" + defaultName + "'"), то есть
+    // апостроф в имени файла закрывал кавычки и превращал остаток пути в
+    // команды оболочки. Теперь " --filename=<имя>" — ОДИН аргумент execvp.
+    const std::string s = runDialogCapture({
+        "zenity", "--file-selection", "--save", "--confirm-overwrite",
+        "--filename=" + defaultName});
+    if (!s.empty()) return s;
     return defaultName;
 #endif
 }

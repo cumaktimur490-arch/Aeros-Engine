@@ -19,6 +19,7 @@
 
 #include "stl_loader.h"
 #include "version.h"
+#include "proc_util.h"   // v1.36.0 — запуск zenity/kdialog без shell
 
 // =====================================================
 // STL loader v1.8.0 — исправлено + улучшения
@@ -134,6 +135,25 @@ bool loadSTL(const std::string& filename, std::vector<float>& vertices, std::vec
 }
 
 // =====================================================
+// Запуск диалога на Linux без shell (v1.36.0).
+//
+// Возвращает выбранный путь или пустую строку (отмена / диалог не установлен).
+// Никакой склейки командной строки: argv уходит в execvp как есть, поэтому путь
+// с апострофом, кавычкой или `$(...)` — это просто имя файла, а не команда.
+// =====================================================
+namespace {
+#ifndef _WIN32
+std::string runFileDialog(const std::vector<std::string>& argv) {
+    const procutil::Result r = procutil::runCapture(argv);
+    if (!r.ok) return "";                 // нет zenity/kdialog или пользователь отменил
+    std::string s = r.output;
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+#endif
+} // namespace
+
+// =====================================================
 // Диалог выбора файла v1.19.0 — Windows + Linux (zenity/kdialog/console)
 // =====================================================
 std::string openFileDialog(void* ownerWindow) {
@@ -155,30 +175,17 @@ std::string openFileDialog(void* ownerWindow) {
     if (GetOpenFileNameA(&ofn)) return std::string(fileName);
     return "";
 #else
-    // Linux — try zenity, kdialog, or fallback
-    // Try zenity
-    FILE* fp = popen("zenity --file-selection --file-filter='STL files | *.stl *.STL' --title='Open STL Model - Aeros Engine v" AEROS_VERSION_STRING "' 2>/dev/null", "r");
-    if (fp) {
-        char path[1024] = {0};
-        if (fgets(path, sizeof(path), fp)) {
-            pclose(fp);
-            std::string s(path);
-            s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
-            s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
-            if (!s.empty()) return s;
-        } else pclose(fp);
-    }
-    // Try kdialog
-    fp = popen("kdialog --getopenfilename . '*.stl | STL Models' 2>/dev/null", "r");
-    if (fp) {
-        char path[1024] = {0};
-        if (fgets(path, sizeof(path), fp)) {
-            pclose(fp);
-            std::string s(path);
-            s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
-            s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
-            if (!s.empty()) return s;
-        } else pclose(fp);
+    // Linux — zenity, затем kdialog, затем известные пути.
+    // v1.36.0 — без popen: команды передаются execvp() массивом аргументов,
+    // оболочки в цепочке нет. Раньше строка диалога склеивалась в shell-команду.
+    {
+        std::string s = runFileDialog({
+            "zenity", "--file-selection",
+            "--file-filter=STL files | *.stl *.STL",
+            "--title=Open STL Model - Aeros Engine v" AEROS_VERSION_STRING});
+        if (!s.empty()) return s;
+        s = runFileDialog({"kdialog", "--getopenfilename", ".", "*.stl | STL Models"});
+        if (!s.empty()) return s;
     }
     // Fallback: check common locations
     std::vector<std::string> candidates = {
