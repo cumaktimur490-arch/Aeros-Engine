@@ -53,6 +53,16 @@ jobs:
             cmake ninja-build libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev \
             xorg-dev libomp-dev
 
+      - name: Окружение MSVC (Windows)
+        # GLFW в репозитории собран MSVC (lib-vc2022), а Ninja по умолчанию
+        # подхватывал MinGW g++ и падал на __security_cookie при линковке.
+        # Генератор Visual Studio на windows-latest не находится, поэтому
+        # ставим окружение MSVC и собираем Ninja+cl.
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: CMake (configure)
         # CPU_ONLY: на раннере нет nvcc/NVIDIA GPU. Это отключает только CUDA-
         # ядро — весь C++ (оба рендерера, ImGui, диалоги) собирается как обычно,
@@ -62,14 +72,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # На Windows генератор Ninja подхватывает MinGW g++, а vendored GLFW
-          # собран MSVC (lib-vc2022): линковка падала на __security_cookie.
-          # Собираем тем компилятором, под который библиотека положена, — MSVC.
-          GEN="Ninja"; EXTRA=""
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            GEN="Visual Studio 17 2022"; EXTRA="-A x64"; EXTRA_BUILD="--config Release"
-          fi
-          if ! cmake -S aeros -B build -G "$GEN" $EXTRA -DCMAKE_BUILD_TYPE=Release \
+          if ! cmake -S aeros -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
                  -DAEROS_CPU_ONLY=ON -DAEROS_ENABLE_VULKAN=ON 2>&1 | tee /tmp/configure.log; then
             tail -40 /tmp/configure.log | while IFS= read -r line; do
               echo "::error::configure: $line"
@@ -81,9 +84,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          EXTRA_BUILD=""
-          if [ "$RUNNER_OS" = "Windows" ]; then EXTRA_BUILD="--config Release"; fi
-          if ! cmake --build build --parallel $EXTRA_BUILD 2>&1 | tee /tmp/build.log; then
+          if ! cmake --build build --parallel 2>&1 | tee /tmp/build.log; then
             # Показываем первые ошибки компилятора: в конце лога обычно только
             # «ninja: build stopped».
             grep -E "error|Error|ошибка" /tmp/build.log | head -40 | while IFS= read -r line; do
