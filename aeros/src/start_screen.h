@@ -168,9 +168,12 @@ inline bool perform(Action a, UiLayoutState& st) {
                 state().lastError = _TR("No file selected", "Файл не выбран");
                 return false;
             }
-            // caeLoadStudy() сам спрашивает путь; передать уже выбранный нельзя,
-            // поэтому честно сообщаем об этом поведении в сообщениях.
-            caeLoadStudy();
+            // v1.35.0 — путь уже выбран, второй диалог не нужен: раньше экран
+            // спрашивал файл, а caeLoadStudy() спрашивал его ЕЩЁ РАЗ.
+            if (!caeLoadStudyPath(p)) {
+                state().lastError = std::string(_TR("Failed to load study: ", "Не удалось открыть исследование: ")) + p;
+                return false;
+            }
             st.workspace = 1;
             return true;
         }
@@ -186,7 +189,9 @@ inline bool openRecent(const std::string& path, UiLayoutState& st) {
         state().lastError = std::string(_TR("Failed to load: ", "Не удалось открыть: ")) + path;
         caeLog(2, "геометрия", "не удалось открыть недавнюю модель: %s", path.c_str());
         // Битый/удалённый путь убираем из списка, иначе он останется навсегда.
-        recentfiles::add(path, recentfiles::defaultPath(), 6);
+        // v1.35.0 — раньше здесь вызывался add(), то есть запись не удалялась,
+        // а добавлялась заново; теперь есть remove().
+        recentfiles::remove(path, recentfiles::defaultPath());
         return false;
     }
     rememberModel(path);
@@ -286,6 +291,24 @@ inline void draw(UiLayoutState& st) {
                           "Восстанавливает сохранённое исследование с геометрией и результатами"))) {
             if (perform(Action::LoadStudy, st)) aeroStartScreen = false;
         }
+        // v1.35.0 — восстановление после сбоя: автосохранение пишется отдельным
+        // файлом, поэтому его можно предложить, не трогая проекты пользователя.
+        {
+            FILE* af = std::fopen("aeros_autosave.aerosproj", "rb");
+            if (af) {
+                std::fclose(af);
+                if (bigButton(_TR("Restore autosave…", "Восстановить автосохранение…"),
+                              _TR("Opens aeros_autosave.aerosproj written every 5 minutes",
+                                  "Открывает aeros_autosave.aerosproj, который пишется каждые 5 минут"))) {
+                    if (caeLoadStudyPath("aeros_autosave.aerosproj")) {
+                        st.workspace = 1;
+                        aeroStartScreen = false;
+                    } else {
+                        state().lastError = _TR("Autosave could not be opened", "Автосохранение не открылось");
+                    }
+                }
+            }
+        }
         if (bigButton(_TR("Settings", "Настройки"), nullptr)) {
             if (perform(Action::Settings, st)) aeroStartScreen = false;
         }
@@ -330,6 +353,32 @@ inline void draw(UiLayoutState& st) {
             if (ImGui::SmallButton(_TR("Clear list", "Очистить список"))) {
                 recentfiles::clear(recentfiles::defaultPath());
                 debugLogAction("главное меню", "список недавних моделей очищен");
+            }
+        }
+
+        // v1.35.0 — недавние ИССЛЕДОВАНИЯ отдельным списком: проект и модель
+        // смешивать нельзя, открываются они разными загрузчиками.
+        const std::vector<std::string> recentStudies = recentfiles::load(recentfiles::studiesPath(), 4);
+        if (!recentStudies.empty()) {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", _TR("RECENT STUDIES", "НЕДАВНИЕ ИССЛЕДОВАНИЯ"));
+            ImGui::Spacing();
+            for (size_t i = 0; i < recentStudies.size(); ++i) {
+                const std::string label = recentfiles::shortName(recentStudies[i]);
+                ImGui::PushID((int)(100 + i));
+                if (ImGui::Button(label.c_str(), ImVec2(-1, 0))) {
+                    if (caeLoadStudyPath(recentStudies[i])) {
+                        st.workspace = 1;
+                        aeroStartScreen = false;
+                    } else {
+                        state().lastError = std::string(_TR("Failed to open study: ", "Не удалось открыть исследование: ")) + recentStudies[i];
+                        recentfiles::remove(recentStudies[i], recentfiles::studiesPath());
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", recentStudies[i].c_str());
+                ImGui::PopID();
             }
         }
 

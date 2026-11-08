@@ -35,7 +35,8 @@
 // модель исследования, сетка, решатели и просмотр результатов — разные файлы.
 #include "cae_ui.h"
 #include "start_screen.h"   // v1.34.0 — главное меню (стартовый экран)
-#include "recent_files.h"   // v1.34.0 — недавние модели
+#include "recent_files.h"
+#include "drop_files.h"   // v1.35.0 — разбор перетащенного файла   // v1.34.0 — недавние модели
 #include "fsr.h"
 #include "framegen.h"
 #include "interesting.h"
@@ -761,6 +762,38 @@ UiLayoutState& uiSt = uiLayoutState();
 // поле ввода не должен одновременно двигать камеру (WASD) — раньше двигал.
 aeroUiWantsKeyboard = ImGui::GetIO().WantTextInput;
 
+// v1.35.0 — drag&drop: файл, перетащенный в окно, обрабатывается здесь, а не в
+// колбэке GLFW. Расширение решает, чем грузить: .stl — модель (тот же путь, что
+// «Открыть модель»), .aerosproj/.study/.aero — исследование. Неизвестный файл
+// не игнорируется молча: причина пишется в журнал.
+if (aeroDroppedFile[0]) {
+    const std::string dropped(aeroDroppedFile);
+    aeroDroppedFile[0] = '\0';
+    const dropfiles::Kind kind = dropfiles::classify(dropped);
+    if (kind == dropfiles::Kind::Model) {
+        if (loadModel(dropped)) {
+            aeroModelPath = dropped;
+            recentfiles::add(dropped, recentfiles::defaultPath(), 6);
+            caeSyncGeometry();
+            aeroStartScreen = false;      // перетащили модель — экран больше не нужен
+            debugLogAction("drag&drop", "модель загружена: %s", dropped.c_str());
+        } else {
+            debugLogAction("drag&drop", "не удалось загрузить модель: %s", dropped.c_str());
+        }
+    } else if (kind == dropfiles::Kind::Study) {
+        if (caeLoadStudyPath(dropped)) {
+            uiSt.workspace = 1;
+            aeroStartScreen = false;
+            debugLogAction("drag&drop", "исследование загружено: %s", dropped.c_str());
+        } else {
+            debugLogAction("drag&drop", "не удалось загрузить исследование: %s", dropped.c_str());
+        }
+    } else {
+        debugLogAction("drag&drop",
+                       "файл не открыт: %s (поддерживаются .stl и .aerosproj)", dropped.c_str());
+    }
+}
+
 // Главное меню: Esc закрывает экран (а не программу), Ctrl+O открывает модель
 // и из экрана, и из оболочки. Пока экран открыт, глобальные хоткеи оболочки
 // (Ctrl+1/2/3, Ctrl+Enter) не обрабатываются: они относятся к сцене под ним.
@@ -778,6 +811,10 @@ if (aeroStartScreen) {
         if (startscreen::perform(startscreen::Action::OpenModel, uiSt)) aeroStartScreen = false;
     }
 }
+// v1.35.0 — автосохранение исследования (раз в 5 минут, только если есть
+// геометрия). Выключено галочкой в настройках.
+caeAutosaveTick(aeroAutosaveStudies);
+
 const UiLayoutRects L = uiLayoutCompute(uiSt, W, H);
 const float uiFontScale = glm::clamp(uiSt.fontScale, 0.7f, 2.0f);
 caeSyncLegacyLayout(uiSt);                      // прежние ui* флаги — зеркала
@@ -944,6 +981,11 @@ if (uiSelectedLeaf == 1 && ImGui::CollapsingHeader(_TR("Language / Язык", "�
                     &aeroStartScreenOnStartup);
     ImGui::TextDisabled("%s", _TR("The start screen lists recent models and demo bodies; Esc closes it.",
                                   "Стартовый экран показывает недавние модели и демо-тела; Esc его закрывает."));
+    // v1.35.0 — автосохранение исследования
+    ImGui::Checkbox(_TR("Autosave the study every 5 minutes", "Автосохранять исследование раз в 5 минут"),
+                    &aeroAutosaveStudies);
+    ImGui::TextDisabled("%s", _TR("Writes aeros_autosave.aerosproj next to the program; your own file is never overwritten.",
+                                  "Пишет aeros_autosave.aerosproj рядом с программой; ваш файл проекта не перезаписывается."));
     ImGui::Separator();
     ImGui::TextWrapped("%s", _TR(
         "All UI elements support both English and Russian. Switch language anytime.",

@@ -12,6 +12,7 @@
 #   make startup     только главное меню: стартовый экран, недавние модели, демо-тела (v1.34.0)
 #   make glyphs      покрытие глифов: все символы интерфейса есть в шрифте (v1.34.0)
 #   make hotkeys     таблица горячих клавиш совпадает с обработчиками (v1.34.0)
+#   make validate    валидация по эталонам: Cd сферы/цилиндра, сеточная сходимость (v1.35.0)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -23,8 +24,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys clean
-all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys
+.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate clean
+all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -74,7 +75,7 @@ ui:
 	/tmp/aeros-test-ui
 
 clean:
-	rm -f /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
+	rm -f /tmp/aeros-test-validate /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
 	      /tmp/aeros-test-fem /tmp/aeros-test-particles /tmp/aeros-test-startup
 
 # Физика частиц (v1.34.0). Линкуется с настоящим particles.cpp: проверяется
@@ -101,6 +102,15 @@ glyphs:
 hotkeys:
 	g++ $(CXXFLAGS) -I$(IMGUI) hotkeys_headless.cpp -o /tmp/aeros-test-hotkeys
 	/tmp/aeros-test-hotkeys $(SRC)
+
+# Валидация по опубликованным эталонам — самый долгий набор (минуты): несколько
+# прогонов LBM на сетках до 56^3. В `all` входит, потому что именно он ловит
+# деградацию физики, которую остальные проверки не видят.
+validate:
+	g++ $(CXXFLAGS) validation_headless.cpp $(SRC)/lbm.cpp $(SRC)/flow_field.cpp \
+	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
+	    -o /tmp/aeros-test-validate
+	/tmp/aeros-test-validate
 
 startup:
 	g++ $(CXXFLAGS) -I$(IMGUI) start_screen_headless.cpp \

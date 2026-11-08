@@ -157,6 +157,19 @@ float getLBMStrainWorld(const glm::vec3& worldPos);
 
 void computeLBMVorticityAndQ();
 void computeLBMForcesFromLBM();
+
+// v1.35.0 — сила на тело методом обмена импульсом (momentum exchange).
+// До этой версии сила считалась только интегрированием давления по поверхности
+// треугольников (forces.cpp), то есть БЕЗ трения: на Re ~ 100 трение даёт до
+// двух третей сопротивления, и Cd получался заниженным. Здесь суммируется
+// импульс, который популяции передают твёрдым узлам на каждой граничной связи
+// (для bounce-back это 2*f_q*c_q). Результат — в решёточных единицах
+// (m=1, dx=1, dt=1 на ячейку); для коэффициентов этого достаточно:
+//   Cd = Fx / (0.5 * rho0 * U0^2 * A_proj),  rho0 = 1.
+// Для перевода в ньютоны: F_phys = F_lat * rho_phys * dx^3 / dt^2.
+glm::vec3 lbmControlVolumeForce(float boxHalfX, float boxHalfY, float boxHalfZ);
+// Проекция тела на плоскость, перпендикулярную потоку, в ячейках (для Cd/Cl).
+float lbmProjectedAreaCells(int axis);
 float computeLBMRe();
 float computeLBMRefArea();
 glm::vec3 getRealisticPressureColor(float cp);

@@ -21,6 +21,9 @@
 namespace recentfiles {
 
 inline const char* defaultPath() { return "aeros_recent.txt"; }
+// v1.35.0 — отдельный список для исследованием: модель .stl и проект
+// .aerosproj — разные вещи, смешивать их в одном списке нельзя.
+inline const char* studiesPath() { return "aeros_recent_studies.txt"; }
 
 // Прочитать список. Отсутствующий файл — это не ошибка, а пустой список.
 // Пути длиннее 1024 символов и строки с управляющими символами отбрасываются:
@@ -66,6 +69,20 @@ inline bool add(const std::string& file, const std::string& path = defaultPath()
     if (!f) return false;
     for (const auto& s : items) f << s << '\n';
     return f.good();
+}
+
+// Убрать одну запись. Нужно, когда файл удалён или переименован: иначе
+// «недавняя» модель остаётся в меню навсегда и каждый клик даёт ошибку.
+inline bool remove(const std::string& file, const std::string& path = defaultPath()) {
+    if (file.empty()) return false;
+    std::vector<std::string> list = load(path, 64);
+    size_t before = list.size();
+    list.erase(std::remove(list.begin(), list.end(), file), list.end());
+    if (list.size() == before) return false;
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return false;
+    for (const std::string& e : list) f << e << "\n";
+    return true;
 }
 
 inline void clear(const std::string& path = defaultPath()) {

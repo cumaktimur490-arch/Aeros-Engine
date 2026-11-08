@@ -46,7 +46,8 @@
 #include "model.h"          // loadModel
 #include "demo_geometry.h"   // v1.34.0 — демо-тела
 #include "recent_files.h"
-#include "hotkeys.h"    // v1.34.0 — недавние модели
+#include "hotkeys.h"
+#include "open_url.h"   // v1.35.0 — «Страница обновлений»    // v1.34.0 — недавние модели
 #include "stl_loader.h"     // openFileDialog
 #include "vulkan_renderer.h"// saveFileDialogNative
 #include "forces.h"         // updateVertexColors / uploadVertexColorsToGPU
@@ -507,30 +508,91 @@ inline bool caeExportReport() {
     return true;
 }
 
-inline bool caeSaveStudy() {
+// v1.35.0 — сохранение по известному пути: нужно автосохранению и экспорту без
+// диалога (диалог при каждом автосохранении — это не автосохранение).
+inline bool caeSaveStudyPath(const std::string& path) {
+    if (path.empty()) return false;
     StudyProject& pr = studyProject();
+    if (!studySaveProject(pr, path)) {
+        caeLog(2, "проект", "не удалось сохранить исследование: %s", path.c_str());
+        return false;
+    }
+    pr.projectPath = path;
+    recentfiles::add(path, recentfiles::studiesPath(), 6);
+    return true;
+}
+
+inline bool caeSaveStudy() {
     std::string path = saveFileDialogNative("Aeros-Study.aerosproj");
     if (path.empty()) { caeLog(1, "проект", "файл не выбран — сохранение отменено"); return false; }
-    std::string err;
-    if (!studySaveProject(pr, path)) { caeLog(2, "проект", "не удалось сохранить исследование: %s", path.c_str()); return false; }
-    pr.projectPath = path;
+    if (!caeSaveStudyPath(path)) return false;
     caeLog(0, "проект", "исследование сохранено: %s", path.c_str());
     return true;
 }
 
-inline bool caeLoadStudy() {
-    std::string path = openFileDialog();
-    if (path.empty()) { caeLog(1, "проект", "файл не выбран — загрузка отменена"); return false; }
+// v1.35.0 — загрузка по известному пути: стартовый экран (недавние
+// исследования) и drag&drop не должны открывать диалог выбора файла.
+inline bool caeLoadStudyPath(const std::string& path) {
+    if (path.empty()) { caeLog(1, "проект", "пустой путь к исследованию"); return false; }
     StudyProject& pr = studyProject();
     if (!studyLoadProject(pr, path)) { caeLog(2, "проект", "не удалось загрузить исследование: %s", path.c_str()); return false; }
     pr.projectPath = path;
     pr.results.clear();
     pr.status = StudySolveStatus::NotStarted;
     caeMesh() = FemMesh();
+    recentfiles::add(path, recentfiles::studiesPath(), 6);
     caeLog(0, "проект", "исследование загружено: %s (материалов %zu, условий %zu, анализ: %s)",
            path.c_str(), pr.materials.size(), pr.loads.size(), studyAnalysisName(pr.analysis));
     pr.issues = studyValidate(pr);
     return true;
+}
+
+inline bool caeLoadStudy() {
+    std::string path = openFileDialog();
+    if (path.empty()) { caeLog(1, "проект", "файл не выбран — загрузка отменена"); return false; }
+    return caeLoadStudyPath(path);
+}
+
+// -----------------------------------------------------
+// v1.35.0 — АВТОСОХРАНЕНИЕ ИССЛЕДОВАНИЯ
+//
+// Зачем. Расчёт МКЭ и настройка нагрузок — это десятки минут работы, а
+// сохранялось всё только вручную: закрытие окна или сбой означали потерю.
+// Автосохранение пишет проект в отдельный файл рядом с программой каждые
+// 5 минут, но только когда есть что сохранять (загружена геометрия).
+// Пользовательский файл оно НЕ перезаписывает: иначе «авто» затирало бы
+// осознанно сохранённую версию.
+//
+// Восстановление — на стартовом экране («Восстановить автосохранение»).
+// -----------------------------------------------------
+inline const char* caeAutosavePath() { return "aeros_autosave.aerosproj"; }
+
+// Возвращает true, если файл автосохранения записан.
+inline bool caeAutosaveNow() {
+    StudyProject& pr = studyProject();
+    if (!pr.geometryLoaded) return false;
+    if (!studySaveProject(pr, caeAutosavePath())) {
+        caeLog(2, "проект", "автосохранение не удалось: %s", caeAutosavePath());
+        return false;
+    }
+    caeLog(0, "проект", "автосохранение записано: %s", caeAutosavePath());
+    return true;
+}
+
+// Тик вызывается каждый кадр; сохраняет не чаще раза в 5 минут.
+inline void caeAutosaveTick(bool enabled, float intervalSeconds = 300.0f) {
+    if (!enabled) return;
+    static double last = 0.0;
+    const double now = ImGui::GetTime();
+    if (now < last) last = now;                 // защита от перезапуска таймера
+    if (now - last < (double)intervalSeconds) return;
+    last = now;
+    caeAutosaveNow();
+}
+
+// Удалить файл автосохранения (после явного сохранения проекта).
+inline void caeAutosaveClear() {
+    std::remove(caeAutosavePath());
 }
 
 // -----------------------------------------------------
@@ -2028,6 +2090,14 @@ inline void caeDrawMainMenu(UiLayoutState& st) {
                 ImGui::OpenPopup("AerosLimits");
             if (ImGui::MenuItem(_TR("Keyboard shortcuts", "Горячие клавиши"), nullptr))
                 ImGui::OpenPopup("AerosHotkeys");
+            ImGui::Separator();
+            if (ImGui::MenuItem(_TR("Check for updates (browser)", "Проверить обновления (браузер)"), nullptr)) {
+                const bool ok = aerosOpenUrl(aerosReleasesUrl());
+                caeLog(ok ? 0 : 2, "обновления",
+                       ok ? "открыта страница релизов: установлена версия %s"
+                          : "не удалось открыть браузер со страницей релизов",
+                       AEROS_VERSION_STRING);
+            }
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();

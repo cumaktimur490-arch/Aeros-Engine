@@ -32,3 +32,8 @@ package-lock.json
 # Временные файлы тестов
 /tmp/aeros_recent*
 aeros/tests/aeros_recent.txt
+
+# Списки недавних файлов создаются во время работы программы
+aeros_recent.txt
+aeros_recent_studies.txt
+aeros_autosave.aerosproj

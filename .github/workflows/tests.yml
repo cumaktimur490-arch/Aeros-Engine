@@ -1,0 +1,82 @@
+# Тесты Aeros Engine на каждый push и pull request.
+#
+# Зачем отдельный workflow: до v1.35.0 проверки (1142+) запускались только
+# вручную. Ошибка в физике, МКЭ или оболочке обнаруживалась уже после того, как
+# тег поставлен и релиз собран, — то есть ценой выпуска. Здесь те же наборы
+# прогоняются на чистой машине до сборки.
+#
+# Что НЕ проверяется: запуск с OpenGL/GLFW/CUDA (на раннере нет ни GPU, ни
+# дисплея). Тесты линкуют заглушки — это и есть их смысл: проверяется логика.
+name: Tests
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Headless-тесты (Linux, g++)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Зависимости
+        run: |
+          sudo apt-get update
+          # libomp для -fopenmp, шрифты — тест глифов сверяется с реальным cmap.
+          sudo apt-get install -y --no-install-recommends libomp-dev fonts-dejavu-core
+
+      - name: Версия g++
+        run: g++ --version | head -1
+
+      - name: Покрытие глифов и таблица клавиш (быстрые наборы)
+        working-directory: aeros/tests
+        run: |
+          make glyphs
+          make hotkeys
+
+      - name: Все headless-наборы
+        working-directory: aeros/tests
+        # Один выход за раз, чтобы падение было видно в логе без хвоста.
+        run: make
+
+      - name: Компиляция всех единиц трансляции (без линковки)
+        working-directory: aeros/src
+        # Линковка в CI невозможна: нет GL/GLFW. Проверяем, что каждая .cpp
+        # собирается с теми же флагами, что и в релизной сборке.
+        run: |
+          set -e
+          fail=0
+          for f in *.cpp; do
+            case "$f" in
+              kernel.cu|cuda_stub.cpp) echo "пропуск $f (CUDA)"; continue ;;
+            esac
+            echo "== $f"
+            if ! g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wno-unused-parameter \
+                 -I. -Iimgui -I../../libs/glm -I../../libs/glad/include \
+                 -I../../libs/glfw/include "$f" 2> "/tmp/err_$f"; then
+              cat "/tmp/err_$f"
+              fail=1
+            fi
+            if [ -s "/tmp/err_$f" ]; then
+              echo "::warning file=aeros/src/$f::предупреждения компиляции"
+              head -20 "/tmp/err_$f"
+            fi
+          done
+          exit $fail
+
+      - name: Итог
+        if: always()
+        run: |
+          echo "Тесты завершены: ${{ job.status }}"

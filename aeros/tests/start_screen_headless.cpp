@@ -20,6 +20,7 @@
 #include "cae_ui.h"
 #include "start_screen.h"
 #include "recent_files.h"
+#include "drop_files.h"
 #include "demo_geometry.h"
 
 #include <cmath>
@@ -52,6 +53,7 @@ bool loadDemoBody(int kind) {
     g_lastDemoKind = kind;
     return g_loadDemoOk;
 }
+
 
 static std::string g_dialogPath;
 std::string openFileDialog(void*) { return g_dialogPath; }
@@ -92,7 +94,7 @@ int main() {
     io.Fonts->GetTexDataAsRGBA32(&pixels, &tw, &th);
     io.Fonts->SetTexID((ImTextureID)(intptr_t)1);
 
-    std::printf("=== главное меню и недавние модели (v1.34.0) ===\n");
+    std::printf("=== главное меню и недавние модели (v1.35.0) ===\n");
 
     section("список недавних моделей");
     {
@@ -116,6 +118,35 @@ int main() {
         check(recentfiles::shortName("C:\\models\\wing.stl") == "wing.stl", "короткое имя понимает обратный слэш");
         recentfiles::clear(f);
         check(recentfiles::load(f).empty(), "очистка списка");
+    }
+
+    section("недавние исследования и удаление записей (v1.35.0)");
+    {
+        const std::string f = "/tmp/aeros_recent_studies_test.txt";
+        recentfiles::clear(f);
+        check(recentfiles::add("/work/a.aerosproj", f, 4), "исследование добавлено в отдельный список");
+        recentfiles::add("/work/b.aerosproj", f, 4);
+        check(recentfiles::load(f, 4).size() == 2, "список исследований ведётся отдельно от моделей");
+        check(recentfiles::remove("/work/a.aerosproj", f), "запись удаляется");
+        const std::vector<std::string> r = recentfiles::load(f, 4);
+        check(r.size() == 1 && r[0] == "/work/b.aerosproj", "удалена именно указанная запись");
+        check(!recentfiles::remove("/work/a.aerosproj", f), "повторное удаление возвращает false");
+        check(std::string(recentfiles::studiesPath()) != std::string(recentfiles::defaultPath()),
+              "файлы списков моделей и исследований разные");
+        recentfiles::clear(f);
+    }
+
+    section("drag&drop: разбор файла");
+    {
+        using dropfiles::Kind;
+        check(dropfiles::classify("wing.STL") == Kind::Model, "STL в верхнем регистре — модель");
+        check(dropfiles::classify("/tmp/a b/wing.stl") == Kind::Model, "путь с пробелом — модель");
+        check(dropfiles::classify("study.aerosproj") == Kind::Study, "проект — исследование");
+        check(dropfiles::classify("old.study") == Kind::Study, "старое расширение .study понимается");
+        check(dropfiles::classify("x.AerosProj") == Kind::Study, "регистр расширения не важен");
+        check(dropfiles::classify("notes.txt") == Kind::Unknown, "текстовый файл не открывается как модель");
+        check(dropfiles::classify("noext") == Kind::Unknown, "файл без расширения не угадывается");
+        check(dropfiles::classify("") == Kind::Unknown, "пустой путь безопасен");
     }
 
     section("демо-тела: геометрия");

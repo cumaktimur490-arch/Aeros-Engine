@@ -365,6 +365,8 @@ bool aeroExitRequested = false;   // v1.31.0 — «Файл → Выход» в 
 // v1.34.0 — главное меню (стартовый экран) и флаг занятости клавиатуры UI.
 bool aeroStartScreen = true;
 bool aeroStartScreenOnStartup = true;
+char aeroDroppedFile[1024] = {0};
+bool aeroAutosaveStudies = true;
 bool aeroUiWantsKeyboard = false;
 
 bool uiDocked       = true;

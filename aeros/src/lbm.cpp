@@ -1852,6 +1852,99 @@ float computeLBMRefArea() {
     return aeroRefArea;
 }
 
+// =====================================================
+// v1.35.0 — СИЛА НА ТЕЛО ПО БАЛАНСУ ИМПУЛЬСА В КОНТРОЛЬНОМ ОБЪЁМЕ
+//
+// Зачем именно так. Прямолинейный метод обмена импульсом (Σ 2 f_q c_q по
+// граничным связям) в этой схеме дал Cd в 10 раз больше баланса импульса:
+// у ступенчатой поверхности сфера имеет тысячи «диагональных» связей, и сумма
+// по ним не сходится к силе. Поэтому сила считается по закону сохранения:
+// для стационарного обтекания
+//     F_x = -∮ (ρ u_x u_n + p n_x) dA
+// по замкнутой поверхности вокруг тела (p = cs² (ρ - 1), решёточные единицы).
+// Это не эмпирика и не подгонка: тот же интеграл, что в аэродинамическом
+// эксперименте по измерению профиля импульса в следе.
+//
+// ВАЖНО: метод требует установившегося течения (нестационарные члены не
+// учитываются) и того, чтобы контрольная поверхность не пересекала тело.
+// Он используется для валидации; в интерфейсе сила по-прежнему берётся из
+// поля давления на поверхности (forces.cpp).
+// =====================================================
+glm::vec3 lbmControlVolumeForce(float boxHalfX, float boxHalfY, float boxHalfZ) {
+    if (!lbmInitialized) return glm::vec3(0.0f);
+    const size_t need = (size_t)lbmNx * (size_t)lbmNy * (size_t)lbmNz;
+    if (lbmRho.size() != need) return glm::vec3(0.0f);
+
+    auto clampSide = [](int v, int n) { return v < 1 ? 1 : (v > n - 2 ? n - 2 : v); };
+    const int cx = (int)(lbmNx * 0.5f);
+    const int cy = (int)(lbmNy * 0.5f);
+    const int cz = (int)(lbmNz * 0.5f);
+    const int hx = std::max(2, (int)(lbmNx * boxHalfX));
+    const int hy = std::max(2, (int)(lbmNy * boxHalfY));
+    const int hz = std::max(2, (int)(lbmNz * boxHalfZ));
+    const int x0 = clampSide(cx - hx, lbmNx), x1 = clampSide(cx + hx, lbmNx);
+    const int y0 = clampSide(cy - hy, lbmNy), y1 = clampSide(cy + hy, lbmNy);
+    const int z0 = clampSide(cz - hz, lbmNz), z1 = clampSide(cz + hz, lbmNz);
+
+    double fx = 0.0, fy = 0.0, fz = 0.0;
+    // n — ВНЕШНЯЯ нормаль грани, знак уже в ней: домножать на направление
+    // грани ещё раз нельзя (иначе давление на входной грани складывается с
+    // давлением на выходной вместо вычитания — так был получен Cd = -39).
+    auto add = [&](int cell, float nx, float ny, float nz) {
+        if (cell < 0 || (size_t)cell >= need) return;
+        if (lbmIsSolid[cell]) return;
+        const float rho = lbmRho[cell];
+        const float ux = lbmUx[cell], uy = lbmUy[cell], uz = lbmUz[cell];
+        const float p = (1.0f / 3.0f) * (rho - 1.0f);
+        const float un = ux * nx + uy * ny + uz * nz;
+        fx += p * nx + rho * ux * un;
+        fy += p * ny + rho * uy * un;
+        fz += p * nz + rho * uz * un;
+    };
+    // Внешняя нормаль контрольного объёма: на дальней грани +, на ближней −.
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y) {
+            add((z * lbmNy + y) * lbmNx + x0, -1.0f, 0.0f, 0.0f);
+            add((z * lbmNy + y) * lbmNx + x1, +1.0f, 0.0f, 0.0f);
+        }
+    for (int z = z0; z <= z1; ++z)
+        for (int x = x0; x <= x1; ++x) {
+            add((z * lbmNy + y0) * lbmNx + x, 0.0f, -1.0f, 0.0f);
+            add((z * lbmNy + y1) * lbmNx + x, 0.0f, +1.0f, 0.0f);
+        }
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+            add((z0 * lbmNy + y) * lbmNx + x, 0.0f, 0.0f, -1.0f);
+            add((z1 * lbmNy + y) * lbmNx + x, 0.0f, 0.0f, +1.0f);
+        }
+    // Сила на тело = минус поток импульса через контрольную поверхность.
+    return glm::vec3((float)(-fx), (float)(-fy), (float)(-fz));
+}
+
+// Проекция твёрдого тела на плоскость, перпендикулярную оси axis (в ячейках):
+// число уникальных пар индексов вдоль двух других осей, где есть твёрдая ячейка.
+float lbmProjectedAreaCells(int axis) {
+    if (!lbmInitialized) return 0.0f;
+    const size_t need = (size_t)lbmNx * (size_t)lbmNy * (size_t)lbmNz;
+    if (lbmIsSolid.size() != need) return 0.0f;
+    const char* solid = lbmIsSolid.data();
+    std::vector<char> hit(need, 0);
+    double area = 0.0;
+    for (int z = 0; z < lbmNz; ++z)
+        for (int y = 0; y < lbmNy; ++y)
+            for (int x = 0; x < lbmNx; ++x) {
+                const int cell = (z * lbmNy + y) * lbmNx + x;
+                if (!solid[cell]) continue;
+                int a, b, aMax;
+                if (axis == 0)      { a = y; b = z; aMax = lbmNy; }
+                else if (axis == 1) { a = x; b = z; aMax = lbmNx; }
+                else                { a = x; b = y; aMax = lbmNx; }
+                const size_t k = (size_t)b * (size_t)aMax + (size_t)a;
+                if (k < hit.size() && !hit[k]) { hit[k] = 1; area += 1.0; }
+            }
+    return (float)area;
+}
+
 void computeLBMForcesFromLBM() {
     lbmReynolds = computeLBMRe();
     aeroReNumber = lbmReynolds;

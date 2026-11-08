@@ -827,6 +827,14 @@ int main(int argc, char** argv) {
     }
 
     // Заголовок окна — из version.h (единый источник версии), а не захардкожен
+    // v1.35.0 — перетаскивание файла в окно: путь запоминается в глобальной
+    // переменной, а обрабатывается в drawUI(), где есть и loadModel, и
+    // загрузчик исследования. Сам колбэк ничего не грузит: GLFW вызывает его
+    // вне кадра, и загрузка модели (вокселизация, SDF, LBM) там была бы гонкой.
+    auto dropCallback = [](GLFWwindow*, int count, const char** paths) {
+        if (count <= 0 || !paths || !paths[0]) return;
+        std::snprintf(aeroDroppedFile, sizeof(aeroDroppedFile), "%s", paths[0]);
+    };
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, AEROS_VERSION_FULL, nullptr, nullptr);
     if (!window) {
         DBG_ERROR("glfwCreateWindow(%u x %u) вернула NULL — драйвер не дал OpenGL 3.3 core",
@@ -848,7 +856,8 @@ int main(int argc, char** argv) {
     rendCfg.api = requestedAPI;
     rendCfg.vsync = vsyncEnabled;
     if (!useVulkanWindow) {
-        glfwMakeContextCurrent(window);
+        glfwSetDropCallback(window, dropCallback);   // v1.35.0 — drag&drop STL/проекта
+    glfwMakeContextCurrent(window);
         glfwSwapInterval(vsyncEnabled ? 1 : 0);
     }
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
