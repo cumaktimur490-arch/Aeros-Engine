@@ -123,8 +123,12 @@ void processInput(GLFWwindow* window) {
         const bool popupOpen = ImGui::GetCurrentContext() != nullptr &&
             ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
         if (aeroStartScreen) {
-            aeroStartScreen = false;
-            debugLogAction("клавиша", "Esc — закрыт стартовый экран");
+            // v1.35.1 — без загруженной модели за экраном пусто: Esc оставляет
+            // главное меню открытым (выйти можно кнопкой «Выход»).
+            if (!g_vertices.empty()) {
+                aeroStartScreen = false;
+                debugLogAction("клавиша", "Esc — закрыт стартовый экран");
+            }
         } else if (!popupOpen) {
             // Выход по-прежнему одним нажатием: это ожидаемое поведение в 3D-сцене.
             glfwSetWindowShouldClose(window, true);

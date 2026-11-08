@@ -1096,46 +1096,41 @@ int main(int argc, char** argv) {
             break;
         }
     }
-    if (modelPath.empty()) {
-        DBG_INFO("открываю диалог выбора модели (окно уже показано и является владельцем диалога)");
+    // v1.35.1 — ПРИ ЗАПУСКЕ БОЛЬШЕ НЕ ОТКРЫВАЕТСЯ СВОЙ ДИАЛОГ ВЫБОРА STL.
+    //
+    // Раньше здесь всегда вызывался openFileDialog(): системное окно «Select STL
+    // Model» появлялось ПОВЕРХ главного меню ещё до его отрисовки, а Esc/«Отмена»
+    // завершали программу целиком — до меню с демо-телами и недавними файлами
+    // было не добраться. Теперь первым показывается главное меню (start_screen.h),
+    // а модель грузится его кнопками или перетаскиванием файла в окно.
+    //
+    // Путь из командной строки (AerosEngine.exe model.stl) сохраняется: он
+    // по-прежнему загружается сразу и открывает уже рабочую оболочку.
+    if (!modelPath.empty()) {
+        if (!loadModel(modelPath)) {
+            DBG_ERROR("не удалось загрузить модель из командной строки: %s", modelPath.c_str());
 #ifdef _WIN32
-        modelPath = openFileDialog((void*)glfwGetWin32Window(window));
+            MessageBoxA(nullptr, ("Failed to load model: " + modelPath).c_str(), "Error", MB_ICONERROR);
 #else
-        modelPath = openFileDialog();
+            std::cerr << "Failed to load model: " << modelPath << std::endl;
 #endif
-        DBG_INFO("диалог выбора модели вернул: %s", modelPath.empty() ? "(файл не выбран)" : modelPath.c_str());
-    }
-    if (modelPath.empty()) {
-        std::cout << "[Main] Файл модели не выбран — выход" << std::endl;
-        DBG_WARN("файл модели не выбран — выход");
-        if (!vulkanMode) {
-            glDeleteProgram(modelShaderProgram);
-            glDeleteProgram(particleShaderProgram);
-            glDeleteProgram(lineShaderProgram);
-            glDeleteProgram(groundShaderProgram);
-            ImGui_ImplOpenGL3_Shutdown();
-        } else if (g_renderer) {
-            g_renderer->shutdownUiBackend();
+        } else {
+            g_debugModelPath = modelPath;
+            aeroModelPath = modelPath;   // v1.31.0 — исследование знает источник геометрии
+            // Модель пришла аргументом — сразу к работе, без главного меню.
+            aeroStartScreen = false;
+            DBG_INFO("модель загружена: %s (вершин %d, габарит %.3f)",
+                     modelPath.c_str(), modelVertexCount, maxDim);
+            debugLogAction("загружена модель", "%s, вершин %d", modelPath.c_str(), modelVertexCount);
         }
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-        shutdownRenderer();   // v1.33.0 — раньше рендерер не освобождался вообще
-        glfwTerminate();
-        return 0;
-    }
-    if (!loadModel(modelPath)) {
-        DBG_ERROR("не удалось загрузить модель: %s", modelPath.c_str());
-#ifdef _WIN32
-        MessageBoxA(nullptr, ("Failed to load model: " + modelPath).c_str(), "Error", MB_ICONERROR);
-#else
-        std::cerr << "Failed to load model: " << modelPath << std::endl;
-#endif
     } else {
-        g_debugModelPath = modelPath;
-        aeroModelPath = modelPath;   // v1.31.0 — исследование знает источник геометрии
-        DBG_INFO("модель загружена: %s (вершин %d, габарит %.3f)",
-                 modelPath.c_str(), modelVertexCount, maxDim);
-        debugLogAction("загружена модель", "%s, вершин %d", modelPath.c_str(), modelVertexCount);
+        // Модели нет: приложение живёт с открытым главным меню. Физика и сцена
+        // до загрузки геометрии не считаются (см. hasModel в цикле кадра).
+        // Экран показываем обязательно, даже если он отключён в настройках:
+        // иначе пользователь получил бы пустую оболочку без модели и без
+        // возможности её открыть (диалог при запуске мы убрали).
+        aeroStartScreen = true;
+        DBG_INFO("модель не задана — открыто главное меню");
     }
 
     // Окно показано и активировано выше — до диалога выбора модели
@@ -1240,7 +1235,12 @@ int main(int argc, char** argv) {
             s_physSatWarned = false;
         }
 
-        if (lbmParams.enabled) {
+        // v1.35.1 — пока модель не загружена, физику не считаем: главное меню
+        // может быть открыто без геометрии («Продолжить без модели»), и пустой
+        // домен LBM/частиц давал бы нули, NaN и лишнюю нагрузку на кадр.
+        const bool hasModel = !g_vertices.empty();
+
+        if (hasModel && lbmParams.enabled) {
             // v1.9.0 adaptive LBM stepping — только в прежнем покадровом режиме:
             // при фиксированном такте он менял бы частоту физики за спиной пользователя.
             if (!physClock.fixed && aeroAdaptiveLBM) {
@@ -1257,7 +1257,7 @@ int main(int argc, char** argv) {
         perfLBMms = std::chrono::duration<float, std::milli>(tLBM1-tLBM0).count();
 
         auto tPart0 = std::chrono::high_resolution_clock::now();
-        if (showParticles) {
+        if (hasModel && showParticles) {
             if (physClock.fixed) {
                 // Адвекция частиц идёт тем же фиксированным шагом: много маленьких
                 // подшагов вместо одного большого (просадка кадра больше не даёт
@@ -1274,12 +1274,12 @@ int main(int argc, char** argv) {
         perfParticlesMs = std::chrono::duration<float, std::milli>(tPart1-tPart0).count();
 
         auto tForce0 = std::chrono::high_resolution_clock::now();
-        if (showPressure)  updateVertexColors();
-        computeLiftDrag();
-        if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
-        updateLiftDragArrows();
+        if (hasModel && showPressure) updateVertexColors();
+        if (hasModel) computeLiftDrag();
+        if (hasModel && lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
+        if (hasModel) updateLiftDragArrows();
         // v1.19.0 Flight dynamics — обновляем после расчета сил
-        if (aeroFlightMode) {
+        if (hasModel && aeroFlightMode) {
             // v1.29.0 — динамика полёта интегрируется на модельном времени такта,
             // а не на deltaTime кадра: при фиксированном такте это тот же шаг, что
             // у решателя и частиц, поэтому 6DOF не «ускоряется» на быстром мониторе.
@@ -1291,11 +1291,11 @@ int main(int argc, char** argv) {
         perfForcesMs = std::chrono::duration<float, std::milli>(tForce1-tForce0).count();
 
         // v1.19.0 Interesting features
-        updateInterestingFeatures(deltaTime);
+        if (hasModel) updateInterestingFeatures(deltaTime);
 
         // Streamlines need recompute on flow change or ground change
         bool needStreamlines = false;
-        if (showStreamlines) {
+        if (hasModel && showStreamlines) {
             if (fabs(prevSpeed-flowSpeed) > 1e-3f ||
                 fabs(prevAz-flowAzimuth) > 0.5f ||
                 fabs(prevEl-flowElevation) > 0.5f ||

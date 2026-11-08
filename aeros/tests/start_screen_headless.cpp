@@ -149,6 +149,18 @@ int main() {
         check(dropfiles::classify("") == Kind::Unknown, "пустой путь безопасен");
     }
 
+    section("v1.35.1 — что показывать после запуска");
+    {
+        // Без модели за главным меню пусто: Esc не должен открывать пустую
+        // оболочку, иначе «боковые панели до выбора модели» снова появятся.
+        g_vertices.clear();
+        check(!startscreen::canClose(), "без модели главное меню по Esc не закрывается");
+        g_vertices.assign(9, 0.0f);
+        check(startscreen::canClose(), "с загруженной моделью экран закрывается по Esc");
+        g_vertices.clear();
+        check(!startscreen::canClose(), "после сброса модели правило снова действует");
+    }
+
     section("демо-тела: геометрия");
     for (int k = 0; k < demogeom::count(); ++k) {
         std::vector<float> pos, nrm;

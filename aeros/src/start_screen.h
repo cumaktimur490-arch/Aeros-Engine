@@ -45,6 +45,17 @@
 namespace startscreen {
 
 // -----------------------------------------------------
+// Можно ли просто ЗАКРЫТЬ главное меню (Esc).
+//
+// Если геометрия уже загружена (модель/демо-тело/исследование), за экраном есть
+// что показать — закрываем. Если модели нет, закрытие оставило бы пользователя
+// в пустой оболочке без сцены; такой уход возможен только осознанно, кнопкой
+// «Продолжить без модели» (Action::Continue).
+// -----------------------------------------------------
+inline bool canClose() { return !g_vertices.empty(); }
+
+
+// -----------------------------------------------------
 // Действия стартового экрана. Значения — то, что нажимает пользователь.
 // -----------------------------------------------------
 enum class Action {
@@ -412,8 +423,11 @@ inline void draw(UiLayoutState& st) {
         // подсказка «Enter — открыть» была бы ложью: Enter ничего не делал.
         // Здесь Enter сразу открывает диалог выбора модели (первое действие
         // экрана), Ctrl+O дублируется из ui.cpp.
-        ImGui::TextDisabled("%s", _TR("Enter — open model · Esc — close · Ctrl+O — open model",
-                                      "Enter — открыть модель · Esc — закрыть · Ctrl+O — открыть модель"));
+        ImGui::TextDisabled("%s", canClose()
+            ? _TR("Enter — open model · Esc — close · Ctrl+O — open model",
+                  "Enter — открыть модель · Esc — закрыть · Ctrl+O — открыть модель")
+            : _TR("Enter — open model · Ctrl+O — open model · Esc closes the screen once a model is loaded",
+                  "Enter — открыть модель · Ctrl+O — открыть модель · Esc закроет экран после выбора модели"));
         if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) {
             if (perform(Action::OpenModel, st)) aeroStartScreen = false;
         }

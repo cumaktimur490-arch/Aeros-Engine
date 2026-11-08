@@ -83,11 +83,11 @@ inline int group(int i) {
 // Строка-сводка для стартового экрана: только то, что нужно новичку, чтобы
 // начать. Полный список — в справке (Help → Горячие клавиши).
 inline const char* summaryRu() {
-    return "Esc — закрыть экран · Ctrl+O — открыть модель · F1…F4 — отображение · "
+    return "Esc — закрыть экран (после выбора модели) · Ctrl+O — открыть модель · F1…F4 — отображение · "
            "F5 — скриншот · F7/F8 — самописец · F9 — журнал · F12 — панели";
 }
 inline const char* summaryEn() {
-    return "Esc — close this screen · Ctrl+O — open model · F1…F4 — display · "
+    return "Esc — close this screen (once a model is loaded) · Ctrl+O — open model · F1…F4 — display · "
            "F5 — screenshot · F7/F8 — recorder · F9 — journal · F12 — panels";
 }
 
