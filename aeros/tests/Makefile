@@ -15,6 +15,7 @@
 #   make validate    валидация по эталонам: Cd сферы/цилиндра, сеточная сходимость (v1.35.0)
 #   make openurl     запуск внешних программ без shell и проверка open_url.h (v1.36.0)
 #   make voxel       вокселизация: BVH, сходимость объёма, «внутри/снаружи» (v1.36.0)
+#   make stl         формат STL: хвост, обрезок, ASCII/бинарный, NaN, координаты (v1.36.0)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -29,8 +30,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel clean
-all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel
+.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl clean
+all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -80,7 +81,7 @@ ui:
 	/tmp/aeros-test-ui
 
 clean:
-	rm -f /tmp/aeros-test-voxel /tmp/aeros-test-openurl /tmp/aeros-test-validate /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
+	rm -f /tmp/aeros-test-stl /tmp/aeros-test-voxel /tmp/aeros-test-openurl /tmp/aeros-test-validate /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
 	      /tmp/aeros-test-fem /tmp/aeros-test-particles /tmp/aeros-test-startup
 
 # Физика частиц (v1.34.0). Линкуется с настоящим particles.cpp: проверяется
@@ -131,6 +132,13 @@ voxel:
 	g++ $(CXXFLAGS) voxel_headless.cpp $(SRC)/voxel_grid.cpp $(COMMON) \
 	    -o /tmp/aeros-test-voxel -pthread
 	/tmp/aeros-test-voxel
+
+# Формат STL (v1.36.0): определение бинарный/ASCII по содержимому, хвост файла,
+# обрезок, NaN-треугольники, координаты в миллиметрах.
+stl:
+	g++ $(CXXFLAGS) stl_headless.cpp $(SRC)/stl_loader.cpp $(COMMON) \
+	    -o /tmp/aeros-test-stl -pthread
+	/tmp/aeros-test-stl
 
 startup:
 	g++ $(CXXFLAGS) -I$(IMGUI) start_screen_headless.cpp \
