@@ -60,6 +60,35 @@ void uploadVertexColorsToGPU() {
     }
 }
 
+// v1.34.0 — давление у стенки берётся не в самой вершине, а в первой жидкой
+// ячейке по внешней нормали.
+//
+// Вершина поверхности лежит на границе твёрдого и жидкого. Трилинейный сэмпл
+// в этой точке смешивает восемь ячеек, часть из которых твёрдые (их давление
+// не считается и отбрасывается), поэтому веса перераспределяются на жидкие
+// ячейки, лежащие дальше от стенки, — и Cp получается сглаженным «на полторы
+// ячейки вглубь потока». На карте давления это выглядит как размытая передняя
+// кромка и слабый пик разрежения, а в силах — заниженное сопротивление
+// давления. Сдвиг на 0.6 ячейки по нормали попадает ровно в первый жидкий
+// слой; если там данных нет (тонкая деталь, соседняя поверхность) — честно
+// возвращаемся к исходной точке.
+static inline glm::vec3 wallSamplePoint(const glm::vec3& p, const glm::vec3& n) {
+    glm::vec3 nn = n;
+    float nl = glm::length(nn);
+    if (!(nl > 1e-6f) || !std::isfinite(nl)) return p;
+    nn /= nl;
+    float cs = lbmCellSizeX;
+    if (!std::isfinite(cs) || cs <= 1e-9f) cs = 0.01f;
+    float off = 0.6f * cs;
+    if (!g_distanceField.empty()) {
+        // Не выходим в твёрдое тело и не отходим дальше трети ячейки, если
+        // поверхность рядом (тонкие стенки).
+        float d = sampleSDFCPU(p + nn * off);
+        if (d <= 0.0f) return p;
+    }
+    return p + nn * off;
+}
+
 void updateVertexColors() {
     // поле результата МКЭ уже записано в g_vertexColors — только загружаем его
     if (caeColorOverride) { uploadVertexColorsToGPU(); return; }
@@ -87,12 +116,15 @@ void updateVertexColors() {
         float* vPtr = g_vertices.data();
         float* colPtr = g_vertexColors.data();
 
+        const float* nPtr = g_normals.data();
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
         for (int i = 0; i < numVerts; i++) {
             glm::vec3 p(vPtr[3*i], vPtr[3*i+1], vPtr[3*i+2]);
-            glm::vec3 v = getLBMVelocityWorld(p);
+            glm::vec3 pWall = p;
+            if (nPtr) pWall = wallSamplePoint(p, glm::vec3(nPtr[3*i], nPtr[3*i+1], nPtr[3*i+2]));
+            glm::vec3 v = getLBMVelocityWorld(pWall);
             if (!std::isfinite(v.x)) v = glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
             float speed = glm::length(v);
             if (!std::isfinite(speed)) speed = vinf;
@@ -103,7 +135,7 @@ void updateVertexColors() {
             // области раньше получала Cp = 0 и рисовалась как невозмущённый поток.
             float pLBM = 0.0f;
             float cp;
-            if (getLBMPressureWorldChecked(p, &pLBM)) {
+            if (getLBMPressureWorldChecked(pWall, &pLBM)) {
                 cp = pLBM / qInf;
             } else {
                 cp = 1.0f - (speed*speed)/(vinf*vinf);   // Бернулли по локальной скорости
@@ -473,7 +505,7 @@ void computeLiftDrag() {
         if (lbmParams.enabled && lbmInitialized) {
             // v1.26.0: трилинейная интерполяция давления вместо «ближайшей ячейки»
             float pLBM = 0.0f;
-            if (!getLBMPressureWorldChecked(triCenter, &pLBM)) pLBM = 0.0f;
+            if (!getLBMPressureWorldChecked(wallSamplePoint(triCenter, n), &pLBM)) pLBM = 0.0f;
             cp = pLBM / q;
             if (doCompressibility) {
                 float denom = betaPG + (machInf*machInf/(1.0f+betaPG))*cp*0.5f;
