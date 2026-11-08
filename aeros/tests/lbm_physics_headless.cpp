@@ -515,11 +515,15 @@ int main() {
         //     функция обязана вернуть покой, это отдельная проверка ниже.
         const float sph[3] = {1.0f, 1.0f, 1.0f};
         const float kOut = 1.001f;
-        aeros_potential::ellipsoidVelocity((const float[3]){-kOut, 0.0f, 0.0f}, c, sph, U, v);
+        // Обычные массивы, а не compound literal: `(const float[3]){...}` —
+        // расширение C, и GCC 13+ отвергает взятие адреса временного массива.
+        const float nose[3] = {-kOut, 0.0f, 0.0f};
+        aeros_potential::ellipsoidVelocity(nose, c, sph, U, v);
         char nm[512];
         std::snprintf(nm, sizeof(nm), "потенциал: точка торможения сферы u = %.4f (нужно 0)", v[0]);
         check(std::fabs(v[0]) < 0.02f * 10.0f, nm);
-        aeros_potential::ellipsoidVelocity((const float[3]){0.0f, kOut, 0.0f}, c, sph, U, v);
+        const float side[3] = {0.0f, kOut, 0.0f};
+        aeros_potential::ellipsoidVelocity(side, c, sph, U, v);
         std::snprintf(nm, sizeof(nm), "потенциал: экватор сферы u = %.4f (нужно 15)", v[0]);
         check(std::fabs(v[0] - 15.0f) < 0.05f, nm);
 
@@ -544,12 +548,14 @@ int main() {
         }
 
         // (в) вдали от тела поле стремится к набегающему потоку
-        aeros_potential::ellipsoidVelocity((const float[3]){0.0f, 400.0f, 0.0f}, c, sph, U, v);
+        const float farPt[3] = {0.0f, 400.0f, 0.0f};
+        aeros_potential::ellipsoidVelocity(farPt, c, sph, U, v);
         std::snprintf(nm, sizeof(nm), "потенциал: вдали от тела u = %.4f (нужно 10)", v[0]);
         check(std::fabs(v[0] - 10.0f) < 0.01f, nm);
 
         // (г) внутри тела скорость покоя, а не «минус набегающий поток»
-        aeros_potential::ellipsoidVelocity((const float[3]){0.0f, 0.0f, 0.0f}, c, sph, U, v);
+        const float centre[3] = {0.0f, 0.0f, 0.0f};
+        aeros_potential::ellipsoidVelocity(centre, c, sph, U, v);
         check(v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f, "внутри тела скорость = 0");
     }
 
