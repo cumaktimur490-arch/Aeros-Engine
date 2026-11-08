@@ -28,3 +28,7 @@ timelapse-*.csv
 # v1.33.0 — npm-зависимость только для пересборки SPIR-V (tools/build-shaders.js)
 node_modules
 package-lock.json
+
+# Временные файлы тестов
+/tmp/aeros_recent*
+aeros/tests/aeros_recent.txt

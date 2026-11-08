@@ -1,2 +1,0 @@
-D:\Aeros Engine\samples\sphere.stl
-C:\Models\wing_naca2412.stl
