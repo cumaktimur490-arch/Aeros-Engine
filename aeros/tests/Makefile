@@ -16,6 +16,7 @@
 #   make openurl     запуск внешних программ без shell и проверка open_url.h (v1.36.0)
 #   make voxel       вокселизация: BVH, сходимость объёма, «внутри/снаружи» (v1.36.0)
 #   make stl         формат STL: хвост, обрезок, ASCII/бинарный, NaN, координаты (v1.36.0)
+#   make physref     эталонные течения: Пуазейль, вязкость, порядок сходимости (v1.36.0)
 #
 # Тесты намеренно не входят ни в один релизный сборочный скрипт: они линкуют
 # заглушки вместо OpenGL/GLFW/CUDA и нужны только для проверки логики.
@@ -30,8 +31,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl clean
-all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl
+.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref clean
+all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -81,7 +82,7 @@ ui:
 	/tmp/aeros-test-ui
 
 clean:
-	rm -f /tmp/aeros-test-stl /tmp/aeros-test-voxel /tmp/aeros-test-openurl /tmp/aeros-test-validate /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
+	rm -f /tmp/aeros-test-stl /tmp/aeros-test-voxel /tmp/aeros-test-physref /tmp/aeros-test-openurl /tmp/aeros-test-validate /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
 	      /tmp/aeros-test-fem /tmp/aeros-test-particles /tmp/aeros-test-startup
 
 # Физика частиц (v1.34.0). Линкуется с настоящим particles.cpp: проверяется
@@ -121,6 +122,12 @@ validate:
 # Открытие ссылок и диалоги без shell (v1.36.0): проверяется, что спецсимволы
 # в URL не превращаются в команды оболочки и что отсутствующий opener — это
 # ошибка, а не «успех» (как было с system() и фоновым `&`).
+physref:
+	g++ $(CXXFLAGS) physics_ref_headless.cpp $(SRC)/lbm.cpp $(SRC)/flow_field.cpp \
+	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
+	    -o /tmp/aeros-test-physref -pthread
+	/tmp/aeros-test-physref
+
 openurl:
 	g++ $(CXXFLAGS) open_url_headless.cpp -o /tmp/aeros-test-openurl
 	/tmp/aeros-test-openurl

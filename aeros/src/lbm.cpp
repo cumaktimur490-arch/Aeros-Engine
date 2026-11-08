@@ -56,6 +56,15 @@ float lbmCellSizeX = 0.1f, lbmCellSizeY = 0.1f, lbmCellSizeZ = 0.1f;
 static float sBodyMin[3] = {0,0,0}, sBodyMax[3] = {-1,-1,-1};
 static int   sBodyN[3] = {0,0,0};
 static bool  sHasBody = false;
+// v1.36.0 — число ЯЧЕЕК ЖИДКОСТИ (домен минус твёрдые и земля).
+// Раньше средняя плотность считалась как усреднение только по жидкости, но
+// делилась на все ячейки домена. Любая модель с заметной долей твёрдых ячеек
+// давала lbmAvgRho < 1 (например, сфера D=20 в 92x84x84 — около 0.995, а
+// сжатый тестовый канал 0.94), и проверка «разошёлся ли решатель» принимала
+// это за потерю массы и ПЕРЕЗАПУСКАЛА расчёт с равновесным полем. Отсюда были
+// и «Divergence detected» на ровном месте, и болтанка скорости вместо
+// установившегося решения.
+static int   sFluidCells = 1;
 
 std::vector<float> lbmRho;
 std::vector<float> lbmUx, lbmUy, lbmUz;
@@ -599,6 +608,13 @@ void initLBM() {
         std::cout << "[LBM] Ground enabled at Y=" << groundY << " cells 0.." << gy0 << std::endl;
     }
 
+    // v1.36.0 — средние по домену считаются по жидкости, а не по всем ячейкам
+    // (см. комментарий у sFluidCells).
+    sFluidCells = 0;
+    for (int cell = 0; cell < total; ++cell)
+        if (!lbmIsSolid[cell] && !lbmIsGround[cell]) ++sFluidCells;
+    if (sFluidCells < 1) sFluidCells = 1;
+
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
     std::cout << "[LBM] Inlet LB velocity: (" << inUx << "," << inUy << "," << inUz << ") total=" << total << std::endl;
@@ -924,7 +940,10 @@ void stepLBMCPU(int steps) {
                 isOutlet = (flowSign > 0) ? (z == Nz-1) : (z == 0);
             }
 
-            if (isInlet) {
+            // v1.36.0 — при периодичности по X входной границы нет: иначе
+            // равновесный вход на x=0 подменял бы популяции, только что
+            // перенесённые с x=Nx-1, то есть периодичность была бы фиктивной.
+            if (isInlet && !lbmParams.periodicX) {
                 rho = 1.0f;
                 ux = inUx; uy = inUy; uz = inUz;
             }
@@ -1010,11 +1029,41 @@ void stepLBMCPU(int steps) {
             }
             float invTau = 1.0f / tauEff;
 
+            // v1.36.0 — объёмная сила по схеме Го (Guo, Zheng & Shi, 2002).
+            // Половина силы добавляется к скорости, по которой считается
+            // равновесие, полная — к популяциям как источник. Без первой половины
+            // установившееся течение в канале смещено на O(F·dt), то есть ошибка
+            // как раз того же порядка, что и проверяемый профиль.
+            const float Fx = lbmParams.bodyForceX;
+            const float Fy = lbmParams.bodyForceY;
+            const float Fz = lbmParams.bodyForceZ;
+            const bool hasForce = (Fx != 0.0f || Fy != 0.0f || Fz != 0.0f);
+            float ueX = ux, ueY = uy, ueZ = uz;
+            float ueSqr = usqr;
+            if (hasForce) {
+                const float half = 0.5f / rho;
+                ueX += Fx * half; ueY += Fy * half; ueZ += Fz * half;
+                ueSqr = ueX*ueX + ueY*ueY + ueZ*ueZ;
+            }
+            // Множитель (1 - 1/(2 tau)) — обязательная часть схемы Го: без него
+            // установившаяся скорость в канале завышается в (1/2 + tau)/(...)
+            // раз. Проверено на течении Пуазейля (physics_ref_headless):
+            // без множителя u_max = 0.0353 вместо 0.0200 при F = 7.8e-6.
+            const float guoK = 1.0f - 0.5f * invTau;
+
             for (int qi = 0; qi < Q; ++qi) {
-                float feq = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
+                float feq = computeEquilibriumFast(qi, rho, ueX, ueY, ueZ, ueSqr);
                 float fi = fPtr[base+qi];
                 if (!std::isfinite(fi)) fi = feq;
                 float fNew = fi - (fi - feq) * invTau;
+                if (hasForce) {
+                    const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
+                    const float cu = cx*ueX + cy*ueY + cz*ueZ;
+                    const float src = guoK * 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                                     (cy - ueY + 3.0f*cu*cy) * Fy +
+                                                     (cz - ueZ + 3.0f*cu*cz) * Fz);
+                    fNew += src;
+                }
                 if (!std::isfinite(fNew)) fNew = feq;
                 // v1.27.0 — отрицательные популяции считаются, но НЕ обнуляются.
                 // Обнуление ломало сохранение массы: суммарная плотность ячейки
@@ -1078,6 +1127,18 @@ void stepLBMCPU(int steps) {
                         int sx = x - c[qi][0];
                         int sy = y - c[qi][1];
                         int sz = z - c[qi][2];
+                        // v1.36.0 — периодическая граница по X: популяции,
+                        // ушедшие за край, приходят с противоположной стороны.
+                        // Это не «мягкая» замена стенки, а точное сохранение
+                        // массы и импульса в канале (течение Пуазейля).
+                        if (lbmParams.periodicX) {
+                            if (sx < 0) sx += Nx;
+                            else if (sx >= Nx) sx -= Nx;
+                        }
+                        if (lbmParams.periodicZ) {
+                            if (sz < 0) sz += Nz;
+                            else if (sz >= Nz) sz -= Nz;
+                        }
                         if (sx < 0 || sx >= Nx || sy < 0 || sy >= Ny || sz < 0 || sz >= Nz) {
                             // Граница — будет обработано отдельно как inlet/outlet
                             fNextPtr[destBase+qi] = fPtr[destBase+qi];
@@ -1098,7 +1159,9 @@ void stepLBMCPU(int steps) {
         }
 
         // Inlet BC — Zou/He упрощенный: все f = equilibrium(inlet)
-        if (flowAxis == 0) {
+        if (lbmParams.periodicX) {
+            // границы нет — см. ветку переноса выше
+        } else if (flowAxis == 0) {
             int ix = (flowSign > 0) ? 0 : Nx-1;
             float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
             #ifdef _OPENMP
@@ -1153,7 +1216,7 @@ void stepLBMCPU(int steps) {
 
         // Outlet — конвективный: df/dt + U*df/dx =0 => f_out(t+dt)=f_out - U*dt/dx*(f_out-f_in)
         // Более физично чем zero-gradient, сохраняет вихри
-        if (lbmParams.useConvectiveOutlet) {
+        if (lbmParams.useConvectiveOutlet && !lbmParams.periodicX) {
             float convCoeff = U0mag * 0.8f; // U*dt/dx, dt=1, dx=1, U~0.08
             if (convCoeff > 0.5f) convCoeff = 0.5f;
             if (convCoeff < 0.01f) convCoeff = 0.08f;
@@ -1241,10 +1304,10 @@ void stepLBMCPU(int steps) {
         f.swap(fNext);
 
         lbmCurrentStep++;
-        lbmAvgRho = (float)(avgRhoAcc / total);
-        lbmAvgKineticEnergy = (float)(kineticAcc / total);
+        lbmAvgRho = (float)(avgRhoAcc / sFluidCells);
+        lbmAvgKineticEnergy = (float)(kineticAcc / sFluidCells);
         lbmMaxVelocityLB = maxVelGlobal;
-        lbmTKE = (float)(tkeAcc / total);
+        lbmTKE = (float)(tkeAcc / sFluidCells);
 
         float scale = flowSpeed / U0mag;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
