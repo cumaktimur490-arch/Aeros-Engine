@@ -97,7 +97,7 @@ struct Result {
 // Один прогон. tau задаётся из желаемого Re_lat = U0 * D / nu:
 //   nu = (tau - 0.5)/3  =>  tau = 0.5 + 3*U0*D/Re
 static Result runCase(Shape shape, int res, float radiusWorld, int diameterCells,
-                      float reLat, int warmup, int measure) {
+                      float reLat, int warmup, int measure, float pad = 0.15f) {
     Result r;
     flowSpeed = 20.0f; flowAzimuth = 0.0f; flowElevation = 0.0f;
     altitude = 0.0f; timeScale = 1.0f; aeroMachEffects = false;
@@ -109,7 +109,7 @@ static Result runCase(Shape shape, int res, float radiusWorld, int diameterCells
     lbmParams.useTurbulence = false;      // чистая BGK: сравниваем с эталоном для ламинарного режима
     lbmParams.useGround = false;
     lbmParams.inletTurbulence = 0.0f;
-    lbmParams.domainPadding = 0.15f;
+    lbmParams.domainPadding = pad;
     lbmParams.autoViscosity = false;
     voxelResolution = res;
 
@@ -128,8 +128,11 @@ static Result runCase(Shape shape, int res, float radiusWorld, int diameterCells
     shutdownLBM();
     initLBM();
     if (!lbmInitialized) return r;
+    // v1.36.1 — в форматной строке было на одно преобразование больше, чем
+    // аргументов: tau печатался из мусора в регистре (в отчёте стояло 0.0000
+    // при фактическом 0.5312). Компилятор ловит это -Wformat.
     std::printf("  [прогон] сетка %dx%dx%d = %.0f тыс. ячеек, tau=%.4f\n",
-                lbmNx, lbmNy, lbmNz, lbmNx*lbmNy*lbmNz/1000.0);
+                lbmNx, lbmNy, lbmNz, lbmNx*lbmNy*lbmNz/1000.0, (double)lbmParams.tau);
     std::fflush(stdout);
 
     for (int i = 0; i < warmup; ++i) {
@@ -214,12 +217,16 @@ int main() {
     int res = 48;
     if (const char* e = getenv("VAL_D")) sphereD = atoi(e);
     if (const char* e = getenv("VAL_RES")) res = atoi(e);
-    if (const char* e = getenv("VAL_PAD")) lbmParams.domainPadding = (float)atof(e);
+    // v1.36.1 — VAL_PAD раньше читался, но runCase() тут же перезаписывал поле
+    // на 0.15, то есть переменная не влияла ни на что. Теперь значение идёт
+    // параметром в runCase().
+    float pad = 0.15f;
+    if (const char* e = getenv("VAL_PAD")) pad = (float)atof(e);
     const float radius = 3.0f * (float)sphereD / (float)res;
     int warm = 500, meas = 50;
     if (const char* e = getenv("VAL_WARM")) warm = atoi(e);
     if (const char* e = getenv("VAL_MEAS")) meas = atoi(e);
-    Result sph = runCase(ShapeSphere, res, radius, sphereD, reTarget, warm, meas);
+    Result sph = runCase(ShapeSphere, res, radius, sphereD, reTarget, warm, meas, pad);
     const float cdRef = sphereCdSchillerNaumann(100.0f);
     const float errSph = (sph.cd - cdRef) / cdRef * 100.0f;
     std::printf("СФЕРА Re=100: Cd измеренный %.3f, эталон %.3f, отклонение %+.1f%%\n",
@@ -241,7 +248,7 @@ int main() {
     // Три сетки для полного порядка Ричардсона на такой степени сгущения дают
     // шумный результат, а сама формула проверена отдельным тестом ниже.
     std::printf("\nВЛИЯНИЕ СЕТКИ (сфера Re=100):\n");
-    Result coarse = runCase(ShapeSphere, 40, 3.0f*13.0f/40.0f, 13, 100.0f, 400, 40);
+    Result coarse = runCase(ShapeSphere, 40, 3.0f*13.0f/40.0f, 13, 100.0f, 400, 40, pad);
     const float errCoarse = std::fabs(coarse.cd - cdRef) / cdRef * 100.0f;
     std::printf("  D=13: Cd=%.3f (отклонение %.1f %%, %.1f с)\n", coarse.cd, errCoarse, coarse.seconds);
     std::printf("  D=20: Cd=%.3f (отклонение %.1f %%, %.1f с)\n", sph.cd, std::fabs(errSph), sph.seconds);
