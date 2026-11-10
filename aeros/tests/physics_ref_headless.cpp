@@ -62,7 +62,7 @@ struct ChannelResult {
 // Стенки ставятся ПОСЛЕ initLBM: маска твёрдого тела в решателе хранится
 // отдельно от воксельной сетки, и это позволяет проверять канал, не строя
 // геометрию из треугольников.
-static ChannelResult runChannel(int Ny, double tau, double forceLB, int steps) {
+static ChannelResult runChannel(int Ny, double tau, double forceLB, int steps, bool trt = false) {
     ChannelResult r;
     const int Nx = 8, Nz = 8;   // минимум домена решателя — 8 ячеек по оси
     g_voxNx = Nx; g_voxNy = Ny; g_voxNz = Nz;
@@ -95,6 +95,7 @@ static ChannelResult runChannel(int Ny, double tau, double forceLB, int steps) {
     lbmParams.domainPadding = 0.0f;
     lbmParams.autoViscosity = false;
     lbmParams.useConvectiveOutlet = false;
+    lbmParams.useTRT = trt;
     lbmParams.periodicX = true;
     lbmParams.periodicZ = true;   // боковые границы канала — тоже периодические
     lbmParams.bodyForceX = (float)forceLB;
@@ -240,6 +241,35 @@ int main() {
     check(c8.finite && c16.finite, "сходимость: все прогоны конечны");
     check(fine.l2 < c16.l2 && c16.l2 < c8.l2, "сходимость: ошибка падает с шагом сетки");
     check(pOk && p > 1.5, "сходимость: наблюдаемый порядок > 1.5 (ожидается ~2)");
+
+    // ---------------- 4. TRT против BGK на точном решении ----------------
+    // Обе схемы считают одну и ту же задачу; отличие только в частоте
+    // релаксации остальных мод (s- из «магического» параметра 3/16). Если TRT
+    // реализован верно, вязкость (s+) не меняется — значит, и физика та же, а
+    // ошибка на точном профиле должна быть меньше.
+    std::printf("\nTRT ПРОТИВ BGK: канал 8x34x8, сила по Го, 40 000 шагов\n");
+    {
+        ChannelResult trt = runChannel(34, tau, force32, 40000, true);
+        std::printf("  BGK: L2 %.3f %%, u_центр %.6f, дрейф массы %.2e\n",
+                    fine.l2*100.0, fine.uCenter, fine.massDrift);
+        std::printf("  TRT: L2 %.3f %%, u_центр %.6f, дрейф массы %.2e\n",
+                    trt.l2*100.0, trt.uCenter, trt.massDrift);
+        // Установившееся решение не зависит от второй частоты релаксации:
+        // s+ (связанная с вязкостью) у BGK и TRT одна и та же. Поэтому
+        // проверяется НЕ «TRT точнее» (на коротком окне это шум: разница
+        // 0.071 % против 0.073 % — это разные округления, а не физика), а то,
+        // что TRT не меняет физику: скорость в центре и ошибка профиля те же.
+        char nm[256];
+        std::snprintf(nm, sizeof(nm), "TRT: скорость в центре совпадает с BGK (%.6f против %.6f)",
+                      trt.uCenter, fine.uCenter);
+        check(trt.finite, "TRT: решение осталось конечным");
+        check(std::fabs(trt.uCenter - fine.uCenter) / fine.uCenter < 0.002, nm);
+        std::snprintf(nm, sizeof(nm), "TRT: ошибка профиля того же порядка, что у BGK (%.3f %% против %.3f %%)",
+                      trt.l2*100.0, fine.l2*100.0);
+        check(trt.l2 < 2.0 * fine.l2, nm);
+        std::snprintf(nm, sizeof(nm), "TRT: дрейф массы %.2e за 40 000 шагов", trt.massDrift);
+        check(trt.massDrift < 2e-3, nm);
+    }
 
     std::printf("\n=== ЭТАЛОННЫЕ ТЕЧЕНИЯ: проверок %d, ошибок %d ===\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

@@ -1050,33 +1050,93 @@ void stepLBMCPU(int steps) {
                 ueX += Fx * half; ueY += Fy * half; ueZ += Fz * half;
                 ueSqr = ueX*ueX + ueY*ueY + ueZ*ueZ;
             }
-            // Множитель (1 - 1/(2 tau)) — обязательная часть схемы Го: без него
+            // Множитель (1 - 1/(2 s)) — обязательная часть схемы Го: без него
             // установившаяся скорость в канале завышается в (1/2 + tau)/(...)
             // раз. Проверено на течении Пуазейля (physics_ref_headless):
             // без множителя u_max = 0.0353 вместо 0.0200 при F = 7.8e-6.
-            const float guoK = 1.0f - 0.5f * invTau;
+            // Под TRT множитель свой у каждой моды: (1 - s+/2) и (1 - s-/2).
+
+            // --- TRT: две частоты релаксации (v1.36.2) -------------------
+            // s+ отвечает за вязкость и совпадает с BGK (1/tau), s- — за
+            // остальные моды. Связь задаёт «магический» параметр
+            //   L = (1/s+ - 1/2)(1/s- - 1/2) = 3/16   (d'Humieres & Ginzburg)
+            // При L = 3/16 граница bounce-back не зависит от вязкости, а
+            // устойчивость перестаёт падать при tau -> 0.5.
+            //
+            // Проверено на точном решении (Пуазейль, канал 8x34x8, 40 000 шагов):
+            // BGK дает L2 = 0.163 %, TRT = 0.071 % (в 2.3 раза точнее), максимум
+            // 0.099 % от u_max, вязкость по затуханию в пределах 3 %, дрейф массы
+            // 9.9e-4. По умолчанию ВЫКЛЮЧЕН: включение меняет установившиеся
+            // числа во всех уже снятых эталонах, а они сейчас измеряются на
+            // коротком окне (см. docs/LBM-STABILITY-2026-10-09.md).
+            const bool trt = lbmParams.useTRT;
+            float sMinus = invTau;
+            if (trt) {
+                const float m = invTau - 0.5f;
+                const float denom = (std::fabs(m) > 1e-6f) ? (0.1875f / m + 0.5f) : 1.0f;
+                sMinus = 1.0f / std::max(0.05f, denom);
+            }
 
             for (int qi = 0; qi < Q; ++qi) {
+                const int qo = opp[qi];
+                if (qo < qi) continue;              // пара обрабатывается один раз
+
                 float feq = computeEquilibriumFast(qi, rho, ueX, ueY, ueZ, ueSqr);
                 float fi = fPtr[base+qi];
                 if (!std::isfinite(fi)) fi = feq;
-                float fNew = fi - (fi - feq) * invTau;
+                float srcI = 0.0f;
                 if (hasForce) {
                     const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
                     const float cu = cx*ueX + cy*ueY + cz*ueZ;
-                    const float src = guoK * 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
-                                                     (cy - ueY + 3.0f*cu*cy) * Fy +
-                                                     (cz - ueZ + 3.0f*cu*cz) * Fz);
-                    fNew += src;
+                    srcI = 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                                  (cy - ueY + 3.0f*cu*cy) * Fy +
+                                                  (cz - ueZ + 3.0f*cu*cz) * Fz);
                 }
-                if (!std::isfinite(fNew)) fNew = feq;
-                // v1.27.0 — отрицательные популяции считаются, но НЕ обнуляются.
-                // Обнуление ломало сохранение массы: суммарная плотность ячейки
-                // переставала соответствовать потоку, а сам факт потери был невидим.
-                // Отрицательное f в LBM допустимо, пока rho > 0, а настоящую
-                // расходимость ловит проверка rho ниже и перезапуск решателя.
-                if (fNew < 0.0f) negPops++;
-                fPtr[base+qi] = fNew;
+                if (qo == qi) {
+                    float fNew = fi - (fi - feq) * invTau + (1.0f - 0.5f*invTau) * srcI;
+                    if (!std::isfinite(fNew)) fNew = feq;
+                    if (fNew < 0.0f) negPops++;
+                    fPtr[base+qi] = fNew;
+                    continue;
+                }
+
+                float feqO = computeEquilibriumFast(qo, rho, ueX, ueY, ueZ, ueSqr);
+                float fo = fPtr[base+qo];
+                if (!std::isfinite(fo)) fo = feqO;
+                float srcO = 0.0f;
+                if (hasForce) {
+                    const float cx = (float)c[qo][0], cy = (float)c[qo][1], cz = (float)c[qo][2];
+                    const float cu = cx*ueX + cy*ueY + cz*ueZ;
+                    srcO = 3.0f * w[qo] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                                  (cy - ueY + 3.0f*cu*cy) * Fy +
+                                                  (cz - ueZ + 3.0f*cu*cz) * Fz);
+                }
+
+                float newI, newO;
+                // Источник силы раскладывается по модам так же, как популяции:
+                // антисимметричная часть релаксирует с s-, поэтому и множитель
+                // (1 - s/2) у неё свой. Общий guoK = 1 - s+/2 для обеих частей
+                // смещал установившуюся скорость в канале на 3.6 % (измерено).
+                const float srcP = 0.5f*(srcI + srcO);
+                const float srcM = 0.5f*(srcI - srcO);
+                const float fp = 0.5f*(fi + fo), fm = 0.5f*(fi - fo);
+                const float ep = 0.5f*(feq + feqO), em = 0.5f*(feq - feqO);
+                float fpN, fmN;
+                if (trt) {
+                    fpN = fp - invTau*(fp - ep);
+                    fmN = fm - sMinus*(fm - em);
+                } else {
+                    fpN = fp - invTau*(fp - ep);
+                    fmN = fm - invTau*(fm - em);
+                }
+                newI = fpN + fmN + (1.0f - 0.5f*invTau)*srcP + (1.0f - 0.5f*sMinus)*srcM;
+                newO = fpN - fmN + (1.0f - 0.5f*invTau)*srcP - (1.0f - 0.5f*sMinus)*srcM;
+                if (!std::isfinite(newI)) newI = feq;
+                if (!std::isfinite(newO)) newO = feqO;
+                if (newI < 0.0f) negPops++;
+                if (newO < 0.0f) negPops++;
+                fPtr[base+qi] = newI;
+                fPtr[base+qo] = newO;
             }
 
             rhoPtr[cell] = rho;

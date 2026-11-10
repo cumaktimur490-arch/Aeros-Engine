@@ -33,7 +33,7 @@
 
 ```bash
 cd aeros/tests
-make             # все 16 наборов (1271 проверка)
+make             # все 16 наборов (1275 проверок)
 make timelapse   # только таймлапс
 make lbm         # только прогон решателя
 make physclock   # только такт физики
