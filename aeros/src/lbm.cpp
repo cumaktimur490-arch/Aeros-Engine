@@ -1163,7 +1163,8 @@ void stepLBMCPU(int steps) {
             }
         }
 
-        // Inlet BC — Zou/He упрощенный: все f = equilibrium(inlet)
+        // Вход: все f = равновесные популяции от (rho_in, u_in).
+        // Схемы Zou/He здесь нет и не было — см. комментарий в lbm.h.
         if (lbmParams.periodicX) {
             // границы нет — см. ветку переноса выше
         } else if (flowAxis == 0) {
