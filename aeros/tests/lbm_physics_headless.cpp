@@ -410,36 +410,45 @@ int main() {
     }
 
     // =====================================================
-    // 6) НЕ РЕАЛИЗОВАННЫЕ НАСТРОЙКИ больше не выдают себя за работающие
+    // 6) ВИДИМЫЕ НАСТРОЙКИ РЕШАТЕЛЯ РЕАЛЬНО МЕНЯЮТ РЕШЕНИЕ
     // =====================================================
-    std::printf("\n--- настройки без эффекта (MRT / Zou-He / регуляризация) ---\n");
+    // v1.36.0 — раздел переписан. Раньше здесь проверялись три флага
+    // (useMRT / useZouHeBC / useRegularized), которые были объявлены, но ни
+    // разу не читались решателем, — то есть тест закреплял существование
+    // мёртвых опций и «отсутствие эффекта» как норму. Флаги удалены; теперь
+    // проверяется обратное: у каждой видимой настройки граничных условий есть
+    // измеримый эффект, иначе она декоративная.
+    std::printf("\n--- настройки граничных условий действительно работают ---\n");
     {
-        lbmParams.useMRT = true; lbmParams.useZouHeBC = true; lbmParams.useRegularized = true;
-        const char* inert = lbmInertSettings();
+        auto run60 = [&](void (*setup)(), float* rho, float* vmax) {
+            shutdownLBM();
+            makeSphereCase(0.7f);
+            setup();
+            initLBM();
+            for (int i = 0; i < 60; ++i) stepLBMCPU(1);
+            *rho = lbmAvgRho;
+            *vmax = lbmMaxVelocityWorld;
+        };
+        float rhoA = 0, vA = 0, rhoB = 0, vB = 0;
         char nm[256];
-        std::snprintf(nm, sizeof(nm), "диагностика перечисляет не реализованные настройки: %s",
-                      inert ? inert : "(пусто)");
-        check(inert && std::strstr(inert, "useMRT") && std::strstr(inert, "useZouHeBC") &&
-              std::strstr(inert, "useRegularized"), nm);
-        lbmParams.useMRT = false; lbmParams.useZouHeBC = false; lbmParams.useRegularized = false;
-        check(lbmInertSettings()[0] == '\0', "когда всё выключено, список настроек без эффекта пуст");
-        // поведение обязано быть одинаковым — иначе настройка что-то делает
-        shutdownLBM(); makeSphereCase(0.7f); initLBM();
-        lbmParams.useTurbulence = true;
-        lbmParams.useMRT = false; lbmParams.useZouHeBC = false; lbmParams.useRegularized = false;
-        for (int i = 0; i < 60; ++i) stepLBMCPU(1);
-        const float rhoOff = lbmAvgRho, vmaxOff = lbmMaxVelocityWorld, pOff = lbmPressureMax;
-        shutdownLBM(); makeSphereCase(0.7f); initLBM();
-        lbmParams.useTurbulence = true;
-        lbmParams.useMRT = true; lbmParams.useZouHeBC = true; lbmParams.useRegularized = true;
-        for (int i = 0; i < 60; ++i) stepLBMCPU(1);
+
+        // Конвективный выход против простого bounce-back на выходной плоскости.
+        run60([] { lbmParams.useConvectiveOutlet = false; }, &rhoA, &vA);
+        run60([] { lbmParams.useConvectiveOutlet = true; },  &rhoB, &vB);
         std::snprintf(nm, sizeof(nm),
-                      "MRT/Zou-He/регуляризация не меняют решение: rho %.6f против %.6f, vmax %.4f против %.4f",
-                      lbmAvgRho, rhoOff, lbmMaxVelocityWorld, vmaxOff);
-        check(std::fabs(lbmAvgRho - rhoOff) < 1e-6f &&
-              std::fabs(lbmMaxVelocityWorld - vmaxOff) < 1e-4f &&
-              std::fabs(lbmPressureMax - pOff) < 1e-2f, nm);
-        lbmParams.useMRT = false; lbmParams.useZouHeBC = false; lbmParams.useRegularized = false;
+                      "конвективный выход меняет поле: rho %.6f против %.6f, vmax %.4f против %.4f",
+                      rhoA, rhoB, vA, vB);
+        check(std::fabs(rhoA - rhoB) > 1e-7f || std::fabs(vA - vB) > 1e-4f, nm);
+
+        // Земля: слой твёрдых ячеек срезает нижнюю половину модели.
+        run60([] { lbmParams.useGround = false; }, &rhoA, &vA);
+        run60([] { lbmParams.useGround = true; lbmParams.groundHeight = 0.0f; }, &rhoB, &vB);
+        std::snprintf(nm, sizeof(nm),
+                      "земля меняет решение: vmax %.4f против %.4f", vA, vB);
+        check(std::fabs(vA - vB) > 1e-3f, nm);
+
+        lbmParams.useGround = false;
+        lbmParams.useConvectiveOutlet = true;
     }
 
     // ---- v1.34.0: внешняя область вокруг модели --------------------------

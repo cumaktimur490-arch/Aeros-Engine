@@ -1,3 +1,4 @@
+#include "version.h"   // v1.36.0 — версия в журнале из одного места
 #include "framegen.h"
 #include "globals.h"
 #include "flow_field.h"
@@ -333,7 +334,7 @@ static unsigned int compileShader(const char* vs, const char* fs) {
 }
 
 bool initFrameGen(int displayW, int displayH) {
-    std::cout << "[FG] Init v1.19.0 Physics Logic Fix — " << displayW << "x" << displayH << std::endl;
+    std::cout << "[FG] Init " << AEROS_VERSION_STRING << " — " << displayW << "x" << displayH << std::endl;
 
     float quad[] = {
         -1,-1, 0,0,
@@ -368,7 +369,7 @@ bool initFrameGen(int displayW, int displayH) {
     fgGeneratedCount = 0;
     fgRealCount = 0;
 
-    std::cout << "[FG] Init OK v1.19.0 — motion=" << fgMotionProgram << " interp=" << fgInterpProgram << " aero=ON" << std::endl;
+    std::cout << "[FG] Init OK " << AEROS_VERSION_STRING << " — motion=" << fgMotionProgram << " interp=" << fgInterpProgram << " aero=ON" << std::endl;
     return true;
 }
 
@@ -466,7 +467,7 @@ void resizeFrameGen(int displayW, int displayH) {
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    std::cout << "[FG] Resize v1.19.0 " << w << "x" << h << " aero=ON" << std::endl;
+    std::cout << "[FG] Resize " << AEROS_VERSION_STRING << " " << w << "x" << h << " aero=ON" << std::endl;
 }
 
 void beginRealFrame(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& camPos) {

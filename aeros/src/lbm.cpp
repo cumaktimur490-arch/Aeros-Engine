@@ -1,4 +1,5 @@
 #include "lbm.h"
+#include "version.h"   // v1.36.0 — в журнал пишется фактическая версия сборки, а не v1.11.0
 #include "globals.h"
 #include "debug_log.h"   // v1.25.0 — журнал физики
 #include "flow_field.h"
@@ -230,22 +231,6 @@ bool lbmEquilibriumMoments(float rho, float ux, float uy, float uz,
     return true;
 }
 
-// v1.30.0 — какие из показанных в UI настроек решателя не реализованы.
-const char* lbmInertSettings() {
-    static char buf[192];
-    buf[0] = 0;
-    auto add = [&](const char* name, bool on) {
-        if (!on) return;
-        size_t n = strlen(buf);
-        if (n > 0 && n + 2 < sizeof(buf)) { buf[n] = ','; buf[n+1] = ' '; n += 2; }
-        snprintf(buf + n, sizeof(buf) - n, "%s", name);
-    };
-    add("useMRT",         lbmParams.useMRT);         // коллизия BGK, MRT не реализован
-    add("useZouHeBC",     lbmParams.useZouHeBC);     // вход bounce-back + равновесие, Zou/He нет
-    add("useRegularized", lbmParams.useRegularized); // регуляризации популяций нет
-    return buf;
-}
-
 glm::vec3 pressureColorInRange(float cp, float lo, float hi) {
     if (!std::isfinite(cp)) cp = 0.0f;
     if (!std::isfinite(lo) || !std::isfinite(hi) || hi - lo < 1e-4f) { lo = -2.0f; hi = 2.0f; }
@@ -384,7 +369,7 @@ glm::vec3 getTotalPressureColor(float pt, float ptInf) {
 }
 
 void initLBM() {
-    std::cout << "[LBM] Initializing v1.11.0 Physics Fix..." << std::endl;
+    std::cout << "[LBM] Initializing " << AEROS_VERSION_STRING << "..." << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // v1.34.0 — ДОМЕН БОЛЬШЕ ОБЪЕКТА.
@@ -806,7 +791,7 @@ void initLBM() {
 
     auto t1 = std::chrono::high_resolution_clock::now();
     lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
-    std::cout << "[LBM] Initialized Physics Ultra v1.14.0: " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
+    std::cout << "[LBM] Initialized " << AEROS_VERSION_STRING << ": " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
               << " mu=" << muSuth << " nuPhys=" << nuPhys
               << " cells, tau=" << lbmParams.tau << " nu=" << lbmParams.viscosity
               << " Re_phys=" << lbmReynolds << " Re_LB=" << lbmReynoldsLB

@@ -1,3 +1,4 @@
+#include "version.h"   // v1.36.0 — версия в журнале из одного места
 #include "fsr.h"
 #include "globals.h"
 #include "gl_utils.h"
@@ -223,7 +224,7 @@ static unsigned int compileShaderFromSrc(const char* vertSrc, const char* fragSr
 }
 
 bool initFSR(int displayW, int displayH) {
-    std::cout << "[FSR] Init v1.15.0 — display " << displayW << "x" << displayH << std::endl;
+    std::cout << "[FSR] Init " << AEROS_VERSION_STRING << " — display " << displayW << "x" << displayH << std::endl;
 
     // Quad VAO
     float quad[] = {

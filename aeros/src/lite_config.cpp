@@ -1,3 +1,4 @@
+#include "version.h"   // v1.36.0 — версия в журнале из одного места
 #include "lite_config.h"
 #include "globals.h"
 #include "lbm.h"
@@ -541,7 +542,7 @@ void saveLiteConfig(const char* path) {
         std::cout << "[Lite Config] Failed to save " << path << std::endl;
         return;
     }
-    f << "# Aeros Engine Lite Config v1.20.1\n";
+    f << "# Aeros Engine Lite Config " + std::string(AEROS_VERSION_STRING) + "\n";
     f << "# Auto-generated — edit manually if needed\n";
     f << "preset=" << (int)g_currentPreset << " # 0=Potato 1=Low 2=Medium 3=Full\n";
     f << "isLite=" << (g_isLiteMode?1:0) << "\n";
@@ -651,21 +652,31 @@ void applyLiteOptimizations() {
 }
 
 const char* getLiteInfoString() {
+    // v1.36.0 — версия подставляется из version.h, а не вписана руками:
+    // раньше здесь стояло «v1.20.1» и строка расходилась с фактической сборкой.
+    static std::string info;
     if (g_isUltraLite) {
-        return "Ultra-Lite v1.20.1 — Atom/Celeron/2GB RAM/HD 3000 — 500 particles, 4x40 streamlines, voxel 16, 20 FPS, 800x450, 1 thread";
+        info = std::string("Ultra-Lite ") + AEROS_VERSION_STRING +
+               " — Atom/Celeron/2GB RAM/HD 3000 — 500 particles, 4x40 streamlines, voxel 16, 20 FPS, 800x450, 1 thread";
     }
 #ifdef AEROS_LITE
-    return "Lite v1.20.1 — i3-3xxx / HD 4000 / GT 620M / No CUDA — Optimized for weak devices, 30 FPS, low RAM, SSE2, auto-detect, battery saver";
-#else
-    if (g_isLiteMode) {
-        return "Lite mode ON — auto-detected weak hardware, 30 FPS, low RAM";
+    else {
+        info = std::string("Lite ") + AEROS_VERSION_STRING +
+               " — i3-3xxx / HD 4000 / GT 620M / No CUDA — Optimized for weak devices, 30 FPS, low RAM, SSE2, auto-detect, battery saver";
     }
-    return "Full v1.20.1 — Vulkan+OpenGL, CUDA, FSR, FG, all features, auto Lite detection";
+#else
+    else if (g_isLiteMode) {
+        info = "Lite mode ON — auto-detected weak hardware, 30 FPS, low RAM";
+    } else {
+        info = std::string("Full ") + AEROS_VERSION_STRING +
+               " — Vulkan+OpenGL, CUDA, FSR, FG, all features, auto Lite detection";
+    }
 #endif
+    return info.c_str();
 }
 
 void printLiteSystemInfo() {
-    std::cout << "=== Aeros Engine System Info v1.20.1 ===" << std::endl;
+    std::cout << "=== Aeros Engine System Info " << AEROS_VERSION_STRING << " ===" << std::endl;
 #ifdef VERSION
     std::cout << "Version: " << VERSION << " " << getLiteInfoString() << std::endl;
 #else

@@ -1,3 +1,4 @@
+#include "version.h"   // v1.36.0 — версия в журнале из одного места
 #include "interesting.h"
 #include "globals.h"
 #include "flow_field.h"
@@ -1035,7 +1036,7 @@ void clearStreaklines() {
 // Init/Shutdown all
 // =====================================================
 void initInterestingFeatures() {
-    std::cout << "[Interesting] Init v1.19.0 — schlieren, smoke, shocks, vortex, flight, LIC, acoustic" << std::endl;
+    std::cout << "[Interesting] Init " << AEROS_VERSION_STRING << " — schlieren, smoke, shocks, vortex, flight, LIC, acoustic" << std::endl;
     initSmokeTunnel();
     initStreaklines();
     initFlightDynamics();

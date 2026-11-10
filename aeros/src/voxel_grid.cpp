@@ -213,6 +213,14 @@ VoxelPlan voxelPlan(const glm::vec3& size, int res, unsigned long long budgetByt
     return p;
 }
 
+double voxelizeEstimateMs(int triangles, long long cells) {
+    if (triangles < 1) triangles = 1;
+    if (cells < 1) cells = 1;
+    const double l = std::log2((double)std::max(2, triangles));
+    const double ms = 6.7 + 7.138e-5 * (double)cells * l + 2.017e-5 * (double)triangles * l;
+    return std::max(1.0, ms);
+}
+
 void buildVoxelGrid(const std::vector<float>& verts, int res) {
     if (verts.empty()) {
         std::cerr << "[Voxel] Empty vertices" << std::endl;

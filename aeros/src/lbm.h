@@ -17,15 +17,12 @@ struct LBMParams {
     float viscosity = 0.033f;
     float smagorinskyC = 0.12f;
     bool useTurbulence = true;
-    bool useMRT = false;         // НЕ РЕАЛИЗОВАНО: коллизия везде BGK, MRT нет (v1.30.0 — в UI заблокирован)
     int maxSteps = 10000;
     float convergenceThreshold = 1e-5f;
     bool useGround = false;
     float groundHeight = 0.0f;
-    bool useZouHeBC = false;     // НЕ РЕАЛИЗОВАНО: вход — равновесные популяции, схемы Zou/He нет (v1.30.0)
     bool useConvectiveOutlet = true;
     float inletTurbulence = 0.02f;
-    bool useRegularized = false; // НЕ РЕАЛИЗОВАНО: неравновесная часть не регуляризуется (v1.30.0)
     // v1.34.0 — масштаб внешней области вокруг модели: 1.0 = 2L вверх по потоку,
     // 4L вниз и 2.5L по бокам (стандарт для внешнего обтекания). Меньше 1 имеет
     // смысл только для быстрых тестов и предпросмотра: блокировка потока растёт,
@@ -109,11 +106,14 @@ extern long long lbmPressureNonFinite;
 // устойчивости, поэтому импульс равен rho*u_limited — масса сохраняется всегда.
 bool lbmEquilibriumMoments(float rho, float ux, float uy, float uz,
                            float* sumFeq, float* momX, float* momY, float* momZ);
-// v1.30.0 — честность настроек: через запятую перечисляет поля LBMParams,
-// которые показаны в UI, но НЕ реализованы в решателе (пустая строка = все
-// видимые настройки работают). Используется панелью, журналом и отчётом, чтобы
-// переключатель больше не выдавал себя за то, чего в коде нет.
-const char* lbmInertSettings();
+// v1.36.0 — мёртвые переключатели удалены, а не «заблокированы».
+//
+// До этой версии в LBMParams висели useMRT, useZouHeBC и useRegularized: они
+// были видны в панели с подписью «НЕ РЕАЛИЗОВАНО», ничего не делали и
+// дублировали диагностику. Поле, которое заведомо не читается решателем, —
+// это не честность, а мусор: его видно в отчёте, его можно включить из
+// старого файла настроек, и оно создаёт впечатление опции. Флаги удалены;
+// что реально используется — написано в панели LBM одной строкой.
 extern float lbmTimeMs;
 extern float lbmTKE;
 

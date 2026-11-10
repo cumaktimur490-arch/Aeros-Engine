@@ -28,7 +28,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"mach", {"Mach", "Мах"}},
 
     // Performance
-    {"perf.title", {"Performance v1.17.0", "Производительность v1.17.0"}},
+    {"perf.title", {"Performance", "Производительность"}},
     {"perf.frame", {"Frame", "Кадр"}},
     {"perf.lbm", {"LBM", "LBM"}},
     {"perf.particles", {"Particles", "Частицы"}},
@@ -39,7 +39,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"perf.show_memory", {"Show Memory Usage", "Показывать память"}},
 
     // Realistic Aero
-    {"aero.title", {"Realistic Aero v1.17.0 — Ultra Photo Mode", "Реалистичная Аэро v1.17.0 — Ультра Фото Режим"}},
+    {"aero.title", {"Realistic Aero — Ultra Photo Mode", "Реалистичная Аэро — Ультра Фото Режим"}},
     {"aero.visualization", {"Visualization", "Визуализация"}},
     {"aero.color_map", {"Color Map", "Цветовая схема"}},
     {"aero.color_streamlines", {"Color Streamlines by Velocity", "Окраска линий тока по скорости"}},
@@ -84,7 +84,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"atm.speed_sound", {"Speed of Sound", "Скорость звука"}},
 
     // Particles
-    {"particles.title", {"Particles v1.17.0", "Частицы v1.17.0"}},
+    {"particles.title", {"Particles", "Частицы"}},
     {"particles.show", {"Show Particles", "Показывать частицы"}},
     {"particles.count", {"Count", "Количество"}},
     {"particles.size", {"Size", "Размер"}},
@@ -94,7 +94,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"particles.reset", {"Reset Particles", "Сбросить частицы"}},
 
     // Streamlines
-    {"streamlines.title", {"Streamlines v1.17.0", "Линии тока v1.17.0"}},
+    {"streamlines.title", {"Streamlines", "Линии тока"}},
     {"streamlines.show", {"Show Streamlines", "Показывать линии тока"}},
     {"streamlines.count", {"Count", "Количество"}},
     {"streamlines.steps", {"Steps", "Шагов"}},
@@ -105,7 +105,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"streamlines.rebuild", {"Rebuild Streamlines", "Перестроить"}},
 
     // Forces
-    {"forces.title", {"Pressure & Forces v1.17.0 Realistic+", "Давление и Силы v1.17.0 Реалистично+"}},
+    {"forces.title", {"Pressure & Forces — Realistic+", "Давление и Силы — Реалистично+"}},
     {"forces.show_pressure", {"Show Pressure Colors", "Показывать давление"}},
     {"forces.show_lift_drag", {"Show Lift/Drag Vectors", "Показывать векторы Под/Сопр"}},
     {"forces.show_legend", {"Show Color Legend", "Показывать легенду"}},
@@ -117,13 +117,13 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"forces.screenshot", {"Screenshot BMP (F5)", "Скриншот BMP (F5)"}},
 
     // Voxel
-    {"voxel.title", {"Voxel Collision v1.17.0", "Воксельная коллизия v1.17.0"}},
+    {"voxel.title", {"Voxel Collision", "Воксельная коллизия"}},
     {"voxel.enable", {"Enable Voxel Collision", "Включить воксельную коллизию"}},
     {"voxel.resolution", {"Voxel Resolution", "Разрешение вокселей"}},
     {"voxel.rebuild", {"Rebuild Voxel Grid", "Перестроить воксели"}},
 
     // Display
-    {"display.title", {"Display v1.17.0", "Отображение v1.17.0"}},
+    {"display.title", {"Display", "Отображение"}},
     {"display.show_model", {"Show Model", "Показывать модель"}},
     {"display.show_obstacle", {"Show Obstacle", "Показывать препятствие"}},
     {"display.obstacle_alpha", {"Obstacle Alpha", "Прозрачность препятствия"}},
@@ -142,7 +142,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"display.language", {"Language / Язык", "Язык / Language"}},
 
     // LBM
-    {"lbm.title", {"LBM - Lattice Boltzmann v1.17.0 Ultra+", "LBM - Решеточный Больцман v1.17.0 Ультра+"}},
+    {"lbm.title", {"LBM - Lattice Boltzmann — Ultra+", "LBM - Решеточный Больцман — Ультра+"}},
     {"lbm.enable", {"Enable LBM (High-Accuracy Physics)", "Включить LBM (Точная физика)"}},
     {"lbm.steps", {"Steps per Frame", "Шагов за кадр"}},
     {"lbm.tau", {"Tau (relaxation)", "Тау (релаксация)"}},
@@ -159,7 +159,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"lbm.ground_height", {"Ground Height", "Высота земли"}},
 
     // Compute
-    {"compute.title", {"Compute & Export v1.17.0", "Вычисления и Экспорт v1.17.0"}},
+    {"compute.title", {"Compute & Export", "Вычисления и Экспорт"}},
     {"compute.open_model", {"Open Model", "Открыть модель"}},
     {"compute.screenshot", {"Screenshot BMP (F5)", "Скриншот BMP (F5)"}},
     {"compute.export_csv", {"Export CSV (F6)", "Экспорт CSV (F6)"}},
@@ -167,7 +167,7 @@ static std::unordered_map<std::string, std::pair<std::string, std::string>> tran
     {"compute.load_settings", {"Load Settings", "Загрузить настройки"}},
 
     // Test
-    {"test.title", {"Test Mode v1.17.0 Ultra", "Режим тестов v1.17.0 Ультра"}},
+    {"test.title", {"Test Mode — Ultra", "Режим тестов — Ультра"}},
     {"test.enable", {"Enable Test Mode", "Включить тесты"}},
     {"test.continuous", {"Continuous Validation", "Непрерывная проверка"}},
     {"test.run_all", {"Run All Tests", "Запустить все тесты"}},

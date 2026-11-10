@@ -7,6 +7,7 @@
 #include <chrono>
 #include <algorithm>
 
+#include "version.h"   // v1.36.0 — версия в журнале из одного места
 #include "globals.h"
 #include "render_mode.h"
 #include "flow_field.h"
@@ -366,7 +367,7 @@ void computeStreamlines() {
     auto t1 = std::chrono::high_resolution_clock::now();
     perfStreamlinesMs = std::chrono::duration<float, std::milli>(t1-t0).count();
 
-    std::cout << "Streamlines v1.19.0 Physics Logic Fix (RK45 aero" << (lbmParams.enabled ? "+LBM" : "") << (aeroColorStreamlinesByVelocity ? "+VelColor" : "") << "): " << numLines << " lines, " << (verts.size()/6) << " vertices in " << perfStreamlinesMs << " ms" << std::endl;
+    std::cout << "Streamlines " << AEROS_VERSION_STRING << " (RK45 aero" << (lbmParams.enabled ? "+LBM" : "") << (aeroColorStreamlinesByVelocity ? "+VelColor" : "") << "): " << numLines << " lines, " << (verts.size()/6) << " vertices in " << perfStreamlinesMs << " ms" << std::endl;
     streamlineVertexCount = (int)(verts.size() / 6);
     // v1.33.0 — копия для Vulkan-бэкенда (он рисует из памяти процесса, а не из VBO).
     streamlineCpuVerts = verts;

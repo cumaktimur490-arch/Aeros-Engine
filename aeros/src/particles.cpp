@@ -5,6 +5,7 @@
 #include <vector>
 #include <iostream>
 
+#include "version.h"   // v1.36.0 — версия в журнале из одного места
 #include "globals.h"
 #include "render_mode.h"
 #include "cuda_api.h"
@@ -284,7 +285,7 @@ void initParticles() {
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
     }
-    std::cout << "[Particles] Initialized " << numParticles << " v1.19.0 Physics Logic Fix" << std::endl;
+    std::cout << "[Particles] Initialized " << numParticles << " (" << AEROS_VERSION_STRING << ")" << std::endl;
     DBG_PHYS("частицы инициализированы: %d штук, бэкенд %s, буфер %zu значений",
              numParticles, useCUDA ? "CUDA" : "CPU", particlePositions.size());
 }

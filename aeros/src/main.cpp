@@ -363,10 +363,10 @@ static void collectDebugFacts() {
                   lbmRhoOutOfRange, lbmRhoNonFinite, lbmULimited, lbmPressureNonFinite, aeroCpNonFinite);
     debugLogAddFact("LBM", "Подмены и ограничения за шаг", buf);
     // v1.30.0 — настройки, показанные в UI, но не реализованные в решателе.
-    // Раньше useZouHeBC по умолчанию был true, и журнал писал «Zou/He (LBM): вкл»,
-    // хотя схемы Zou/He в коде нет.
-    debugLogAddFact("LBM", "Настройки без эффекта",
-                    lbmInertSettings()[0] ? lbmInertSettings() : "нет (все видимые настройки работают)");
+    // v1.36.0 — флагов без эффекта в решателе больше нет (useMRT/useZouHeBC/
+    // useRegularized удалены вместе с полями), поэтому строка отчёта стала
+    // постоянной: она фиксирует результат чистки, а не перечисляет мусор.
+    debugLogAddFact("LBM", "Настройки без эффекта", "нет (все видимые настройки работают)");
     std::snprintf(buf, sizeof(buf), "подсеточная вязкость Смагоринского Cs=%.3f, TKE %.3e м2/с2 (модель в решёточных единицах)",
                   lbmParams.smagorinskyC, lbmTKE);
     debugLogAddFact("LBM", "Модель турбулентности", buf);
@@ -421,13 +421,13 @@ static void trackParamChangesForJournal() {
     };
     static const char* kBN[] = {
         "показ модели", "показ давления", "показ линий тока", "показ частиц", "LBM включён",
-        "Zou/He (LBM, не реализовано)", "конвективный выход (LBM)", "земля (LBM)", "vsync", "лимит FPS",
+        "периодическая граница по X (LBM)", "конвективный выход (LBM)", "земля (LBM)", "vsync", "лимит FPS",
         "FSR", "авто-качество", "энергосбережение", "отсечение по пирамиде", "динамические частицы",
         "адаптивный шаг LBM", "автоповорот", "режим полёта", "режим тестов", "Lite", "Ultra-Lite"
     };
     static bool* kBP[] = {
         &showModel, &showPressure, &showStreamlines, &showParticles, &lbmParams.enabled,
-        &lbmParams.useZouHeBC, &lbmParams.useConvectiveOutlet, &lbmParams.useGround,
+        &lbmParams.periodicX, &lbmParams.useConvectiveOutlet, &lbmParams.useGround,
         &vsyncEnabled, &limitFPS, &fsrEnabled, &g_autoQualityScaling, &g_batterySaver,
         &optFrustumCulling, &optDynamicParticles, &aeroAdaptiveLBM, &autoRotate,
         &aeroFlightMode, &testModeEnabled, &g_isLiteMode, &g_isUltraLiteMode
@@ -512,7 +512,7 @@ int main(int argc, char** argv) {
     }
 #ifdef _OPENMP
     perfOpenMPThreads = omp_get_max_threads();
-    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (v1.20.0 Lite Multilingual)" << std::endl;
+    std::cout << "[Perf] OpenMP enabled with " << perfOpenMPThreads << " threads (" + std::string(AEROS_VERSION_STRING) + " Lite Multilingual)" << std::endl;
 #else
     perfOpenMPThreads = 1;
     std::cout << "[Perf] OpenMP not enabled (single thread)" << std::endl;
@@ -1071,7 +1071,7 @@ int main(int argc, char** argv) {
 
     // v1.19.0 Interesting Features init
     initInterestingFeatures();
-    std::cout << "[Interesting] v1.19.0 features initialized — Vulkan+OpenGL+Linux" << std::endl;
+    std::cout << "[Interesting] " << AEROS_VERSION_STRING << " features initialized — Vulkan+OpenGL+Linux" << std::endl;
 
     // Показываем окно и забираем передний план ДО диалога выбора модели.
     // Окно создаётся скрытым (GLFW_VISIBLE=FALSE), а запускает программу обычно
@@ -1834,7 +1834,7 @@ int main(int argc, char** argv) {
     }
 
     // Cleanup
-    std::cout << "[Main] Cleaning up v1.19.0..." << std::endl;
+    std::cout << "[Main] Cleaning up " << AEROS_VERSION_STRING << "..." << std::endl;
     shutdownInterestingFeatures();
     // v1.33.0 — FSR/FG и GL-ресурсы существуют только в OpenGL-режиме.
     if (!vulkanMode) {

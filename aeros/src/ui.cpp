@@ -952,14 +952,19 @@ if (!g_vertices.empty()) {
             }
         }
         const VoxelPlan plan = voxelPlan(modelSize, voxelResolution, membudget::budgetBytes());
-        // Время оцениваем по замеру: ~0.4 с на 262k ячеек и 1M треугольников
-        // (см. docs/MODELS-2026-10-09.md). Оценка линейна по числу ячеек.
-        const double estSec = 0.4 * (double)plan.cells / 262144.0 *
-                              std::max(1.0, (double)(modelVertexCount / 3) / 1000000.0);
-        ImGui::Text(_TR("Plan: %dx%dx%d, ~%s RAM, ~%.1f s",
-                        "План: %dx%dx%d, ~%s ОЗУ, ~%.1f с"),
+        // Оценка времени — по модели из замеров (voxelizeEstimateMs), а не по
+        // одной константе: прежняя формула «0.4 с на 262k ячеек» занижала
+        // время для моделей в 1 млн треугольников примерно вдвое.
+        const double estSec = voxelizeEstimateMs(modelVertexCount / 3, plan.cells) / 1000.0;
+        ImGui::Text(_TR("Plan: %dx%dx%d, ~%s RAM, ~%.2f s (estimate)",
+                        "План: %dx%dx%d, ~%s ОЗУ, ~%.2f с (оценка)"),
                     plan.nx, plan.ny, plan.nz,
                     membudget::formatBytes(plan.bytes).c_str(), estSec);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", _TR("Measured model with up to 15% error for grids of 32k-1M cells; "
+                                       "actual time depends on triangle layout.",
+                                       "Модель по замерам, ошибка до 15 % на сетках 32 тыс.…1 млн ячеек; "
+                                       "фактическое время зависит от расположения треугольников."));
         if (!plan.fits) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.38f, 1.0f));
             ImGui::TextWrapped("%s", _TR("This grid does not fit in the memory budget — pick a coarser preset.",
@@ -1161,10 +1166,6 @@ if (uiSelectedLeaf == 2 && ImGui::CollapsingHeader(_TR("Performance v1.19.0", "�
                     _TR("|u|>0.3 limited", "|u|>0.3 ограничено"), lbmULimited,
                     _TR("p NaN", "p NaN"), lbmPressureNonFinite,
                     _TR("Cp NaN (triangles)", "Cp NaN (треугольников)"), aeroCpNonFinite);
-        if (lbmInertSettings()[0] != 0)
-            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.3f, 1.0f), "%s: %s",
-                               _TR("Settings without effect", "Настройки без эффекта"),
-                               lbmInertSettings());
         ImGui::Text("%s: %.3e %s | Cs %.3f", _TR("TKE (m2/s2)", "TKE (м2/с2)"), lbmTKE,
                     _TR("subgrid", "подсеточная"), lbmParams.smagorinskyC);
     }
@@ -1329,16 +1330,16 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         "Turbulent TKE",
         "Skin Friction Cf",
         "Boundary Layer",
-        "Mach Number (NEW v1.9.0)",
-        "Helicity (NEW v1.9.0)",
-        "Total Pressure (NEW v1.9.0)",
-        "Schlieren |∇ρ| (NEW v1.19.0) — wind tunnel",
-        "Shadowgraph ∇²ρ (NEW v1.19.0)",
-        "Volumetric Smoke (NEW v1.19.0)",
-        "Shock Waves (NEW v1.19.0)",
-        "Aeroacoustics Lighthill (NEW v1.19.0)",
-        "Temperature (NEW v1.19.0)",
-        "LIC Surface (NEW v1.19.0)"
+        "Mach Number",
+        "Helicity",
+        "Total Pressure",
+        "Schlieren |∇ρ| — wind tunnel",
+        "Shadowgraph ∇²ρ",
+        "Volumetric Smoke",
+        "Shock Waves",
+        "Aeroacoustics Lighthill",
+        "Temperature",
+        "LIC Surface"
     };
     const char* visModesRu[] = {
         "Давление Cp (NASCAR радуга)",
@@ -1446,7 +1447,6 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         lbmParams.stepsPerFrame = 5;
         lbmParams.tau = 0.55f;
         lbmParams.useTurbulence = true;
-        lbmParams.useZouHeBC = false;   // v1.30.0 — не реализовано, пресет это больше не обещает
         lbmParams.useConvectiveOutlet = true;
         lbmParams.inletTurbulence = 0.02f;
         aeroAdaptiveLBM = true;
@@ -1518,11 +1518,9 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
     ImGui::SameLine();
     if (ImGui::Button(_TR("Enable Realistic LBM", "Включить реалистичный LBM"))) {
         lbmParams.enabled = true;
-        lbmParams.useZouHeBC = false;   // v1.30.0 — схемы Zou/He в решателе нет, кнопка это больше не обещает
         lbmParams.useConvectiveOutlet = true;
         lbmParams.useTurbulence = true;
         lbmParams.inletTurbulence = 0.02f;
-        lbmParams.useRegularized = false;
         aeroAdaptiveLBM = true;
         if (!lbmInitialized) initLBM(); else resetLBM();
     }
@@ -1532,7 +1530,7 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         shutdownLBM();
     }
     ImGui::Separator();
-    ImGui::Text("%s:", _TR("NEW v1.19.0 Interesting Presets", "НОВОЕ v1.19.0 Интересные пресеты"));
+    ImGui::Text("%s:", _TR("Interesting Presets", "Интересные пресеты"));
     if (ImGui::Button(_TR("Schlieren Wind Tunnel", "Шлирен Аэр труба"))) {
         aeroVisMode = AeroVisMode::Schlieren;
         aeroSchlierenEnabled = true;
@@ -1690,7 +1688,7 @@ if (uiSelectedLeaf == 6 && ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — 
     ImGui::Checkbox(_TR("Show Temperature", "Показывать температуру"), &aeroShowTemperature);
 }
 
-if (uiSelectedLeaf == 7 && ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra-Lite (NEW v1.20.1)", "Lite — Слабые устройства i3-3xxx / HD 4000 / Ultra-Lite (НОВОЕ v1.20.1)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 7 && ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3-3xxx / HD 4000 / Ultra-Lite", "Lite — Слабые устройства i3-3xxx / HD 4000 / Ultra-Lite"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s", getLiteInfoString());
     ImGui::Text("%s: %s", _TR("Lite Mode", "Lite режим"), isLiteMode() ? (isUltraLiteMode() ? "ULTRA-LITE Potato" : "ON — Optimized for weak devices") : "OFF — Full version");
     ImGui::Text("%s: %d", _TR("HW Threads", "Потоков CPU"), std::thread::hardware_concurrency());
@@ -1773,7 +1771,7 @@ if (uiSelectedLeaf == 7 && ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3
     ImGui::Text("  Full: 15000 particles, 24x300 streamlines, voxel 48, LBM ON, 60 FPS, AVX2, ~20-30 MB, 1-2 GB RAM");
 }
 
-if (uiSelectedLeaf == 8 && ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL (NEW v1.19.0)", "Рендерер — Vulkan + OpenGL (НОВОЕ v1.19.0)"), ImGuiTreeNodeFlags_DefaultOpen)) {
+if (uiSelectedLeaf == 8 && ImGui::CollapsingHeader(_TR("Renderer — Vulkan + OpenGL", "Рендерер — Vulkan + OpenGL"), ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("%s: %s", _TR("Current", "Текущий"), getRendererName());
     // v1.26.0 — статус Vulkan больше не врёт. Прежняя строка обещала
     // «Yes — Vulkan 1.3» по одному факту наличия vulkan-1.dll в системе, хотя
@@ -2242,20 +2240,12 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     }
     ImGui::Checkbox(_TR("Smagorinsky LES Turbulence", "Турбулентность Smagorinsky LES"), &lbmParams.useTurbulence);
     if (lbmParams.useTurbulence) ImGui::SliderFloat(_TR("Smagorinsky C", "Константа Smagorinsky"), &lbmParams.smagorinskyC, 0.01f, 0.3f, "%.3f");
-    ImGui::Checkbox(_TR("Adaptive Stepping (NEW v1.9.0)", "Адаптивные шаги (НОВОЕ v1.9.0)"), &aeroAdaptiveLBM);
-    // v1.30.0 — честность настроек. В lbm.cpp нет ни одного чтения
-    // lbmParams.useMRT, useRegularized и useZouHeBC: коллизия везде BGK (tau),
-    // вход задаётся равновесными популяциями, а не схемой Zou/He, и регуляризации
-    // неравновесной части нет. Переключатели больше не делают вид, что работают:
-    // они заблокированы (значение из файла настроек видно, но не меняется) и
-    // подписаны как неподдерживаемые. Реализация потребовала бы новых алгоритмов
-    // коллизии и граничных условий, а их нельзя менять без тестов на сохранение
-    // массы и устойчивость — это отдельная работа, а не правка галочки.
-    ImGui::BeginDisabled(true);
-    ImGui::Checkbox(_TR("MRT (High Re stability) - NOT IMPLEMENTED", "MRT (стабильность при высоком Re) - НЕ РЕАЛИЗОВАНО"), &lbmParams.useMRT);
-    ImGui::Checkbox(_TR("Regularized LBM (stability) - NOT IMPLEMENTED", "Регуляризованный LBM (стабильность) - НЕ РЕАЛИЗОВАНО"), &lbmParams.useRegularized);
-    ImGui::Checkbox(_TR("Zou/He Inlet BC (accurate) - NOT IMPLEMENTED", "Граничные условия Zou/He (точные) - НЕ РЕАЛИЗОВАНО"), &lbmParams.useZouHeBC);
-    ImGui::EndDisabled();
+    ImGui::Checkbox(_TR("Adaptive Stepping", "Адаптивные шаги"), &aeroAdaptiveLBM);
+    // v1.36.0 — заблокированные переключатели MRT / регуляризация / Zou-He
+    // удалены вместе с полями: они не читались решателем (коллизия BGK, вход —
+    // равновесные популяции, регуляризации нет) и половину панели занимали
+    // галочки, которые ничего не включали. Ниже — одна строка о том, что
+    // действительно считается, вместо трёх неработающих опций.
     ImGui::TextDisabled("%s", _TR("Inlet: equilibrium populations, outlet: convective/bounce-back, collision: BGK with Smagorinsky",
                                   "Вход: равновесные популяции, выход: конвективный/bounce-back, коллизия: BGK со Смагоринским"));
     ImGui::Checkbox(_TR("Convective Outlet", "Конвективный выход"), &lbmParams.useConvectiveOutlet);
@@ -2319,8 +2309,8 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
 // v1.29.0 — ТАКТ ФИЗИКИ: физика считается со своей частотой в Гц, а не
 // «один раз на кадр», как в BeamNG.drive (там 2000 Гц физики при рендере 60 к/с).
 // =====================================================
-if (uiSelectedLeaf == 21 && ImGui::CollapsingHeader(_TR("Physics rate & fixed timestep (v1.29.0)",
-                                                        "Такт физики и фиксированный шаг (v1.29.0)"),
+if (uiSelectedLeaf == 21 && ImGui::CollapsingHeader(_TR("Physics rate & fixed timestep",
+                                                        "Такт физики и фиксированный шаг"),
                                                     ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::TextWrapped("%s", _TR(
         "Physics ticks at a fixed rate, independent of the frame rate: the higher the Hz, the smaller "

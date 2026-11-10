@@ -619,7 +619,7 @@ std::string timelapseSummary() {
     if (liftMin > liftMax) liftMin = liftMax = 0;
     if (dragMin > dragMax) dragMin = dragMax = 0;
 
-    s += "--- Таймлапс физики (v1.26.0) ---\n";
+    s += "--- Таймлапс физики (" + std::string(AEROS_VERSION_STRING) + ") ---\n";
     std::snprintf(buf, sizeof(buf),
                   "Кадров в буфере: %d (всего записано %lld, перезаписано %lld), снимков поля: %d (по %d^3)\n",
                   g_count, g_totalRecorded, g_totalDropped, g_fieldCount, TL_FIELD_RES);
@@ -651,7 +651,7 @@ std::string timelapseSummary() {
     if (hzMin > hzMax) { hzMin = hzMax = 0.0f; }
     if (tsMin > tsMax) { tsMin = tsMax = 0.0f; }
     std::snprintf(buf, sizeof(buf),
-                  "Такт физики (v1.29.0): задано %.0f Гц, фактически %.0f..%.0f Гц | тактов за запись %lld (сред %.2f на кадр), "
+                  "Такт физики: задано %.0f Гц, фактически %.0f..%.0f Гц | тактов за запись %lld (сред %.2f на кадр), "
                   "шагов решётки %lld (сред %.2f на кадр)\n",
                   hzTarget, hzMin, hzMax, ticksTotal, n > 0 ? (double)ticksTotal / n : 0.0,
                   lbmStepsTotal, n > 0 ? (double)lbmStepsTotal / n : 0.0);
