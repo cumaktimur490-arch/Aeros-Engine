@@ -149,6 +149,7 @@ int g_voxelSuggestedRes = 0;
 long long g_voxelSolidCells = 0;
 int g_voxelUsedRes = 0;
 bool g_voxelDialogPending = false;
+double g_voxelLastMs = 0.0;
 
 namespace {
 constexpr unsigned long long kBytesPerCell = 224;   // см. комментарий в voxel_grid.h
@@ -581,6 +582,7 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
     // v1.36.0 — BVH отдельно от вокселизации: по этим двум числам видно, что
     // именно ускорилось (дерево строится один раз на модель).
     std::cout << "[Voxel] BVH built in " << bvhMs << " ms" << std::endl;
+    g_voxelLastMs = ms;
     DBG_PHYS("вокселизация: сетка %dx%dx%d, ячеек %d, треугольников %zu, BVH %zu узлов "
              "(%.1f мс), всего %.1f мс",
              g_voxNx, g_voxNy, g_voxNz, total, tris.size(), bvh.nodeCount(), bvhMs, ms);

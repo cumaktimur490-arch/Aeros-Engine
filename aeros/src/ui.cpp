@@ -961,10 +961,18 @@ if (!g_vertices.empty()) {
                     plan.nx, plan.ny, plan.nz,
                     membudget::formatBytes(plan.bytes).c_str(), estSec);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _TR("Measured model with up to 15% error for grids of 32k-1M cells; "
-                                       "actual time depends on triangle layout.",
-                                       "Модель по замерам, ошибка до 15 % на сетках 32 тыс.…1 млн ячеек; "
-                                       "фактическое время зависит от расположения треугольников."));
+            ImGui::SetTooltip("%s", _TR("Measured model: up to 15% error on the machine where it was "
+                                       "calibrated; on a slower CPU the real time grows proportionally. "
+                                       "Actual time of the last voxelization is shown below.",
+                                       "Модель по замерам: ошибка до 15 % на машине калибровки; на более "
+                                       "медленном CPU фактическое время больше пропорционально. "
+                                       "Фактическое время последней вокселизации показано ниже."));
+        // Факт вместо прогноза: после первой загрузки известно реальное время.
+        // На машине в 3 раза медленнее эталонной (например, GitHub runner)
+        // прогноз ошибается именно на этот множитель — и это видно.
+        if (g_voxelLastMs > 0.0)
+            ImGui::TextDisabled(_TR("Last voxelization: %.0f ms", "Последняя вокселизация: %.0f мс"),
+                                g_voxelLastMs);
         if (!plan.fits) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.38f, 1.0f));
             ImGui::TextWrapped("%s", _TR("This grid does not fit in the memory budget — pick a coarser preset.",

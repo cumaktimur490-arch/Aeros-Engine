@@ -64,5 +64,10 @@ extern int g_voxelSuggestedRes;           // 0 = уменьшать некуда
 extern long long g_voxelSolidCells;       // твёрдых ячеек в последней сетке
 extern int g_voxelUsedRes;                // фактическое разрешение
 extern bool g_voxelDialogPending;         // интерфейс должен спросить пользователя
+// v1.36.0 — фактическое время последней вокселизации, мс (0 = ещё не было).
+// Оценка voxelizeEstimateMs() калибрована на одной машине; на другой CPU она
+// отличается пропорционально скорости. После первой загрузки интерфейс может
+// показывать ФАКТИЧЕСКОЕ время, а не прогноз.
+extern double g_voxelLastMs;
 
 #endif // VOXEL_GRID_H
