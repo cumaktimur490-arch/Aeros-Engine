@@ -31,7 +31,7 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref thermal clean
+.PHONY: all bench timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref thermal clean
 all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref thermal
 
 timelapse:
@@ -129,6 +129,13 @@ thermal:
 	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
 	    -o /tmp/aeros-test-thermal
 	/tmp/aeros-test-thermal
+
+# Стенд производительности (не проверка, поэтому не в run-suites.sh).
+bench:
+	g++ $(CXXFLAGS) -O3 -march=native bench_lbm.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp \
+	    $(SRC)/flow_field.cpp $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
+	    -o /tmp/aeros-bench-lbm -pthread
+	/tmp/aeros-bench-lbm
 
 physref:
 	g++ $(CXXFLAGS) physics_ref_headless.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp $(SRC)/flow_field.cpp \
