@@ -1284,16 +1284,60 @@ void stepLBMCPU(int steps) {
         }
 
         // Streaming с bounce-back
+        //
+        // v1.37.1 — перенос разделён на внутреннюю часть и граничную оболочку.
+        // Внутри домена у ячейки все 19 соседей существуют, поэтому ни проверки
+        // выходов за границу, ни сворачивание периодики не нужны: адрес
+        // источника — это просто dest + offQ[qi], смещение посчитано один раз
+        // на шаг. Раньше на каждое из 19 направлений каждой ячейки приходилось
+        // три вычитания, два условия сворачивания, шесть сравнений границ и
+        // три умножения на сборку индекса. Граничная оболочка (шесть плоскостей,
+        // это O(N^2) ячеек из O(N^3)) считается прежним общим кодом.
+        int offQ[19];
+        for (int qi = 0; qi < Q; ++qi)
+            offQ[qi] = -(c[qi][2]*Ny * Nx) - c[qi][1]*Nx - c[qi][0];
+
+        // Диапазоны внутренней части ВСЕГДА отступом в одну ячейку: сворачивание
+        // периодики — это не сдвиг индекса, а переход на другой конец строки,
+        // поэтому плоским смещением его не выразить. Граничная оболочка
+        // обрабатывает эти плоскости общим кодом (и периодику в том числе).
+        const int xLo = 1, xHi = Nx-1;
+        const int zLo = 1, zHi = Nz-1;
+
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for (int z = zLo; z < zHi; ++z) {
+            for (int y = 1; y < Ny-1; ++y) {
+                int rowBase = (z*Ny + y)*Nx;
+                for (int x = xLo; x < xHi; ++x) {
+                    int dest = rowBase + x;
+                    if (solidPtr[dest] || groundPtr[dest]) continue;
+                    int destBase = dest*Q;
+                    for (int qi = 0; qi < Q; ++qi) {
+                        int src = dest + offQ[qi];
+                        fNextPtr[destBase + qi] = (solidPtr[src] || groundPtr[src])
+                            ? fPtr[destBase + opp[qi]]     // bounce-back
+                            : fPtr[src*Q + qi];
+                    }
+                }
+            }
+        }
+
+        // Граничная оболочка: тот же перенос, но с проверками и периодикой.
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
         for (int z = 0; z < Nz; ++z) {
             for (int y = 0; y < Ny; ++y) {
                 int rowBase = (z*Ny + y)*Nx;
+                const bool yEdge = (y == 0 || y == Ny-1);
+                const bool zEdge = (z == 0 || z == Nz-1);
                 for (int x = 0; x < Nx; ++x) {
+                    // Уже посчитано внутренней частью
+                    if (!yEdge && !zEdge && x > 0 && x < Nx-1) continue;
                     int dest = rowBase + x;
                     if (solidPtr[dest] || groundPtr[dest]) continue;
-                    int destBase = dest*Q;
                     for (int qi = 0; qi < Q; ++qi) {
                         int sx = x - c[qi][0];
                         int sy = y - c[qi][1];
@@ -1312,16 +1356,16 @@ void stepLBMCPU(int steps) {
                         }
                         if (sx < 0 || sx >= Nx || sy < 0 || sy >= Ny || sz < 0 || sz >= Nz) {
                             // Граница — будет обработано отдельно как inlet/outlet
-                            fNextPtr[destBase+qi] = fPtr[destBase+qi];
+                            fNextPtr[dest*Q + qi] = fPtr[dest*Q + qi];
                         } else {
                             int src = (sz*Ny + sy)*Nx + sx;
                             if (src < 0 || src >= total) {
-                                fNextPtr[destBase+qi] = fPtr[destBase+qi];
+                                fNextPtr[dest*Q + qi] = fPtr[dest*Q + qi];
                             } else if (solidPtr[src] || groundPtr[src]) {
                                 // Bounce-back: отражение
-                                fNextPtr[destBase+qi] = fPtr[destBase+opp[qi]];
+                                fNextPtr[dest*Q + qi] = fPtr[dest*Q + opp[qi]];
                             } else {
-                                fNextPtr[destBase+qi] = fPtr[src*Q+qi];
+                                fNextPtr[dest*Q + qi] = fPtr[src*Q + qi];
                             }
                         }
                     }
