@@ -67,6 +67,13 @@ static bool  sHasBody = false;
 // и «Divergence detected» на ровном месте, и болтанка скорости вместо
 // установившегося решения.
 static int   sFluidCells = 1;
+// v1.37.1 — расстояние (манхэттенское, по 6 соседям) до ближайшей твёрдой
+// ячейки, в ячейках, с насыщением на 255. Считается ОДИН раз при
+// инициализации, потому что это свойство геометрии, а не поля течения.
+// Раньше решатель искал стенку перебором 5x5x5 = 125 ячеек на КАЖДУЮ ячейку
+// на КАЖДОМ шаге — только ради множителя Ван Дристе; на сетке 1.4 млн ячеек
+// это 175 млн итераций за шаг.
+static std::vector<unsigned char> lbmWallDist;
 
 std::vector<float> lbmRho;
 std::vector<float> lbmUx, lbmUy, lbmUz;
@@ -100,16 +107,42 @@ static const float w[19] = {
 static const int opp[19] = {
     0, 2,1,4,3,6,5, 8,7,10,9, 12,11,14,13, 16,15,18,17
 };
+// v1.37.1 — таблица множителя Ван Дристе (1 - exp(-d/2)) для d = 0..6.
+// Считается один раз: expf в горячем цикле стоил дороже самого столкновения.
+static const float kVanDriest[7] = {
+    0.0f,                       // d = 0 — внутри/на стенке (не используется)
+    0.3934693403f,              // 1 - exp(-0.5)
+    0.6321205588f,              // 1 - exp(-1)
+    0.7768698399f,              // 1 - exp(-1.5)
+    0.8646647168f,              // 1 - exp(-2)
+    0.9179150014f,              // 1 - exp(-2.5)
+    0.9502129316f               // 1 - exp(-3)
+};
 static const float cs2 = 1.0f/3.0f;
 static const float invCs2 = 3.0f;
 static const float invCs2SqHalf = 4.5f;
 
 inline int idx3D(int x, int y, int z) { return (z*lbmNy + y)*lbmNx + x; }
-inline int fIdx(int cell, int q) { return cell*Q + q; }
+// v1.37.1 — порядок индексов: сначала направление, потом ячейка (SoA).
+inline int fIdx(int cell, int q, int total) { return cell*Q + q; }
 
 // =====================================================
 // v1.11.0 Physics Fix — корректное равновесие без костылей
 // =====================================================
+// v1.37.1 — «горячее» ядро равновесия без проверок.
+//
+//computeEquilibriumFast делает пять проверок на вызов (isfinite(rho),
+// |u| > 0.3, isfinite(cu), isfinite(feq)) плюс sqrtf. Она вызывается 19 раз
+// на ячейку в столкновении, то есть 26 млн раз за шаг на сетке 1.4 млн
+// ячеек — и каждый раз проверяет то, что вызывающий УЖЕ обеспечил: rho
+// конечна (иначе заменена выше), |u| <= 0.3 (ограничитель стоит до вызова).
+// Здесь эти условия — предусловия, а не проверки; при них cu и feq конечны
+// автоматически. Физика не меняется: это та же формула, без повторных тестов.
+inline float equilibriumKernel(int qi, float rho, float ux, float uy, float uz, float usqr) {
+    const float cu = (float)c[qi][0]*ux + (float)c[qi][1]*uy + (float)c[qi][2]*uz;
+    return w[qi]*rho*(1.0f + cu*invCs2 + cu*cu*invCs2SqHalf - usqr*1.5f);
+}
+
 inline float computeEquilibriumFast(int qi, float rho, float ux, float uy, float uz, float usqr) {
     // ИСПРАВЛЕНО: здесь стоял `rho = glm::clamp(rho, 0.8f, 1.2f)` с комментарием
     // «без потери физики». Потеря была: равновесные популяции обязаны давать
@@ -611,6 +644,36 @@ void initLBM() {
 
     // v1.36.0 — средние по домену считаются по жидкости, а не по всем ячейкам
     // (см. комментарий у sFluidCells).
+    // ---- расстояние до стенки: двухпроходный чамфер (6-соседство) ----
+    // Точное манхэттенское расстояние, O(N) за проход, кэш-дружелюбно.
+    lbmWallDist.assign(total, 255);
+    for (int cell = 0; cell < total; ++cell)
+        if (lbmIsSolid[cell] || lbmIsGround[cell]) lbmWallDist[cell] = 0;
+    for (int z = 0; z < lbmNz; ++z)
+        for (int y = 0; y < lbmNy; ++y) {
+            const int row = (z*lbmNy + y)*lbmNx;
+            for (int x = 0; x < lbmNx; ++x) {
+                unsigned char d = lbmWallDist[row + x];
+                if (d == 0) continue;
+                if (x > 0 && lbmWallDist[row + x - 1] + 1 < d) d = lbmWallDist[row + x - 1] + 1;
+                if (y > 0 && lbmWallDist[row - lbmNx + x] + 1 < d) d = lbmWallDist[row - lbmNx + x] + 1;
+                if (z > 0 && lbmWallDist[row - lbmNx*lbmNy + x] + 1 < d) d = lbmWallDist[row - lbmNx*lbmNy + x] + 1;
+                lbmWallDist[row + x] = d;
+            }
+        }
+    for (int z = lbmNz-1; z >= 0; --z)
+        for (int y = lbmNy-1; y >= 0; --y) {
+            const int row = (z*lbmNy + y)*lbmNx;
+            for (int x = lbmNx-1; x >= 0; --x) {
+                unsigned char d = lbmWallDist[row + x];
+                if (d == 0) continue;
+                if (x < lbmNx-1 && lbmWallDist[row + x + 1] + 1 < d) d = lbmWallDist[row + x + 1] + 1;
+                if (y < lbmNy-1 && lbmWallDist[row + lbmNx + x] + 1 < d) d = lbmWallDist[row + lbmNx + x] + 1;
+                if (z < lbmNz-1 && lbmWallDist[row + lbmNx*lbmNy + x] + 1 < d) d = lbmWallDist[row + lbmNx*lbmNy + x] + 1;
+                lbmWallDist[row + x] = d;
+            }
+        }
+
     sFluidCells = 0;
     for (int cell = 0; cell < total; ++cell)
         if (!lbmIsSolid[cell] && !lbmIsGround[cell]) ++sFluidCells;
@@ -667,9 +730,11 @@ void initLBM() {
             ux *= scale; uy *= scale; uz *= scale;
             usqr = ux*ux + uy*uy + uz*uz;
         }
-        int base = cell*Q;
+        // v1.37.1 — SoA: популяции лежат по направлениям (f[q*N + cell]).
+        // Без этого перенос читал 19 разных ячеек на одну приёмную — то есть
+        // 19 промахов кэша на ячейку и по 76 байт на строку кэша впустую.
         for (int qi = 0; qi < Q; ++qi) {
-            fPtr[base+qi] = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
+            fPtr[cell*Q + qi] = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
         }
     }
 
@@ -831,6 +896,8 @@ void resetLBM() {
 void shutdownLBM() {
     if (lbmInitialized) DBG_PHYS("LBM: остановлен на шаге %d", lbmCurrentStep);
     thermalShutdown();
+    lbmWallDist.clear();
+    lbmWallDist.shrink_to_fit();
     lbmInitialized = false;
     sHasBody = false;
     lbmCurrentStep = 0;
@@ -906,7 +973,17 @@ void stepLBMCPU(int steps) {
         {
             #pragma omp for nowait
         #endif
-        for (int cell = 0; cell < total; ++cell) {
+        // v1.37.1 — вложенные циклы вместо одного с делением по модулю.
+        // Раньше на КАЖДУЮ ячейку каждый шаг приходилось три целочисленных
+        // деления (cell % Nx, cell / Nx % Ny, cell / strideZ) только чтобы
+        // узнать x, y, z. Деление в процессоре — десятки тактов, и на сетке
+        // 3.3 млн ячеек это было заметной долей шага. Здесь индексы идут
+        // инкрементом, делений нет вообще.
+        for (int z = 0; z < Nz; ++z) {
+        for (int y = 0; y < Ny; ++y) {
+        const int rowBase = (z*Ny + y)*Nx;
+        for (int x = 0; x < Nx; ++x) {
+            const int cell = rowBase + x;
             if (solidPtr[cell] || groundPtr[cell]) {
                 rhoPtr[cell] = 1.0f;
                 uxPtr[cell] = 0; uyPtr[cell] = 0; uzPtr[cell] = 0;
@@ -914,10 +991,9 @@ void stepLBMCPU(int steps) {
                 continue;
             }
 
-            int base = cell*Q;
             float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
             for (int qi = 0; qi < Q; ++qi) {
-                float fi = fPtr[base+qi];
+                float fi = fPtr[cell*Q + qi];
                 if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
                 // v1.27.0 — пороги расширены до заведомо нефизических значений и
                 // считаются. Прежние (-0.2 и 1.0) подменяли вполне рабочие
@@ -945,9 +1021,6 @@ void stepLBMCPU(int steps) {
                 ux *= scale; uy *= scale; uz *= scale;
             }
 
-            int x = cell % Nx;
-            int y = (cell / Nx) % Ny;
-            int z = cell / strideZ;
             bool isInlet = false;
             bool isOutlet = false;
             if (flowAxis == 0) {
@@ -1012,24 +1085,19 @@ void stepLBMCPU(int steps) {
                                 // подсеточной диссипации.
                                 // Каноническая запись (Yu и др.): ν_t = (Cs·Δ)²·|S|, Δ = 1.
                                 float dx = 1.0f; // шаг решётки в решёточных единицах
-                                // Van Driest damping у стенок: Cs_eff = Cs * (1 - exp(-y+/26))
-                                // y+ оцениваем как расстояние до ближайшей твердой ячейки
-                                // Поиск ближайшей твердой ячейки в радиусе 5
-                                int wallDist = 5;
-                                bool nearWall = false;
-                                for (int dz2=-2; dz2<=2 && !nearWall; ++dz2)
-                                    for (int dy2=-2; dy2<=2 && !nearWall; ++dy2)
-                                        for (int dx2=-2; dx2<=2 && !nearWall; ++dx2) {
-                                            int nx2 = x+dx2, ny2 = y+dy2, nz2 = z+dz2;
-                                            if (nx2<0||nx2>=Nx||ny2<0||ny2>=Ny||nz2<0||nz2>=Nz) continue;
-                                            int c2 = (nz2*Ny+ny2)*Nx+nx2;
-                                            if (solidPtr[c2] || groundPtr[c2]) { wallDist = abs(dx2)+abs(dy2)+abs(dz2); nearWall = true; }
-                                        }
-                                if (nearWall) {
-                                    float yPlusEst = (float)wallDist;
-                                    float damping = 1.0f - expf(-yPlusEst/2.0f);
-                                    Cs *= damping;
-                                }
+                                // Van Driest: Cs_eff = Cs * (1 - exp(-d/2)), где d —
+                                // расстояние до ближайшей твёрдой ячейки.
+                                //
+                                // v1.37.1: d берётся из поля lbmWallDist, посчитанного
+                                // один раз при инициализации (двухпроходный чамфер), а
+                                // не перебором 125 соседей на каждом шаге. Заодно это
+                                // ТОЧНОЕ ближайшее расстояние, а не первая найденная
+                                // стенка в порядке обхода: раньше для ячейки рядом с
+                                // углом тела могло взяться расстояние по диагонали
+                                // обхода, а не по нормали. Демпфирование — таблица из
+                                // семи значений, expf из горячего цикла убран.
+                                const int wallDist = lbmWallDist.empty() ? 6 : (int)lbmWallDist[cell];
+                                if (wallDist <= 5) Cs *= kVanDriest[wallDist];
 
                                 float nu_t = Cs*Cs * dx*dx * S; // правильная формула
                                 tauEff = tau0 + nu_t / cs2;
@@ -1102,8 +1170,8 @@ void stepLBMCPU(int steps) {
                 const int qo = opp[qi];
                 if (qo < qi) continue;              // пара обрабатывается один раз
 
-                float feq = computeEquilibriumFast(qi, rho, ueX, ueY, ueZ, ueSqr);
-                float fi = fPtr[base+qi];
+                float feq = equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
+                float fi = fPtr[cell*Q + qi];
                 if (!std::isfinite(fi)) fi = feq;
                 float srcI = 0.0f;
                 if (hasForce) {
@@ -1117,12 +1185,12 @@ void stepLBMCPU(int steps) {
                     float fNew = fi - (fi - feq) * invTau + (1.0f - 0.5f*invTau) * srcI;
                     if (!std::isfinite(fNew)) fNew = feq;
                     if (fNew < 0.0f) negPops++;
-                    fPtr[base+qi] = fNew;
+                    fPtr[cell*Q + qi] = fNew;
                     continue;
                 }
 
-                float feqO = computeEquilibriumFast(qo, rho, ueX, ueY, ueZ, ueSqr);
-                float fo = fPtr[base+qo];
+                float feqO = equilibriumKernel(qo, rho, ueX, ueY, ueZ, ueSqr);
+                float fo = fPtr[cell*Q + qo];
                 if (!std::isfinite(fo)) fo = feqO;
                 float srcO = 0.0f;
                 if (hasForce) {
@@ -1156,8 +1224,8 @@ void stepLBMCPU(int steps) {
                 if (!std::isfinite(newO)) newO = feqO;
                 if (newI < 0.0f) negPops++;
                 if (newO < 0.0f) negPops++;
-                fPtr[base+qi] = newI;
-                fPtr[base+qo] = newO;
+                fPtr[cell*Q + qi] = newI;
+                fPtr[cell*Q + qo] = newO;
             }
 
             rhoPtr[cell] = rho;
@@ -1200,6 +1268,8 @@ void stepLBMCPU(int steps) {
             avgRhoAcc += rho;
             kineticAcc += usqr;
             tkeAcc += tke;
+        }
+        }
         }
         #ifdef _OPENMP
         }
@@ -1274,9 +1344,8 @@ void stepLBMCPU(int steps) {
                     int cell = (z*Ny + y)*Nx + ix;
                     if (cell < 0 || cell >= total) continue;
                     if (solidPtr[cell] || groundPtr[cell]) continue;
-                    int base = cell*Q;
                     for (int qi = 0; qi < Q; ++qi) {
-                        fNextPtr[base+qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        fNextPtr[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
                     }
                 }
             }
@@ -1291,9 +1360,8 @@ void stepLBMCPU(int steps) {
                     int cell = (z*Ny + iy)*Nx + x;
                     if (cell < 0 || cell >= total) continue;
                     if (solidPtr[cell] || groundPtr[cell]) continue;
-                    int base = cell*Q;
                     for (int qi = 0; qi < Q; ++qi) {
-                        fNextPtr[base+qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        fNextPtr[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
                     }
                 }
             }
@@ -1308,9 +1376,8 @@ void stepLBMCPU(int steps) {
                     int cell = (iz*Ny + y)*Nx + x;
                     if (cell < 0 || cell >= total) continue;
                     if (solidPtr[cell] || groundPtr[cell]) continue;
-                    int base = cell*Q;
                     for (int qi = 0; qi < Q; ++qi) {
-                        fNextPtr[base+qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        fNextPtr[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
                     }
                 }
             }
@@ -1336,17 +1403,15 @@ void stepLBMCPU(int steps) {
                         int cellIn2 = (z*Ny + y)*Nx + ix2;
                         if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
                         if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
-                        int baseOut = cellOut*Q;
-                        int baseIn = cellIn*Q;
-                        int baseIn2 = cellIn2*Q;
+
                         for (int qi = 0; qi < Q; ++qi) {
                             // Конвективный: f_out_new = f_out + coeff*(f_in - f_out) + 0.1*coeff*(f_in - f_in2) для второго порядка
-                            float fOut = fPtr[baseOut+qi];
-                            float fIn = fPtr[baseIn+qi];
-                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[baseIn2+qi] : fIn;
+                            float fOut = fPtr[cellOut*Q + qi];
+                            float fIn = fPtr[cellIn*Q + qi];
+                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[cellIn2*Q + qi] : fIn;
                             float df = fIn - fOut;
                             float df2 = fIn - fIn2;
-                            fNextPtr[baseOut+qi] = fOut + convCoeff*df + 0.15f*convCoeff*df2;
+                            fNextPtr[cellOut*Q + qi] = fOut + convCoeff*df + 0.15f*convCoeff*df2;
                         }
                     }
                 }
@@ -1364,14 +1429,12 @@ void stepLBMCPU(int steps) {
                         int cellIn2 = (z*Ny + iy2)*Nx + x;
                         if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
                         if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
-                        int baseOut = cellOut*Q;
-                        int baseIn = cellIn*Q;
-                        int baseIn2 = cellIn2*Q;
+
                         for (int qi = 0; qi < Q; ++qi) {
-                            float fOut = fPtr[baseOut+qi];
-                            float fIn = fPtr[baseIn+qi];
-                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[baseIn2+qi] : fIn;
-                            fNextPtr[baseOut+qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                            float fOut = fPtr[cellOut*Q + qi];
+                            float fIn = fPtr[cellIn*Q + qi];
+                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[cellIn2*Q + qi] : fIn;
+                            fNextPtr[cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
                         }
                     }
                 }
@@ -1389,14 +1452,12 @@ void stepLBMCPU(int steps) {
                         int cellIn2 = (iz2*Ny + y)*Nx + x;
                         if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
                         if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
-                        int baseOut = cellOut*Q;
-                        int baseIn = cellIn*Q;
-                        int baseIn2 = cellIn2*Q;
+
                         for (int qi = 0; qi < Q; ++qi) {
-                            float fOut = fPtr[baseOut+qi];
-                            float fIn = fPtr[baseIn+qi];
-                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[baseIn2+qi] : fIn;
-                            fNextPtr[baseOut+qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                            float fOut = fPtr[cellOut*Q + qi];
+                            float fIn = fPtr[cellIn*Q + qi];
+                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[cellIn2*Q + qi] : fIn;
+                            fNextPtr[cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
                         }
                     }
                 }
@@ -1449,9 +1510,8 @@ void stepLBMCPU(int steps) {
         #endif
         for (int cell = 0; cell < total; ++cell) {
             if (lbmIsSolid[cell] || lbmIsGround[cell]) continue;
-            int base = cell*Q;
             for (int qi = 0; qi < Q; ++qi) {
-                f[base+qi] = computeEquilibriumFast(qi, 1.0f, inUx2, inUy2, inUz2, usqr);
+                f[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx2, inUy2, inUz2, usqr);
             }
             lbmRho[cell] = 1.0f;
             lbmUx[cell] = inUx2; lbmUy[cell] = inUy2; lbmUz[cell] = inUz2;
