@@ -62,6 +62,7 @@ SOURCES=(
     "$SRCDIR/atmosphere.cpp"
     "$SRCDIR/test_mode.cpp"
     "$SRCDIR/lbm.cpp"
+    "$SRCDIR/thermal_lbm.cpp"
     "$SRCDIR/lang.cpp"
     "$SRCDIR/fsr.cpp"
     "$SRCDIR/framegen.cpp"
