@@ -1140,7 +1140,22 @@ void stepLBMCPU(int steps) {
             }
 
             rhoPtr[cell] = rho;
-            uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
+            // v1.37.0 — ФИЗИЧЕСКАЯ скорость под объёмной силой.
+            // По схеме Го импульс, посчитанный по популяциям, отличается от
+            // скорости жидкости на F/(2 rho): физическая скорость равна
+            // (sum f c + F/2)/rho. Раньше это не учитывалось, и при силе поле
+            // было смещено на постоянную величину. На Пуазейле смещение 4e-6
+            // незаметно, но на плавучести оно пропорционально Ra: при Ra=1000
+            // (ниже порога конвекции) профиль температуры отклонялся от
+            // линейного на 0.0045, а Nu был 1.037 вместо 1.000.
+            if (hasForce) {
+                const float halfInvRho = 0.5f / rho;
+                uxPtr[cell] = ux + Fx * halfInvRho;
+                uyPtr[cell] = uy + Fy * halfInvRho;
+                uzPtr[cell] = uz + Fz * halfInvRho;
+            } else {
+                uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
+            }
             strainPtr[cell] = strainMag;
             // v1.27.0 — подсеточная кинетическая энергия в ФИЗИЧЕСКИХ единицах (м²/с²).
             //
