@@ -203,19 +203,66 @@ void thermalStep(const float* ux, const float* uy, const float* uz) {
     const float invTau = 1.0f / tauT;
 
     // --- Перенос (pull) + границы -------------------------------------
+    //
+    // v1.37.1 — как и в основном решателе, перенос разделён на внутреннюю
+    // часть и граничную оболочку. Внутри все семь соседей существуют, нет ни
+    // проверок выхода, ни сворачивания периодики, ни вызова wallTemp (он
+    // заведомо ложен для внутренних рядов): адрес источника — c + off[i].
+    // Оболочка из шести плоскостей считается прежним общим кодом.
+    int off[kQ];
+    for (int i = 0; i < kQ; ++i)
+        off[i] = -(kc[i][2]*Ny * Nx) - kc[i][1]*Nx - kc[i][0];
+
+    // Внутренний диапазон по Y: ряд, соседний с рядом заданной температуры,
+    // во внутреннюю часть НЕ входит. Условие на стенке — это условие для
+    // соседней жидкой ячейки, а не для самой стенки, поэтому при
+    // fixedWallTemps ряд y = 1 тянет значение с y = 0 по Дирихле
+    // (g = -g_opp + 2 w Tw), а не отражается. Именно это и потерялось в
+    // первой версии быстрого пути: ряды y = 1 и y = Ny-2 обязаны идти через
+    // общий код оболочки. Без заданных температур стенка адиабатическая, и
+    // в оболочку уходят только сами граничные ряды.
+    const int yA = thermalParams.fixedWallTemps ? 2 : 1;
+    const int yB = thermalParams.fixedWallTemps ? Ny - 2 : Ny - 1;
+
+    #ifdef _OPENMP
+    #pragma omp parallel for
+    #endif
+    for (int z = 1; z < Nz-1; ++z) {
+        for (int y = yA; y < yB; ++y) {
+            const int rowBase = (z*Ny + y)*Nx;
+            for (int x = 1; x < Nx-1; ++x) {
+                const int c = rowBase + x;
+                if (solid[c]) {
+                    for (int i = 0; i < kQ; ++i) gNext[(size_t)c*kQ + i] = g[(size_t)c*kQ + i];
+                    continue;
+                }
+                for (int i = 0; i < kQ; ++i) {
+                    const int src = c + off[i];
+                    // Внутри домена стенка всегда адиабатическая (wallTemp
+                    // истинен только для y = 0 и y = Ny-1, а они в оболочке).
+                    gNext[(size_t)c*kQ + i] = solid[src]
+                        ? g[(size_t)c*kQ + kOpp[i]]
+                        : g[(size_t)src*kQ + i];
+                }
+            }
+        }
+    }
+
+    // Граничная оболочка: выходы за границу, периодика, заданные температуры.
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
     for (int z = 0; z < Nz; ++z) {
         for (int y = 0; y < Ny; ++y) {
+            const bool yEdge = (y < yA || y >= yB);
+            const bool zEdge = (z == 0 || z == Nz-1);
             for (int x = 0; x < Nx; ++x) {
+                if (!yEdge && !zEdge && x > 0 && x < Nx-1) continue;   // уже посчитано
                 const int c = idx(x, y, z);
                 if (solid[c]) {
                     for (int i = 0; i < kQ; ++i) gNext[(size_t)c*kQ + i] = g[(size_t)c*kQ + i];
                     continue;
                 }
-                // Скорость в этой ячейке; на твёрдых она нулевая, поэтому
-                // равновесие там не считается.
                 for (int i = 0; i < kQ; ++i) {
                     int sx = x - kc[i][0];
                     int sy = y - kc[i][1];
@@ -223,8 +270,10 @@ void thermalStep(const float* ux, const float* uy, const float* uz) {
                     const bool outX = (sx < 0 || sx >= Nx);
                     const bool outY = (sy < 0 || sy >= Ny);
                     const bool outZ = (sz < 0 || sz >= Nz);
-                    if (outX) sx = (sx + Nx) % Nx;      // периодичность по X
-                    if (outZ) sz = (sz + Nz) % Nz;      // периодичность по Z
+                    // Сворачивание только в одну сторону: сосед отстоит на
+                    // единицу, поэтому % (десятки тактов) ни к чему.
+                    if (outX) sx = (sx < 0) ? Nx - 1 : 0;
+                    if (outZ) sz = (sz < 0) ? Nz - 1 : 0;
 
                     float Tw = 0.0f;
                     bool dirichlet = false;
@@ -264,15 +313,20 @@ void thermalStep(const float* ux, const float* uy, const float* uz) {
                     continue;
                 }
                 const float vx = ux[c], vy = uy[c], vz = uz[c];
+                // v1.37.1 — семь популяций читаются один раз и лежат в
+                // регистрах: раньше тот же самый участок памяти читался
+                // дважды (сначала сумма для T, потом каждое значение для
+                // релаксации), и семь float после второго прохода уже
+                // вытеснялись из кэша первой строкой.
+                float gi[kQ];
                 float T = 0.0f;
-                for (int i = 0; i < kQ; ++i) T += gNext[(size_t)c*kQ + i];
+                for (int i = 0; i < kQ; ++i) { gi[i] = gNext[(size_t)c*kQ + i]; T += gi[i]; }
                 if (!std::isfinite(T)) T = Tref;
                 T = std::min(thermalParams.hotTemp + 1.0f,
                              std::max(thermalParams.coldTemp - 1.0f, T));
                 for (int i = 0; i < kQ; ++i) {
-                    const float gi = gNext[(size_t)c*kQ + i];
                     const float eq = geq(i, T, vx, vy, vz);
-                    gNext[(size_t)c*kQ + i] = gi - (gi - eq) * invTau;
+                    gNext[(size_t)c*kQ + i] = gi[i] - (gi[i] - eq) * invTau;
                 }
                 thermalT[c] = T;
                 // Плавучесть: только отклонение от средней температуры.
