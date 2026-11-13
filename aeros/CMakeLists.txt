@@ -162,6 +162,7 @@ set(SOURCES
     src/atmosphere.cpp
     src/test_mode.cpp
     src/lbm.cpp
+    src/thermal_lbm.cpp
     src/lang.cpp
     src/fsr.cpp
     src/framegen.cpp

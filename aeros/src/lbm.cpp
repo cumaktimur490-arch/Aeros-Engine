@@ -1,4 +1,5 @@
 #include "lbm.h"
+#include "thermal_lbm.h"   // v1.37.0 — теплоперенос и плавучесть
 #include "version.h"   // v1.36.0 — в журнал пишется фактическая версия сборки, а не v1.11.0
 #include "globals.h"
 #include "debug_log.h"   // v1.25.0 — журнал физики
@@ -803,6 +804,20 @@ void initLBM() {
               << std::endl;
     DBG_PHYS("LBM инициализирован: сетка %dx%dx%d (%d ячеек), tau %.4f, nu %.6f, Re_phys %.1f, Re_LB %.1f, время %.1f мс",
              lbmNx, lbmNy, lbmNz, total, lbmParams.tau, lbmParams.viscosity, lbmReynolds, lbmReynoldsLB, lbmTimeMs);
+
+    // v1.37.0 — теплоперенос инициализируется ПОСЛЕ выбора tau: модуль берёт
+    // готовую вязкость решателя, а не свою копию, иначе Pr считался бы от
+    // одного nu, а поток жил бы с другим.
+    if (thermalParams.enabled) {
+        std::vector<char> mask(lbmIsSolid.begin(), lbmIsSolid.end());
+        for (size_t i = 0; i < mask.size() && i < lbmIsGround.size(); ++i)
+            if (lbmIsGround[i]) mask[i] = 1;
+        if (!thermalInit(lbmNx, lbmNy, lbmNz, mask, lbmParams.viscosity)) {
+            DBG_ERROR("тепло: модуль не инициализирован на сетке %dx%dx%d — расчёт пойдёт без теплопереноса",
+                      lbmNx, lbmNy, lbmNz);
+            thermalParams.enabled = false;
+        }
+    }
 }
 
 void resetLBM() {
@@ -815,6 +830,7 @@ void resetLBM() {
 
 void shutdownLBM() {
     if (lbmInitialized) DBG_PHYS("LBM: остановлен на шаге %d", lbmCurrentStep);
+    thermalShutdown();
     lbmInitialized = false;
     sHasBody = false;
     lbmCurrentStep = 0;
@@ -1039,9 +1055,14 @@ void stepLBMCPU(int steps) {
             // равновесие, полная — к популяциям как источник. Без первой половины
             // установившееся течение в канале смещено на O(F·dt), то есть ошибка
             // как раз того же порядка, что и проверяемый профиль.
-            const float Fx = lbmParams.bodyForceX;
-            const float Fy = lbmParams.bodyForceY;
-            const float Fz = lbmParams.bodyForceZ;
+            float Fx = lbmParams.bodyForceX;
+            float Fy = lbmParams.bodyForceY;
+            float Fz = lbmParams.bodyForceZ;
+            // v1.37.0 — плавучесть: сила по Y от отклонения температуры.
+            // Считается по маске на предыдущем шаге, поэтому входит в схему Го
+            // так же, как внешняя объёмная сила.
+            if (thermalParams.enabled && !thermalBuoyancyY.empty())
+                Fy += thermalBuoyancyY[cell];
             const bool hasForce = (Fx != 0.0f || Fy != 0.0f || Fz != 0.0f);
             float ueX = ux, ueY = uy, ueZ = uz;
             float ueSqr = usqr;
@@ -1140,14 +1161,14 @@ void stepLBMCPU(int steps) {
             }
 
             rhoPtr[cell] = rho;
-            // v1.37.0 — ФИЗИЧЕСКАЯ скорость под объёмной силой.
-            // По схеме Го импульс, посчитанный по популяциям, отличается от
-            // скорости жидкости на F/(2 rho): физическая скорость равна
-            // (sum f c + F/2)/rho. Раньше это не учитывалось, и при силе поле
-            // было смещено на постоянную величину. На Пуазейле смещение 4e-6
-            // незаметно, но на плавучести оно пропорционально Ra: при Ra=1000
-            // (ниже порога конвекции) профиль температуры отклонялся от
-            // линейного на 0.0045, а Nu был 1.037 вместо 1.000.
+            // v1.37.0 — ФИЗИЧЕСКАЯ скорость: под схемой Го импульс, посчитанный
+            // по популяциям, отличается от скорости жидкости на F/(2 rho).
+            // Раньше это не учитывалось, и при объёмной силе поле скорости было
+            // смещено на постоянную величину: на Пуазейле это 4e-6 (незаметно),
+            // а на плавучести — тот же сдвиг, умноженный на Ra, и он «сдувал»
+            // температуру: при Ra = 1000 (ниже порога конвекции) профиль
+            // отклонялся от линейного на 0.0045, а Nu был 1.037 вместо 1.000.
+            // Физически верная скорость — (sum f c + F/2)/rho.
             if (hasForce) {
                 const float halfInvRho = 0.5f / rho;
                 uxPtr[cell] = ux + Fx * halfInvRho;
@@ -1383,6 +1404,12 @@ void stepLBMCPU(int steps) {
         }
 
         f.swap(fNext);
+
+        // v1.37.0 — перенос температуры текущим полем скорости. Стоит после
+        // обмена, потому что скорость в lbmUx/lbmUy/lbmUz посчитана на этом же
+        // шаге; плавучесть из нового поля войдёт в следующий шаг соударений.
+        if (thermalParams.enabled)
+            thermalStep(lbmUx.data(), lbmUy.data(), lbmUz.data());
 
         lbmCurrentStep++;
         lbmAvgRho = (float)(avgRhoAcc / sFluidCells);

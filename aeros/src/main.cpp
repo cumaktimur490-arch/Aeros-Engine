@@ -34,6 +34,7 @@
 #include <ctime>
 
 #include "globals.h"
+#include "thermal_lbm.h"   // v1.37.0 — до settings_table.inc
 #include "settings_store.h"   // v1.32.0 — реестр настроек: сохранение, сброс, профили
 #include "version.h"
 #include "shaders.h"

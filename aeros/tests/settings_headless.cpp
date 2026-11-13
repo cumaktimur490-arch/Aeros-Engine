@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "thermal_lbm.h"   // v1.37.0 — ключи теплопереноса
 #include "settings_store.h"
 
 static int g_checks = 0;

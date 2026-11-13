@@ -10,7 +10,7 @@
 #   EXTRA_CXXFLAGS="-fsanitize=address" ./run-suites.sh
 set -uo pipefail
 
-SUITES=(timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref)
+SUITES=(timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref thermal)
 JOBS=${JOBS:-1}
 fail=0
 

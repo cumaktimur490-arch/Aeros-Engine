@@ -31,8 +31,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref clean
-all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref
+.PHONY: all timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref thermal clean
+all: timelapse lbm physclock fem ui settings vulkan particles startup glyphs hotkeys validate openurl voxel stl physref thermal
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -40,7 +40,7 @@ timelapse:
 	/tmp/aeros-test-timelapse
 
 lbm:
-	g++ $(CXXFLAGS) lbm_physics_headless.cpp $(SRC)/lbm.cpp $(SRC)/flow_field.cpp \
+	g++ $(CXXFLAGS) lbm_physics_headless.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp $(SRC)/flow_field.cpp \
 	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
 	    -o /tmp/aeros-test-lbm
 	/tmp/aeros-test-lbm
@@ -54,7 +54,7 @@ physclock:
 # lang.cpp обращается к ImGui::GetIO() при смене языка, поэтому ядро ImGui
 # подключается к сборке (без GLFW/OpenGL-бэкендов), как в цели ui.
 settings:
-	g++ $(CXXFLAGS) -I$(IMGUI) settings_headless.cpp $(SRC)/globals.cpp \
+	g++ $(CXXFLAGS) -I$(IMGUI) settings_headless.cpp $(SRC)/globals.cpp $(SRC)/thermal_lbm.cpp \
 	    $(SRC)/atmosphere.cpp $(SRC)/lang.cpp $(SRC)/debug_log.cpp \
 	    $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_widgets.cpp \
 	    $(IMGUI)/imgui_tables.cpp -o /tmp/aeros-test-settings -pthread
@@ -76,20 +76,20 @@ fem:
 ui:
 	g++ $(CXXFLAGS) -I$(IMGUI) cae_ui_headless.cpp \
 	    $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_widgets.cpp \
-	    $(IMGUI)/imgui_tables.cpp $(COMMON) $(SRC)/timelapse.cpp $(SRC)/lbm.cpp \
+	    $(IMGUI)/imgui_tables.cpp $(COMMON) $(SRC)/timelapse.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp \
 	    $(SRC)/flow_field.cpp $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp \
 	    -o /tmp/aeros-test-ui -pthread
 	/tmp/aeros-test-ui
 
 clean:
-	rm -f /tmp/aeros-test-stl /tmp/aeros-test-voxel /tmp/aeros-test-physref /tmp/aeros-test-openurl /tmp/aeros-test-validate /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
+	rm -f /tmp/aeros-test-stl /tmp/aeros-test-voxel /tmp/aeros-test-physref /tmp/aeros-test-thermal /tmp/aeros-test-openurl /tmp/aeros-test-validate /tmp/aeros-test-timelapse /tmp/aeros-test-glyphs /tmp/aeros-test-hotkeys /tmp/aeros-test-lbm /tmp/aeros-test-physclock \
 	      /tmp/aeros-test-fem /tmp/aeros-test-particles /tmp/aeros-test-startup
 
 # Физика частиц (v1.34.0). Линкуется с настоящим particles.cpp: проверяется
 # именно тот код, который считает частицы в приложении. Заглушки — OpenGL/CUDA.
 particles:
 	g++ $(CXXFLAGS) particles_headless.cpp $(SRC)/particles.cpp $(SRC)/flow_field.cpp \
-	    $(SRC)/voxel_grid.cpp $(SRC)/lbm.cpp $(SRC)/atmosphere.cpp $(COMMON) \
+	    $(SRC)/voxel_grid.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp $(SRC)/atmosphere.cpp $(COMMON) \
 	    -o /tmp/aeros-test-particles -pthread
 	/tmp/aeros-test-particles
 
@@ -114,7 +114,7 @@ hotkeys:
 # прогонов LBM на сетках до 56^3. В `all` входит, потому что именно он ловит
 # деградацию физики, которую остальные проверки не видят.
 validate:
-	g++ $(CXXFLAGS) validation_headless.cpp $(SRC)/lbm.cpp $(SRC)/flow_field.cpp \
+	g++ $(CXXFLAGS) validation_headless.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp $(SRC)/flow_field.cpp \
 	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
 	    -o /tmp/aeros-test-validate
 	/tmp/aeros-test-validate
@@ -122,8 +122,16 @@ validate:
 # Открытие ссылок и диалоги без shell (v1.36.0): проверяется, что спецсимволы
 # в URL не превращаются в команды оболочки и что отсутствующий opener — это
 # ошибка, а не «успех» (как было с system() и фоновым `&`).
+# Теплоперенос и плавучесть (v1.37.0): D3Q7, точные решения и порог
+# Рэлея–Бенара. Собирается вместе с модулем thermal_lbm.cpp.
+thermal:
+	g++ $(CXXFLAGS) thermal_headless.cpp $(SRC)/thermal_lbm.cpp $(SRC)/lbm.cpp $(SRC)/flow_field.cpp \
+	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
+	    -o /tmp/aeros-test-thermal
+	/tmp/aeros-test-thermal
+
 physref:
-	g++ $(CXXFLAGS) physics_ref_headless.cpp $(SRC)/lbm.cpp $(SRC)/flow_field.cpp \
+	g++ $(CXXFLAGS) physics_ref_headless.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp $(SRC)/flow_field.cpp \
 	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
 	    -o /tmp/aeros-test-physref -pthread
 	/tmp/aeros-test-physref
@@ -150,7 +158,7 @@ stl:
 startup:
 	g++ $(CXXFLAGS) -I$(IMGUI) start_screen_headless.cpp \
 	    $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_widgets.cpp \
-	    $(IMGUI)/imgui_tables.cpp $(COMMON) $(SRC)/timelapse.cpp $(SRC)/lbm.cpp \
+	    $(IMGUI)/imgui_tables.cpp $(COMMON) $(SRC)/timelapse.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp \
 	    $(SRC)/flow_field.cpp $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp \
 	    -o /tmp/aeros-test-startup -pthread
 	/tmp/aeros-test-startup

@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "globals.h"
+#include "thermal_lbm.h"   // v1.37.0 — нужно до settings_table.inc
 #include "settings_store.h"   // v1.32.0 — реестр настроек: профили, сброс, сохранение
 #include "version.h"   // v1.31.2 — версия в строке состояния берётся из версии сборки
 #include "debug_log.h"   // v1.25.0 — панель «Отладка и журнал»
@@ -26,6 +27,7 @@
 #include "atmosphere.h"
 #include "test_mode.h"
 #include "lbm.h"
+#include "thermal_lbm.h"   // v1.37.0 — тепло и плавучесть
 #include "forces.h"
 #include "flow_field.h"  // v1.30.0 — aeroCpNonFinite, airSutherlandViscosity
 #include "ui.h"
@@ -2259,6 +2261,36 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     ImGui::Checkbox(_TR("Convective Outlet", "Конвективный выход"), &lbmParams.useConvectiveOutlet);
     ImGui::Checkbox(_TR("TRT collision (two relaxation times)", "TRT-коллизия (две частоты релаксации)"),
                     &lbmParams.useTRT);
+    // v1.37.0 — тепло и плавучесть. Включение меняет постановку задачи, поэтому
+    // требует переинициализации: поле температуры живёт на той же сетке.
+    {
+        const bool wasOn = thermalParams.enabled;
+        if (ImGui::Checkbox(_TR("Thermal transport (buoyancy)", "Теплоперенос (плавучесть)"),
+                            &thermalParams.enabled)) {
+            if (wasOn != thermalParams.enabled) {
+                if (lbmInitialized) resetLBM(); else initLBM();
+                debugLogAction("тепло", "%s", thermalParams.enabled ? "включено" : "выключено");
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", _TR("Passive scalar D3Q7: diffusion + advection by the LBM velocity.\n"
+                                        "Boussinesq force F = rho g beta (T - T0) feeds back into the solver.",
+                                        "Пассивный скаляр D3Q7: диффузия + перенос полем скорости LBM.\n"
+                                        "Сила Буссинеска F = rho g beta (T - T0) возвращается в решатель."));
+        if (thermalParams.enabled) {
+            ImGui::SliderFloat(_TR("Rayleigh", "Рэлей"), &thermalParams.rayleigh, 0.0f, 1.0e7f,
+                               "%.0f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat(_TR("Prandtl", "Прандтль"), &thermalParams.prandtl, 0.1f, 5.0f, "%.2f");
+            if (thermalReady)
+                ImGui::TextDisabled("%s: T %.3f, Nu %.3f, g_lb %.2e",
+                                    _TR("Thermal", "Тепло"),
+                                    thermalMeanT, thermalNusselt, thermalGravityLb);
+            if (ImGui::Button(_TR("Reset temperature field", "Сбросить поле температуры"))) {
+                thermalResetField();
+                debugLogAction("тепло", "поле температуры сброшено");
+            }
+        }
+    }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", _TR("Second relaxation rate from the magic parameter 3/16.\n"
                                     "Measured on Poiseuille: L2 error 0.071% vs 0.163% for BGK.",
