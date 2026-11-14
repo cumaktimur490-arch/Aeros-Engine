@@ -97,6 +97,16 @@ int main(int argc, char** argv) {
                 AEROS_VERSION_STRING, lbmNx, lbmNy, lbmNz, cells/1e6, threads, thermal ? "да" : "нет");
     std::printf("  %.3f мс/шаг, %.2f млн обновлений ячеек/с\n", msStep, mcells);
 
+    // Контрольная сумма поля: решает, воспроизводим ли результат. Если она
+    // меняется от запуска к запуску при одном и том же числе потоков, в
+    // решателе есть гонка (race), и «проверенные» числа ничего не стоят.
+    double sRho = 0.0, sU = 0.0;
+    for (size_t i = 0; i < lbmRho.size(); ++i) {
+        sRho += lbmRho[i];
+        sU += lbmUx[i] + lbmUy[i] + lbmUz[i];
+    }
+    std::printf("  checksum: rho %.12g  u %.12g\n", sRho, sU);
+
     shutdownLBM();
     return 0;
 }

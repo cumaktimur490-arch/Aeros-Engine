@@ -23,6 +23,9 @@
 #include "debug_log.h"
 #include <cmath>
 #include <cstdio>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include <cstring>
 #include <algorithm>
 #include <vector>
@@ -567,6 +570,49 @@ int main() {
         aeros_potential::ellipsoidVelocity(centre, c, sph, U, v);
         check(v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f, "внутри тела скорость = 0");
     }
+
+#ifdef _OPENMP
+    // --- Результат не зависит от числа потоков -------------------------------
+    //
+    // Гонка в решателе проявляется ровно так: проход читает соседнюю ячейку и
+    // в нём же её записывает, поэтому один и тот же расчёт даёт разные числа
+    // при разном числе потоков. В v1.38.1 такая гонка была в подсеточной
+    // модели Смагоринского: |S| считался по uxPtr/uyPtr/uzPtr соседей в том
+    // самом проходе, который записывает uxPtr[cell].
+    //
+    // Контрольная сумма считается здесь, а не берётся из решателя: lbmAvgRho
+    // складывается через reduction, а сумма в reduction зависит от порядка
+    // сложения и сама по себе недетерминирована.
+    {
+        auto runThreads = [&](int threads, double* sRho, double* sU) {
+            const int prev = omp_get_max_threads();
+            omp_set_num_threads(threads);
+            shutdownLBM();
+            makeSphereCase(0.7f);
+            lbmParams.useTurbulence = true;   // подсеточная модель — именно в ней была гонка
+            initLBM();
+            for (int i = 0; i < 30; ++i) stepLBMCPU(1);
+            double sr = 0.0, su = 0.0;
+            for (size_t i = 0; i < lbmRho.size(); ++i) {
+                sr += lbmRho[i];
+                su += lbmUx[i] + lbmUy[i] + lbmUz[i];
+            }
+            *sRho = sr; *sU = su;
+            omp_set_num_threads(prev);
+        };
+        double r1 = 0, u1 = 0, r2 = 0, u2 = 0;
+        runThreads(1, &r1, &u1);
+        runThreads(2, &r2, &u2);
+        char nm[256];
+        const double relR = std::fabs(r1 - r2) / std::max(1e-30, std::fabs(r1));
+        const double relU = std::fabs(u1 - u2) / std::max(1e-30, std::fabs(u1));
+        std::snprintf(nm, sizeof(nm),
+                      "результат не зависит от числа потоков: rho %.10g против %.10g (отклонение %.2g), "
+                      "u %.10g против %.10g (отклонение %.2g)",
+                      r1, r2, relR, u1, u2, relU);
+        check(relR < 1e-12 && relU < 1e-12, nm);
+    }
+#endif
 
     std::printf("\n=== %s (проверок: %d, ошибок: %d) ===\n", g_failed == 0 ? "ФИЗИКА В ПОРЯДКЕ" : "ЕСТЬ ПРОВАЛЫ", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
