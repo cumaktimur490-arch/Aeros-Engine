@@ -1,0 +1,195 @@
+# Тесты Aeros Engine на каждый push и pull request.
+#
+# Зачем отдельный workflow: до v1.35.0 проверки (1142+) запускались только
+# вручную. Ошибка в физике, МКЭ или оболочке обнаруживалась уже после того, как
+# тег поставлен и релиз собран, — то есть ценой выпуска. Здесь те же наборы
+# прогоняются на чистой машине до сборки.
+#
+# Что НЕ проверяется: запуск с OpenGL/GLFW/CUDA (на раннере нет ни GPU, ни
+# дисплея). Тесты линкуют заглушки — это и есть их смысл: проверяется логика.
+name: Tests
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ===================================================
+  # v1.36.0 — СБОРКА НАСТОЯЩЕГО ТАРГЕТА.
+  #
+  # Headless-наборы линкуют заглушки вместо OpenGL/GLFW/CUDA и поэтому в
+  # принципе не видят ошибок компиляции платформенного кода. Цена уже была
+  # уплачена: `fix(windows): open_url.h ... min/max` лечил MSVC C2589, который
+  # тесты поймать не могли. Здесь проект собирается настоящим компилятором
+  # (MSVC на windows-latest и GCC на ubuntu-latest) без запуска.
+  # ===================================================
+  build:
+    name: Сборка (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Зависимости (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev \
+            xorg-dev libomp-dev
+
+      - name: Окружение MSVC (Windows)
+        # GLFW в репозитории собран MSVC (lib-vc2022), а Ninja по умолчанию
+        # подхватывал MinGW g++ и падал на __security_cookie при линковке.
+        # Генератор Visual Studio на windows-latest не находится, поэтому
+        # ставим окружение MSVC и собираем Ninja+cl.
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: CMake (configure)
+        # CPU_ONLY: на раннере нет nvcc/NVIDIA GPU. Это отключает только CUDA-
+        # ядро — весь C++ (оба рендерера, ImGui, диалоги) собирается как обычно,
+        # и именно это ловит платформенные ошибки вроде C2589.
+        # Вывод уходит в аннотации: скачать полный лог из отчёта о проверке
+        # удаётся не всегда, а причина падения должна быть видна сразу.
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cmake -S aeros -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                 -DAEROS_CPU_ONLY=ON -DAEROS_ENABLE_VULKAN=ON 2>&1 | tee /tmp/configure.log; then
+            tail -40 /tmp/configure.log | while IFS= read -r line; do
+              echo "::error::configure: $line"
+            done
+            exit 1
+          fi
+
+      - name: CMake (build)
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cmake --build build --parallel 2>&1 | tee /tmp/build.log; then
+            # Показываем первые ошибки компилятора: в конце лога обычно только
+            # «ninja: build stopped».
+            grep -E "error|Error|ошибка" /tmp/build.log | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -20 /tmp/build.log | while IFS= read -r line; do
+              echo "::error::build: $line"
+            done
+            exit 1
+          fi
+
+      - name: Артефакт собран
+        shell: bash
+        run: |
+          find build -maxdepth 2 -type f \( -name "aeros-engine*" -o -name "main-*" \) -print
+          test -n "$(find build -maxdepth 2 -type f \( -name 'aeros-engine*' -o -name 'main-*' \) -print -quit)"
+
+  # ===================================================
+  # v1.36.0 — те же наборы под AddressSanitizer + UBSan.
+  #
+  # Заглушки не мешают: проверяются переполнения буферов, use-after-free и
+  # неопределённое поведение в собственном коде решателей. Шум из вендоренного
+  # ImGui не глушится глобально — если он появится, подавлять нужно точечно.
+  # ===================================================
+  sanitizers:
+    name: ASan + UBSan (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Зависимости
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libomp-dev fonts-dejavu-core
+
+      - name: Версия g++
+        run: g++ --version | head -1
+
+      - name: Headless-наборы под ASan/UBSan
+        working-directory: aeros/tests
+        env:
+          EXTRA_CXXFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=0:abort_on_error=0:print_stacktrace=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=0"
+          OMP_NUM_THREADS: "2"
+        run: ./run-suites.sh
+
+  tests:
+    name: Headless-тесты (Linux, g++)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Зависимости
+        run: |
+          sudo apt-get update
+          # libomp для -fopenmp, шрифты — тест глифов сверяется с реальным cmap.
+          sudo apt-get install -y --no-install-recommends libomp-dev fonts-dejavu-core
+
+      - name: Версия g++
+        run: g++ --version | head -1
+
+      - name: Покрытие глифов и таблица клавиш (быстрые наборы)
+        working-directory: aeros/tests
+        run: |
+          make glyphs
+          make hotkeys
+
+      - name: Все headless-наборы
+        working-directory: aeros/tests
+        # Каждый набор запускается отдельно: так видно, какой именно упал, а
+        # хвост его вывода уходит в аннотацию (`::error`), потому что скачать
+        # лог из отчёта о проверке не всегда возможно.
+        run: ../tests/run-suites.sh
+
+      - name: Компиляция всех единиц трансляции (без линковки)
+        working-directory: aeros/src
+        # Линковка в CI невозможна: нет GL/GLFW. Проверяем, что каждая .cpp
+        # собирается с теми же флагами, что и в релизной сборке.
+        run: |
+          set -e
+          fail=0
+          for f in *.cpp; do
+            case "$f" in
+              kernel.cu|cuda_stub.cpp) echo "пропуск $f (CUDA)"; continue ;;
+            esac
+            echo "== $f"
+            if ! g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wno-unused-parameter \
+                 -I. -Iimgui -I../../libs/glm -I../../libs/glad/include \
+                 -I../../libs/glfw/include "$f" 2> "/tmp/err_$f"; then
+              cat "/tmp/err_$f"
+              fail=1
+            fi
+            if [ -s "/tmp/err_$f" ]; then
+              echo "::warning file=aeros/src/$f::предупреждения компиляции"
+              head -20 "/tmp/err_$f"
+            fi
+          done
+          exit $fail
+
+      - name: Итог
+        if: always()
+        run: |
+          echo "Тесты завершены: ${{ job.status }}"

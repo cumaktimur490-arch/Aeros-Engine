@@ -3,8 +3,13 @@
 
 #include <iostream>
 #include <vector>
+#include <cfloat>
+#include <algorithm>
+#include <chrono>
 
 #include "globals.h"
+#include "render_mode.h"
+#include "debug_log.h"   // v1.25.0 — журнал отладки
 #include "stl_loader.h"
 #include "gl_utils.h"
 #include "voxel_grid.h"
@@ -12,34 +17,121 @@
 #include "streamlines.h"
 #include "forces.h"
 #include "model.h"
+#include "demo_geometry.h"   // v1.34.0 — демо-тела главного меню
+#include "voxel_grid.h"      // v1.36.0 — статус вокселизации (g_voxelBuildError)
+#include "lbm.h"
+#include "atmosphere.h"
 
 // =====================================================
-// Загрузка модели
+// Загрузка модели v1.8.0 — исправлено + улучшения
 // =====================================================
-bool loadModel(const std::string& path) {
-    std::vector<float> vertices, normals;
-    if (!loadSTL(path, vertices, normals)) return false;
+// -----------------------------------------------------
+// Общая часть загрузки: принять готовые вершины/нормали (из STL или
+// аналитического демо-тела) и подготовить всю сцену — габарит, камеру,
+// видеопамять, воксельную сетку, SDF, решатель, частицы, линии тока.
+// v1.34.0: вынесено из loadModel(), чтобы демо-тела не дублировали этот путь.
+// -----------------------------------------------------
+static bool applyLoadedGeometry(std::vector<float>& vertices, std::vector<float>& normals,
+                                const std::string& sourceLabel, float unitScale = 1.0f) {
+    // v1.36.0 — единицы модели. STL не несёт единиц, поэтому масштаб задаёт
+    // пользователь (см. aeroModelUnits). Демо-тела строятся сразу в метрах и
+    // передают unitScale = 1. Раньше вместо этого координаты |x| > 1e6 молча
+    // обнулялись — модель в миллиметрах расплющивалась в плоскость.
+    if (unitScale != 1.0f && std::isfinite(unitScale) && unitScale > 0.0f) {
+        for (float& c : vertices) c *= unitScale;
+        std::cout << "[Model] Единицы модели: масштаб " << unitScale
+                  << " (габарит приведён к метрам)" << std::endl;
+        DBG_INFO("единицы модели %s: координаты умножены на %.4f", sourceLabel.c_str(), unitScale);
+    }
+
+    // Нормализация модели — центрирование и проверка
+    minBB = glm::vec3(FLT_MAX);
+    maxBB = glm::vec3(-FLT_MAX);
+    bool hasValid = false;
+    for (size_t i = 0; i + 2 < vertices.size(); i += 3) {
+        float x = vertices[i], y = vertices[i+1], z = vertices[i+2];
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;
+        glm::vec3 v(x,y,z);
+        minBB = glm::min(minBB, v);
+        maxBB = glm::max(maxBB, v);
+        hasValid = true;
+    }
+    if (!hasValid) {
+        std::cerr << "[Model] No valid vertices" << std::endl;
+        DBG_ERROR("в модели %s нет ни одной конечной вершины (все NaN/Inf)", sourceLabel.c_str());
+        return false;
+    }
+    center = (minBB + maxBB) * 0.5f;
+    glm::vec3 size = maxBB - minBB;
+    maxDim = glm::length(size);
+    if (maxDim < 0.0001f || !std::isfinite(maxDim)) maxDim = 1.0f;
+
+    // Проверка нормалей
+    int badNormals = 0;
+    for (size_t i = 0; i + 2 < normals.size(); i += 3) {
+        float nx = normals[i], ny = normals[i+1], nz = normals[i+2];
+        if (!std::isfinite(nx) || !std::isfinite(ny) || !std::isfinite(nz)) {
+            // Пересчитаем нормаль из треугольника
+            size_t triStart = (i/9)*9;
+            if (triStart + 8 < vertices.size()) {
+                glm::vec3 v0(vertices[triStart], vertices[triStart+1], vertices[triStart+2]);
+                glm::vec3 v1(vertices[triStart+3], vertices[triStart+4], vertices[triStart+5]);
+                glm::vec3 v2(vertices[triStart+6], vertices[triStart+7], vertices[triStart+8]);
+                glm::vec3 n = glm::cross(v1-v0, v2-v0);
+                float len = glm::length(n);
+                if (len > 1e-9f) n /= len; else n = glm::vec3(0,1,0);
+                normals[i]=n.x; normals[i+1]=n.y; normals[i+2]=n.z;
+                badNormals++;
+            }
+        } else {
+            float len = sqrtf(nx*nx+ny*ny+nz*nz);
+            if (len < 1e-6f || fabsf(len-1.0f) > 0.1f) {
+                if (len > 1e-9f) {
+                    normals[i]/=len; normals[i+1]/=len; normals[i+2]/=len;
+                } else {
+                    size_t triStart = (i/9)*9;
+                    if (triStart + 8 < vertices.size()) {
+                        glm::vec3 v0(vertices[triStart], vertices[triStart+1], vertices[triStart+2]);
+                        glm::vec3 v1(vertices[triStart+3], vertices[triStart+4], vertices[triStart+5]);
+                        glm::vec3 v2(vertices[triStart+6], vertices[triStart+7], vertices[triStart+8]);
+                        glm::vec3 n = glm::cross(v1-v0, v2-v0);
+                        float l = glm::length(n);
+                        if (l > 1e-9f) n/=l; else n=glm::vec3(0,1,0);
+                        normals[i]=n.x; normals[i+1]=n.y; normals[i+2]=n.z;
+                    }
+                }
+                badNormals++;
+            }
+        }
+    }
+    if (badNormals > 0) {
+        std::cout << "[Model] Fixed " << badNormals << " normals" << std::endl;
+    }
 
     g_vertices = vertices;
     g_normals = normals;
+    // Исправлено: g_vertexColors должен быть numVerts*3, а не vertices.size() заполненный 0.75
     g_vertexColors.assign(vertices.size(), 0.75f);
-
-    minBB = glm::vec3(FLT_MAX);
-    maxBB = glm::vec3(-FLT_MAX);
-    for (size_t i = 0; i < vertices.size(); i += 3) {
-        glm::vec3 v(vertices[i], vertices[i+1], vertices[i+2]);
-        minBB = glm::min(minBB, v);
-        maxBB = glm::max(maxBB, v);
+    // Сделаем цвет чуть более интересным по умолчанию
+    for (size_t i = 0; i + 2 < g_vertexColors.size(); i += 3) {
+        g_vertexColors[i] = 0.75f + 0.05f*sinf((float)i*0.1f);
+        g_vertexColors[i+1] = 0.75f + 0.05f*cosf((float)i*0.13f);
+        g_vertexColors[i+2] = 0.78f;
     }
-    center = (minBB + maxBB) * 0.5f;
-    maxDim = glm::length(maxBB - minBB);
-    if (maxDim < 0.0001f) maxDim = 1.0f;
 
+    // Камера
     cameraPos = center + glm::vec3(maxDim*1.8f, maxDim*0.8f, maxDim*1.8f);
     cameraFront = glm::normalize(center - cameraPos);
+    if (!std::isfinite(cameraFront.x) || glm::length(cameraFront) < 1e-6f) {
+        cameraFront = glm::vec3(0,0,-1);
+    }
     yaw = glm::degrees(atan2f(cameraFront.z, cameraFront.x));
-    pitch = glm::degrees(asinf(cameraFront.y));
+    pitch = glm::degrees(asinf(glm::clamp(cameraFront.y, -0.99f, 0.99f)));
 
+    // VAO
+    // v1.33.0 — в Vulkan-режиме контекста OpenGL нет: геометрия остаётся в
+    // g_vertices/g_normals, оттуда её берёт Vulkan-бэкенд.
+    if (glBackendActive()) {
     if (modelVAO == 0) glGenVertexArrays(1, &modelVAO);
     if (modelVBO_vertices == 0) glGenBuffers(1, &modelVBO_vertices);
     if (modelVBO_normals == 0) glGenBuffers(1, &modelVBO_normals);
@@ -53,17 +145,125 @@ bool loadModel(const std::string& path) {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+    }
     modelVertexCount = (int)(vertices.size() / 3);
 
-    createBoundingBoxVAO();
-    createAxesVAO(maxDim * 0.6f);
+    std::cout << "[Model] Loaded: " << sourceLabel << " verts=" << modelVertexCount 
+              << " tris=" << modelVertexCount/3 
+              << " BB=[" << minBB.x << "," << minBB.y << "," << minBB.z << "]-["
+              << maxBB.x << "," << maxBB.y << "," << maxBB.z << "]"
+              << " maxDim=" << maxDim << std::endl;
+    DBG_INFO("модель принята: %s, вершин %d, треугольников %d, габарит %.4f",
+             sourceLabel.c_str(), modelVertexCount, modelVertexCount / 3, maxDim);
 
+    // v1.33.0 — VAO земли/сетки/габарита/осей нужны только OpenGL-ветке.
+    // Vulkan строит ту же геометрию сам (vulkan_scene.cpp, scene_geometry.h).
+    if (glBackendActive()) {
+        createBoundingBoxVAO();
+        createAxesVAO(maxDim * 0.6f);
+        createGroundPlane(maxDim * 5.0f);
+        createGrid(maxDim * 5.0f, 20);
+    }
+
+    auto tVox0 = std::chrono::high_resolution_clock::now();
     buildVoxelGrid(vertices, voxelResolution);
+    auto tVox1 = std::chrono::high_resolution_clock::now();
+    perfVoxelMs = std::chrono::duration<float, std::milli>(tVox1-tVox0).count();
+
+    // v1.36.0 — сетка не построена (не хватает памяти или недопустимый размер):
+    // физику не запускаем. Модель остаётся на экране, причина — в журнале и в
+    // диалоге интерфейса; молчаливого уменьшения сетки больше нет.
+    if (!g_voxelBuildError.empty()) {
+        DBG_ERROR("модель загружена без расчёта: %s", g_voxelBuildError.c_str());
+        initParticles();
+        computeStreamlines();
+        updateVertexColors();
+        computeLiftDrag();
+        updateLiftDragArrows();
+        return true;
+    }
+
+    // Авто ref area
+    if (aeroAutoRefArea) {
+        aeroRefArea = (maxBB.y - minBB.y) * (maxBB.z - minBB.z) * 0.6f;
+        if (aeroRefArea < 0.01f) aeroRefArea = maxDim*maxDim*0.5f;
+        if (aeroRefArea < 1e-6f) aeroRefArea = 1.0f;
+        std::cout << "[Model] Auto ref area: " << aeroRefArea << " m2" << std::endl;
+    }
+
+    // Reynolds number на основе модели
+    {
+        float L = maxDim;
+        float V = flowSpeed;
+        float nu = 1.5e-5f; // кинематическая вязкость воздуха
+        if (airDensity > 1e-6f) {
+            // mu/rho
+            float mu = 1.81e-5f;
+            nu = mu / airDensity;
+        }
+        aeroReNumber = V * L / (nu + 1e-9f);
+        std::cout << "[Model] Re = " << aeroReNumber << " (V=" << V << " L=" << L << " nu=" << nu << ")" << std::endl;
+    }
+
+    if (lbmParams.enabled) {
+        initLBM();
+    }
 
     initParticles();
     computeStreamlines();
     updateVertexColors();
     computeLiftDrag();
     updateLiftDragArrows();
+    // v1.25.0 — итог загрузки модели в журнал (полезно при поиске причин
+    // «странных» результатов: сразу видно размеры, площадь и число Рейнольдса)
+    DBG_PHYS("модель готова: вершин %d, SDF-сетка %d, площадь %.4f м2, Re %.1f, вокселизация %.1f мс, бэкенд %s",
+             modelVertexCount, voxelResolution, aeroRefArea, aeroReNumber, perfVoxelMs,
+             useCUDA ? "CUDA" : "CPU");
     return true;
 }
+
+bool loadModel(const std::string& path) {
+    std::vector<float> vertices, normals;
+    if (!loadSTL(path, vertices, normals)) {
+        std::cerr << "[Model] Failed to load STL: " << path << std::endl;
+        DBG_ERROR("не удалось прочитать STL-файл: %s", path.c_str());
+        return false;
+    }
+    if (vertices.empty() || normals.empty()) {
+        std::cerr << "[Model] Empty model" << std::endl;
+        DBG_ERROR("модель пуста: %s (в файле нет треугольников)", path.c_str());
+        return false;
+    }
+    if (vertices.size() != normals.size()) {
+        std::cerr << "[Model] Vertex/normal size mismatch" << std::endl;
+        DBG_ERROR("несовпадение размеров вершин (%zu) и нормалей (%zu) в %s",
+                  vertices.size(), normals.size(), path.c_str());
+        return false;
+    }
+    if (vertices.size() % 9 != 0) {
+        std::cerr << "[Model] Warning: vertices not multiple of 9 (triangles)" << std::endl;
+    }
+    // v1.36.0 — STL: применяем выбранные единицы (по умолчанию мм → м).
+    return applyLoadedGeometry(vertices, normals, path, aeroModelUnitScale());
+}
+
+// v1.34.0 — демонстрационное тело без файла. Геометрия строится аналитически
+// (demo_geometry.h), дальше — ТОТ ЖЕ путь, что у STL: центрирование, проверка
+// нормалей, воксельная сетка, SDF, LBM, частицы, линии тока. Отдельной
+// «упрощённой» ветки нет намеренно: иначе демо-режим проверял бы не тот код,
+// который работает с настоящими моделями.
+bool loadDemoBody(int kind) {
+    demogeom::Body b = demogeom::Body::Sphere;
+    if (kind == (int)demogeom::Body::Wing)    b = demogeom::Body::Wing;
+    if (kind == (int)demogeom::Body::Airship) b = demogeom::Body::Airship;
+
+    std::vector<float> vertices, normals;
+    if (!demogeom::build(b, vertices, normals)) {
+        DBG_ERROR("не удалось построить демонстрационное тело (вид %d)", kind);
+        return false;
+    }
+    char label[128];
+    std::snprintf(label, sizeof(label), "demo:%s", demogeom::nameEn(b));
+    return applyLoadedGeometry(vertices, normals, label);
+}
+
