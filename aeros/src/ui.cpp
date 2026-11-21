@@ -709,6 +709,49 @@ static void drawUiStatusBar() {
             ImGui::Text("%s %.2f %s", _TR("skipped real time", "пропущено реального времени"),
                         physClock.droppedTime, _TR("s (long frames / tick limit)",
                                                    "с (длинные кадры / предел тактов)"));
+    if (!g_vertices.empty() && (showSlicePlane || showStreamlines || showPressure)) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 vpMin = ImGui::GetWindowPos();
+        const ImVec2 vpSz  = ImGui::GetWindowSize();
+        if (vpSz.x > 260.0f && vpSz.y > 260.0f) {
+            const float barW = 18.0f, barH = 160.0f;
+            const float x0 = vpMin.x + vpSz.x - 86.0f;
+            const float y0 = vpMin.y + vpSz.y - barH - 36.0f;
+            dl->AddRectFilled(ImVec2(x0 - 10.0f, y0 - 26.0f), ImVec2(x0 + barW + 64.0f, y0 + barH + 12.0f), IM_COL32(16, 18, 24, 195), 6.0f);
+            dl->AddText(ImVec2(x0 - 4.0f, y0 - 20.0f), IM_COL32(230, 235, 245, 255), _TR("|V| (m/s)", "|V| (м/с)"));
+            const int segs = 32;
+            for (int i = 0; i < segs; ++i) {
+                float t = 1.0f - (float)i / (float)(segs - 1);
+                float r = 0.0f, g = 0.0f, b = 0.0f;
+                if (aeroColorMap == 1) { // Viridis
+                    r = std::clamp(0.267f + t * (0.993f - 0.267f) * t, 0.0f, 1.0f);
+                    g = std::clamp(0.005f + 0.90f * std::sin(t * 1.57f), 0.0f, 1.0f);
+                    b = std::clamp(0.329f + 0.50f * std::sin(t * 3.14159f) - 0.20f * t, 0.0f, 1.0f);
+                } else if (aeroColorMap == 3) { // Coolwarm
+                    r = std::clamp(0.23f + 0.72f * t, 0.0f, 1.0f);
+                    g = std::clamp(0.30f + 0.55f * (1.0f - std::fabs(2.0f * t - 1.0f)), 0.0f, 1.0f);
+                    b = std::clamp(0.75f - 0.55f * t, 0.0f, 1.0f);
+                } else { // Rainbow / Parula
+                    r = std::clamp(1.5f - std::fabs(4.0f * t - 3.0f), 0.0f, 1.0f);
+                    g = std::clamp(1.5f - std::fabs(4.0f * t - 2.0f), 0.0f, 1.0f);
+                    b = std::clamp(1.5f - std::fabs(4.0f * t - 1.0f), 0.0f, 1.0f);
+                }
+                ImU32 col = IM_COL32((int)(r * 255.0f), (int)(g * 255.0f), (int)(b * 255.0f), 255);
+                float sy0 = y0 + (barH * i) / segs;
+                float sy1 = y0 + (barH * (i + 1)) / segs + 0.5f;
+                dl->AddRectFilled(ImVec2(x0, sy0), ImVec2(x0 + barW, sy1), col);
+            }
+            dl->AddRect(ImVec2(x0, y0), ImVec2(x0 + barW, y0 + barH), IM_COL32(180, 190, 210, 180));
+            const float vMax = std::max(0.01f, lbmParams.enabled ? (float)lbmMaxVelocityWorld : flowSpeed * 1.5f);
+            for (int k = 0; k <= 4; ++k) {
+                float frac = 1.0f - 0.25f * k;
+                float ty = y0 + (barH * k) / 4.0f - 6.0f;
+                char lbl[32];
+                std::snprintf(lbl, sizeof(lbl), "%.2f", vMax * frac);
+                dl->AddText(ImVec2(x0 + barW + 6.0f, ty), IM_COL32(220, 225, 235, 240), lbl);
+            }
+        }
+    }
         if (physClock.saturated)
             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s",
                 _TR("Physics is LAGGING behind real time (tick limit reached) — lower the rate or the load",
@@ -1044,7 +1087,7 @@ ImGui::Separator();
     }
     ImGui::SameLine();
     if (ImGui::Button(_TR("Particles (F4)", "Частицы (F4)"))) {
-        showSlicePlane = !showSlicePlane;
+        showSlicePlane = !showSlicePlane; aeroShowSlice = showSlicePlane;
         debugLogAction("кнопка", "срез CFD: %s", showSlicePlane ? "да" : "нет");
     }
     ImGui::SameLine();
@@ -1405,7 +1448,7 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         ImGui::SliderFloat(_TR("Ground Alpha", "Прозрачность земли"), &groundAlpha, 0.1f, 1.0f);
         ImGui::ColorEdit3(_TR("Ground Color", "Цвет земли"), &groundColor[0]);
     }
-    ImGui::Checkbox(_TR("Show Slice Plane (Cybertruck)", "Показывать срез (Cybertruck)"), &showSlicePlane);
+    if (ImGui::Checkbox(_TR("CFD Field Slice", "Срез поля CFD"), &showSlicePlane)) aeroShowSlice = showSlicePlane;
     if (showSlicePlane) {
         ImGui::Checkbox(_TR("Enable Aero Slice", "Включить аэро-срез"), &aeroShowSlice);
         const char* axisNames[] = {"X","Y","Z"};

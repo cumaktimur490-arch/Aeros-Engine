@@ -143,7 +143,7 @@ int   perfOpenMPThreads = 0;
 AeroVisMode aeroVisMode = AeroVisMode::Pressure;
 bool aeroGroundEffect = false;
 float aeroGroundHeight = 0.0f;
-bool aeroShowSlice = false;
+bool aeroShowSlice = true;
 int aeroSliceAxis = 1; // Y
 float aeroSlicePos = 0.5f;
 bool aeroColorStreamlinesByVelocity = true;
@@ -160,7 +160,7 @@ bool aeroShowWake = true;
 float aeroWakeOpacity = 0.5f;
 bool aeroShowVortices = true;
 bool aeroUseRealisticLighting = true;
-int aeroColorMap = 0; // 0 rainbow
+int aeroColorMap = 1; // 0 rainbow
 bool aeroExportEnabled = false;
 float aeroAutoRotateSpeed = 10.0f;
 
