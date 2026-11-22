@@ -98,12 +98,6 @@ void buildVulkanScene(IRenderer* renderer, const VulkanSceneFrame& frame) {
                              std::isfinite(streamlineWidth) ? streamlineWidth : 1.0f, frame.model);
     }
 
-    // ---------- частицы ----------
-    if (showParticles && frame.effectiveParticleCount > 0) {
-        const size_t needed = (size_t)frame.effectiveParticleCount * 3;
-        
-    }
-
     // ---------- габарит, оси, срез, стрелки ----------
     if (showBoundingBox) {
         // Кэш пересобирается при смене габарита: после загрузки другой модели
