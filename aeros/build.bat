@@ -63,6 +63,13 @@ if !errorlevel! neq 0 (
 )
 
 rem --- vcvars целевой архитектуры вызывается всегда (в CI cl.exe в PATH может быть чужой архитектуры) ---
+if defined AEROS_KEEP_VC (
+ where cl.exe >nul 2>&1
+ if !errorlevel! equ 0 (
+ echo [Aeros] Keeping preconfigured VC environment (AEROS_KEEP_VC)
+ goto :skip_vcvars
+ )
+)
 rem --- Поиск vcvars через vswhere ---
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VCVARS_PATH="
