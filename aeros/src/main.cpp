@@ -284,7 +284,7 @@ static void collectDebugFacts() {
                   flowSpeed, flowAzimuth, flowElevation, timeScale);
     debugLogAddFact("Физика", "Поток", buf);
     std::snprintf(buf, sizeof(buf), "частиц %d (рисуется %d, показ %s), линий тока %d (вершин %d, показ %s)",
-                  "0", 0, "нет",
+                  0, 0, "нет",
                   numStreamlines, streamlineVertexCount, showStreamlines ? "да" : "нет");
     debugLogAddFact("Физика", "Частицы и линии тока", buf);
     std::snprintf(buf, sizeof(buf), "LBM %s, сетка %dx%dx%d, шаг %d, шагов на кадр %d",

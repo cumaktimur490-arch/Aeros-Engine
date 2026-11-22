@@ -168,14 +168,19 @@ jobs:
           $cudaOut = $out
 
           # Причина сбоя - всегда одной строкой. Многострочные аннотации GitHub
-          # отбрасывает (прежняя версия склеивала 30 строк через %0A, и в итоге
-          # при уходе сборки в CPU-fallback не было видно ни одной ошибки nvcc).
+          # отбрасывает. Вырезаем вывод до fallback (build-cpu.bat) и исключаем
+          # пути вроде vc2022 и warning C4xxx, чтобы видеть настоящую ошибку nvcc.
           function Build-Reason([string]$text) {
+            $idx = $text.IndexOf("[WARN] CUDA build failed")
+            if ($idx -gt 0) { $text = $text.Substring(0, $idx) }
             $lines = @(($text -split "`r?`n") | Where-Object { $_.Trim() })
-            $errs = @($lines | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|nvcc|failed|cannot|не удалось" } | Select-Object -Last 10)
-            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 8) }
+            $errs = @($lines | Where-Object {
+              $_ -notmatch "warning C\d{4}|lib-vc\d{4}" -and
+              $_ -match "error|fatal|LNK\d{4}|nvcc|failed|cannot|не удалось"
+            } | Select-Object -Last 10)
+            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 10) }
             $m = ($errs -join " // ") -replace "\s+", " "
-            if ($m.Length -gt 700) { $m = $m.Substring($m.Length - 700) }
+            if ($m.Length -gt 900) { $m = $m.Substring($m.Length - 900) }
             return $m
           }
 
