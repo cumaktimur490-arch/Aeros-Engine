@@ -129,6 +129,15 @@
 //typedef void (*MyImDrawCallback)(const ImDrawList* draw_list, const ImDrawCmd* cmd, void* my_renderer_user_data);
 //#define ImDrawCallback MyImDrawCallback
 
+//---- Aeros Engine v1.33.0: бэкенд интерфейса для Vulkan --------------------
+// Функции Vulkan берутся у системного загрузчика через
+// ImGui_ImplVulkan_LoadFunctions (см. src/vk_loader.h), поэтому библиотека
+// импорта (vulkan-1.lib) при сборке не нужна. Флаг включается только когда
+// заголовки Vulkan действительно есть — иначе проект собрался бы без Vulkan.
+#if defined(AEROS_HAS_VULKAN) || (defined(__has_include) && __has_include(<vulkan/vulkan.h>))
+#define IMGUI_IMPL_VULKAN_NO_PROTOTYPES
+#endif
+
 //---- Debug Tools: Macro to break in Debugger (we provide a default implementation of this in the codebase)
 // (use 'Metrics->Tools->Item Picker' to pick widgets with the mouse and break into them for easy debugging.)
 //#define IM_DEBUG_BREAK  IM_ASSERT(0)
