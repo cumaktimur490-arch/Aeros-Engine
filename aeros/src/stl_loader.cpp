@@ -18,11 +18,16 @@
 #include <glm/glm.hpp>
 
 #include "stl_loader.h"
+#include "globals.h"
 #include "version.h"
 #include "proc_util.h"
 #include "stl_format.h"   // v1.36.0 — определение формата по содержимому
 #include "mem_budget.h"   // v1.36.0 — бюджет памяти вместо магического лимита
 #include "debug_log.h"    // v1.36.0 — причины отказа пишутся в журнал   // v1.36.0 — запуск zenity/kdialog без shell
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 // =====================================================
 // STL loader v1.8.0 — исправлено + улучшения
@@ -215,12 +220,16 @@ bool loadSTL(const std::string& filename, std::vector<float>& vertices, std::vec
 // =====================================================
 namespace {
 #ifndef _WIN32
-std::string runFileDialog(const std::vector<std::string>& argv) {
+enum class DialogStatus { NotFound, Cancelled, Ok };
+
+DialogStatus runFileDialog(const std::vector<std::string>& argv, std::string& outPath) {
+    outPath.clear();
     const procutil::Result r = procutil::runCapture(argv);
-    if (!r.ok) return "";                 // нет zenity/kdialog или пользователь отменил
-    std::string s = r.output;
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
-    return s;
+    if (!r.launched || r.exitCode == 127) return DialogStatus::NotFound;
+    if (!r.ok) return DialogStatus::Cancelled;
+    outPath = r.output;
+    while (!outPath.empty() && (outPath.back() == '\n' || outPath.back() == '\r')) outPath.pop_back();
+    return outPath.empty() ? DialogStatus::Cancelled : DialogStatus::Ok;
 }
 #endif
 } // namespace
@@ -231,18 +240,20 @@ std::string runFileDialog(const std::vector<std::string>& argv) {
 std::string openFileDialog(void* ownerWindow) {
 #ifdef _WIN32
     OPENFILENAMEA ofn;
-    char fileName[MAX_PATH] = "";
-    char initialDir[MAX_PATH] = "";
-    GetCurrentDirectoryA(MAX_PATH, initialDir);
+    char fileName[4096] = "";
+    char initialDir[4096] = "";
+    GetCurrentDirectoryA((DWORD)sizeof(initialDir), initialDir);
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = (HWND)ownerWindow;
-    ofn.lpstrFilter = "STL Files (*.stl)\0*.stl\0All Files (*.*)\0*.*\0";
+    HWND owner = (HWND)(ownerWindow ? ownerWindow : g_mainWin32Hwnd);
+    if (!owner) owner = GetActiveWindow();
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = "STL & Study Files (*.stl;*.aerosproj)\0*.stl;*.aerosproj;*.study;*.aero\0STL Files (*.stl)\0*.stl\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile = fileName;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.nMaxFile = (DWORD)sizeof(fileName);
     ofn.lpstrInitialDir = initialDir;
     ofn.lpstrTitle = "Select STL Model - Aeros Engine v" AEROS_VERSION_STRING;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
     ofn.lpstrDefExt = "stl";
     if (GetOpenFileNameA(&ofn)) return std::string(fileName);
     return "";
@@ -251,13 +262,18 @@ std::string openFileDialog(void* ownerWindow) {
     // v1.36.0 — без popen: команды передаются execvp() массивом аргументов,
     // оболочки в цепочке нет. Раньше строка диалога склеивалась в shell-команду.
     {
-        std::string s = runFileDialog({
+        std::string s;
+        DialogStatus st = runFileDialog({
             "zenity", "--file-selection",
-            "--file-filter=STL files | *.stl *.STL",
-            "--title=Open STL Model - Aeros Engine v" AEROS_VERSION_STRING});
-        if (!s.empty()) return s;
-        s = runFileDialog({"kdialog", "--getopenfilename", ".", "*.stl | STL Models"});
-        if (!s.empty()) return s;
+            "--file-filter=STL & Study files | *.stl *.STL *.aerosproj *.study *.aero",
+            "--file-filter=All files | *",
+            "--title=Open STL Model - Aeros Engine v" AEROS_VERSION_STRING}, s);
+        if (st == DialogStatus::Ok) return s;
+        if (st == DialogStatus::Cancelled) return "";
+
+        st = runFileDialog({"kdialog", "--getopenfilename", ".", "*.stl *.aerosproj | STL & Study Files"}, s);
+        if (st == DialogStatus::Ok) return s;
+        if (st == DialogStatus::Cancelled) return "";
     }
     // Fallback: check common locations
     std::vector<std::string> candidates = {
@@ -274,13 +290,18 @@ std::string openFileDialog(void* ownerWindow) {
             return c;
         }
     }
-    // Last resort: console input
+    // Если программа запущена не из интерактивного терминала (GUI/ярлык),
+    // чтение std::cin заблокирует поток UI навсегда («программа зависает»).
+    if (!isatty(STDIN_FILENO)) {
+        DBG_WARN("диалог выбора файла недоступен (нет zenity/kdialog и интерактивного терминала)");
+        return "";
+    }
     std::cout << "Enter STL file path (or drag & drop): ";
     std::string input;
-    std::getline(std::cin, input);
+    if (!std::getline(std::cin, input)) return "";
     // Remove quotes if present
-    if (!input.empty() && input.front() == '\'' && input.back() == '\'') input = input.substr(1, input.size()-2);
-    if (!input.empty() && input.front() == '"' && input.back() == '"') input = input.substr(1, input.size()-2);
+    if (input.size() >= 2 && input.front() == '\'' && input.back() == '\'') input = input.substr(1, input.size()-2);
+    if (input.size() >= 2 && input.front() == '"' && input.back() == '"') input = input.substr(1, input.size()-2);
     return input;
 #endif
 }

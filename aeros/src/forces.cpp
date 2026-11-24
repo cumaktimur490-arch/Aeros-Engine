@@ -256,17 +256,19 @@ void updateVertexColors() {
         // Диапазон цветовой карты — по фактическим Cp этого кадра (для следующего)
         if (!s_cpPerVertex.empty()) aeroUpdateCpRange(s_cpPerVertex.data(), numVerts);
 
-        if (modelVBO_colors == 0) {
-            glGenBuffers(1, &modelVBO_colors);
-            glBindVertexArray(modelVAO);
-            glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-            glBufferData(GL_ARRAY_BUFFER, g_vertexColors.size()*sizeof(float), g_vertexColors.data(), GL_DYNAMIC_DRAW);
-            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
-            glEnableVertexAttribArray(2);
-            glBindVertexArray(0);
-        } else {
-            glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
+        if (glBackendActive()) {
+            if (modelVBO_colors == 0) {
+                glGenBuffers(1, &modelVBO_colors);
+                glBindVertexArray(modelVAO);
+                glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
+                glBufferData(GL_ARRAY_BUFFER, g_vertexColors.size()*sizeof(float), g_vertexColors.data(), GL_DYNAMIC_DRAW);
+                glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+                glEnableVertexAttribArray(2);
+                glBindVertexArray(0);
+            } else {
+                glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
+            }
         }
         return;
     }

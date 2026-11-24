@@ -164,6 +164,12 @@ static bool applyLoadedGeometry(std::vector<float>& vertices, std::vector<float>
         createGrid(maxDim * 5.0f, 20);
     }
 
+    // Сбрасываем старое состояние решателей от предыдущей модели: иначе при
+    // ошибке вокселизации новой модели или выключенном LBM оставались бы
+    // буферы и флаг lbmInitialized от старой геометрии.
+    shutdownLBM();
+    caeColorOverride = false;
+
     auto tVox0 = std::chrono::high_resolution_clock::now();
     buildVoxelGrid(vertices, voxelResolution);
     auto tVox1 = std::chrono::high_resolution_clock::now();
@@ -241,7 +247,9 @@ bool loadModel(const std::string& path) {
         std::cerr << "[Model] Warning: vertices not multiple of 9 (triangles)" << std::endl;
     }
     // v1.36.0 — STL: применяем выбранные единицы (по умолчанию мм → м).
-    return applyLoadedGeometry(vertices, normals, path, aeroModelUnitScale());
+    if (!applyLoadedGeometry(vertices, normals, path, aeroModelUnitScale())) return false;
+    aeroModelPath = path;
+    return true;
 }
 
 // v1.34.0 — демонстрационное тело без файла. Геометрия строится аналитически
@@ -261,6 +269,17 @@ bool loadDemoBody(int kind) {
     }
     char label[128];
     std::snprintf(label, sizeof(label), "demo:%s", demogeom::nameEn(b));
-    return applyLoadedGeometry(vertices, normals, label);
+    if (!applyLoadedGeometry(vertices, normals, label)) return false;
+    aeroModelPath = label;
+    return true;
+}
+
+bool reloadActiveModel() {
+    if (aeroModelPath.empty()) return false;
+    if (aeroModelPath == "demo:Sphere")  return loadDemoBody((int)demogeom::Body::Sphere);
+    if (aeroModelPath == "demo:Wing")    return loadDemoBody((int)demogeom::Body::Wing);
+    if (aeroModelPath == "demo:Airship") return loadDemoBody((int)demogeom::Body::Airship);
+    if (aeroModelPath.rfind("demo:", 0) == 0) return loadDemoBody((int)demogeom::Body::Sphere);
+    return loadModel(aeroModelPath);
 }
 

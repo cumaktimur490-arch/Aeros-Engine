@@ -183,7 +183,7 @@ VoxelPlan voxelPlan(const glm::vec3& size, int res, unsigned long long budgetByt
     const float m = std::max(sx, std::max(sy, sz));
 
     auto dimensions = [&](int rr, int& nx, int& ny, int& nz) {
-        nx = rr;
+        nx = (int)std::floor(rr * sx / m); if (nx < 4) nx = 4;
         ny = (int)std::floor(rr * sy / m); if (ny < 4) ny = 4;
         nz = (int)std::floor(rr * sz / m); if (nz < 4) nz = 4;
     };
@@ -426,33 +426,36 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
                 neigh.push_back({dx,dy,dz,w});
             }
 
-    // BFS с приоритетом по расстоянию — Dijkstra-like для точного Евклида
-    // Используем очередь, но с сортировкой по |d| для лучшего приближения
-    size_t head = 0;
-    // Для скорости — 2 прохода: сначала прямой, потом обратный (Fast Sweeping 8 направлений)
-    // Упростим: 8 sweep проходов
-    for (int sweep=0; sweep<4; ++sweep) {
-        // 8 направлений sweeping
-        int iStart,iEnd,iStep,jStart,jEnd,jStep,kStart,kEnd,kStep;
-        if (sweep==0) { iStart=0; iEnd=g_voxNx; iStep=1; jStart=0; jEnd=g_voxNy; jStep=1; kStart=0; kEnd=g_voxNz; kStep=1; }
-        else if (sweep==1) { iStart=g_voxNx-1; iEnd=-1; iStep=-1; jStart=0; jEnd=g_voxNy; jStep=1; kStart=0; kEnd=g_voxNz; kStep=1; }
-        else if (sweep==2) { iStart=0; iEnd=g_voxNx; iStep=1; jStart=g_voxNy-1; jEnd=-1; jStep=-1; kStart=0; kEnd=g_voxNz; kStep=1; }
-        else { iStart=g_voxNx-1; iEnd=-1; iStep=-1; jStart=g_voxNy-1; jEnd=-1; jStep=-1; kStart=g_voxNz-1; kEnd=-1; kStep=-1; }
-
-        for (int k=kStart; k!=kEnd; k+=kStep) {
-            for (int j=jStart; j!=jEnd; j+=jStep) {
-                for (int i=iStart; i!=iEnd; i+=iStep) {
-                    int idx = (k*g_voxNy + j)*g_voxNx + i;
-                    float curD = g_distanceField[idx];
-                    if (fabsf(curD) > 1e5f) continue;
-                    for (auto& nb : neigh) {
-                        int ni=i+nb.dx, nj=j+nb.dy, nk=k+nb.dz;
-                        if (ni<0||ni>=g_voxNx||nj<0||nj>=g_voxNy||nk<0||nk>=g_voxNz) continue;
-                        int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
-                        if (nidx<0||nidx>=total) continue;
-                        float nd = (curD < 0) ? (curD - nb.w) : (curD + nb.w);
-                        if (fabsf(nd) < fabsf(g_distanceField[nidx]) - 1e-4f) {
-                            g_distanceField[nidx] = nd;
+    // Fast Sweeping по всем 8 октантам + ограниченный SPFA BFS (с флагом inQueue),
+    // чтобы очередь никогда не взрывалась на тонких/мелких моделях и знак SDF
+    // строго совпадал с маской внутри/снаружи.
+    const float minCell = std::min(csx, std::min(csy, csz));
+    const float sweepEps = std::max(1e-6f, 1e-4f * minCell);
+    const int dirs[2] = {1, -1};
+    for (int sz : dirs) {
+        const int kStart = (sz > 0) ? 0 : g_voxNz - 1, kEnd = (sz > 0) ? g_voxNz : -1;
+        for (int sy : dirs) {
+            const int jStart = (sy > 0) ? 0 : g_voxNy - 1, jEnd = (sy > 0) ? g_voxNy : -1;
+            for (int sx : dirs) {
+                const int iStart = (sx > 0) ? 0 : g_voxNx - 1, iEnd = (sx > 0) ? g_voxNx : -1;
+                for (int k = kStart; k != kEnd; k += sz) {
+                    for (int j = jStart; j != jEnd; j += sy) {
+                        for (int i = iStart; i != iEnd; i += sx) {
+                            const int idx = (k*g_voxNy + j)*g_voxNx + i;
+                            const float curD = g_distanceField[idx];
+                            if (fabsf(curD) > 1e5f) continue;
+                            const bool curInside = (g_voxelData[idx] == 1);
+                            for (const auto& nb : neigh) {
+                                const int ni = i + nb.dx, nj = j + nb.dy, nk = k + nb.dz;
+                                if (ni < 0 || ni >= g_voxNx || nj < 0 || nj >= g_voxNy || nk < 0 || nk >= g_voxNz) continue;
+                                const int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
+                                const bool nInside = (g_voxelData[nidx] == 1);
+                                if (nInside != curInside) continue;
+                                const float nd = curInside ? (curD - nb.w) : (curD + nb.w);
+                                if (fabsf(nd) < fabsf(g_distanceField[nidx]) - sweepEps) {
+                                    g_distanceField[nidx] = nd;
+                                }
+                            }
                         }
                     }
                 }
@@ -460,24 +463,34 @@ void buildVoxelGrid(const std::vector<float>& verts, int res) {
         }
     }
 
-    // Дополнительный BFS для гарантии
-    head = 0;
-    while (head < q.size()) {
-        int idx = q[head++];
-        int i = idx % g_voxNx;
-        int j = (idx / g_voxNx) % g_voxNy;
-        int k = idx / (g_voxNx * g_voxNy);
-        float d = g_distanceField[idx];
+    // Ограниченный SPFA-проход для гарантии сходимости в невыпуклых углах
+    std::vector<unsigned char> inQueue((size_t)total, 0);
+    for (int idx : q) {
+        if (idx >= 0 && idx < total) inQueue[idx] = 1;
+    }
+    size_t head = 0;
+    const size_t maxVisits = (size_t)total * 8u;
+    while (head < q.size() && head < maxVisits) {
+        const int idx = q[head++];
+        inQueue[idx] = 0;
+        const int i = idx % g_voxNx;
+        const int j = (idx / g_voxNx) % g_voxNy;
+        const int k = idx / (g_voxNx * g_voxNy);
+        const float d = g_distanceField[idx];
         if (!isValidFloatSafe(d)) continue;
-        for (auto& nb : neigh) {
-            int ni=i+nb.dx, nj=j+nb.dy, nk=k+nb.dz;
-            if (ni<0||ni>=g_voxNx||nj<0||nj>=g_voxNy||nk<0||nk>=g_voxNz) continue;
-            int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
-            if (nidx <0 || nidx >= total) continue;
-            float nd = (d < 0) ? (d - nb.w) : (d + nb.w);
-            if (fabsf(nd) < fabsf(g_distanceField[nidx]) - 0.001f) {
+        const bool curInside = (g_voxelData[idx] == 1);
+        for (const auto& nb : neigh) {
+            const int ni = i + nb.dx, nj = j + nb.dy, nk = k + nb.dz;
+            if (ni < 0 || ni >= g_voxNx || nj < 0 || nj >= g_voxNy || nk < 0 || nk >= g_voxNz) continue;
+            const int nidx = (nk*g_voxNy + nj)*g_voxNx + ni;
+            if ((g_voxelData[nidx] == 1) != curInside) continue;
+            const float nd = curInside ? (d - nb.w) : (d + nb.w);
+            if (fabsf(nd) < fabsf(g_distanceField[nidx]) - sweepEps) {
                 g_distanceField[nidx] = nd;
-                q.push_back(nidx);
+                if (!inQueue[nidx]) {
+                    inQueue[nidx] = 1;
+                    q.push_back(nidx);
+                }
             }
         }
     }

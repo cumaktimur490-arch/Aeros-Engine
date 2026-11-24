@@ -404,6 +404,11 @@ int main() {
               std::to_string(p.nx) + "×" + std::to_string(p.ny) + "×" + std::to_string(p.nz));
         check(p.cells == 64ll * 32 * 16, "число ячеек посчитано верно");
 
+        const VoxelPlan py = voxelPlan(glm::vec3(0.25f, 1.0f, 0.5f), 64, big);
+        check(py.nx == 16 && py.ny == 64 && py.nz == 32,
+              "пропорции сетки при большей оси Y (16×64×32), получено " +
+              std::to_string(py.nx) + "×" + std::to_string(py.ny) + "×" + std::to_string(py.nz));
+
         const VoxelPlan over = voxelPlan(glm::vec3(1.0f), 512, 512ull * 1024 * 1024);
         check(!over.fits, "512³ при бюджете 512 МБ не влезает");
         check(over.suggestedRes > 0 && over.suggestedRes < 512,

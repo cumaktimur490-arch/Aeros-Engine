@@ -711,49 +711,6 @@ static void drawUiStatusBar() {
             ImGui::Text("%s %.2f %s", _TR("skipped real time", "пропущено реального времени"),
                         physClock.droppedTime, _TR("s (long frames / tick limit)",
                                                    "с (длинные кадры / предел тактов)"));
-    if (!g_vertices.empty() && (showSlicePlane || showStreamlines || showPressure)) {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 vpMin = ImGui::GetWindowPos();
-        const ImVec2 vpSz  = ImGui::GetWindowSize();
-        if (vpSz.x > 260.0f && vpSz.y > 260.0f) {
-            const float barW = 18.0f, barH = 160.0f;
-            const float x0 = vpMin.x + vpSz.x - 86.0f;
-            const float y0 = vpMin.y + vpSz.y - barH - 36.0f;
-            dl->AddRectFilled(ImVec2(x0 - 10.0f, y0 - 26.0f), ImVec2(x0 + barW + 64.0f, y0 + barH + 12.0f), IM_COL32(16, 18, 24, 195), 6.0f);
-            dl->AddText(ImVec2(x0 - 4.0f, y0 - 20.0f), IM_COL32(230, 235, 245, 255), _TR("|V| (m/s)", "|V| (м/с)"));
-            const int segs = 32;
-            for (int i = 0; i < segs; ++i) {
-                float t = 1.0f - (float)i / (float)(segs - 1);
-                float r = 0.0f, g = 0.0f, b = 0.0f;
-                if (aeroColorMap == 1) { // Viridis
-                    r = std::clamp(0.267f + t * (0.993f - 0.267f) * t, 0.0f, 1.0f);
-                    g = std::clamp(0.005f + 0.90f * std::sin(t * 1.57f), 0.0f, 1.0f);
-                    b = std::clamp(0.329f + 0.50f * std::sin(t * 3.14159f) - 0.20f * t, 0.0f, 1.0f);
-                } else if (aeroColorMap == 3) { // Coolwarm
-                    r = std::clamp(0.23f + 0.72f * t, 0.0f, 1.0f);
-                    g = std::clamp(0.30f + 0.55f * (1.0f - std::fabs(2.0f * t - 1.0f)), 0.0f, 1.0f);
-                    b = std::clamp(0.75f - 0.55f * t, 0.0f, 1.0f);
-                } else { // Rainbow / Parula
-                    r = std::clamp(1.5f - std::fabs(4.0f * t - 3.0f), 0.0f, 1.0f);
-                    g = std::clamp(1.5f - std::fabs(4.0f * t - 2.0f), 0.0f, 1.0f);
-                    b = std::clamp(1.5f - std::fabs(4.0f * t - 1.0f), 0.0f, 1.0f);
-                }
-                ImU32 col = IM_COL32((int)(r * 255.0f), (int)(g * 255.0f), (int)(b * 255.0f), 255);
-                float sy0 = y0 + (barH * i) / segs;
-                float sy1 = y0 + (barH * (i + 1)) / segs + 0.5f;
-                dl->AddRectFilled(ImVec2(x0, sy0), ImVec2(x0 + barW, sy1), col);
-            }
-            dl->AddRect(ImVec2(x0, y0), ImVec2(x0 + barW, y0 + barH), IM_COL32(180, 190, 210, 180));
-            const float vMax = std::max(0.01f, lbmParams.enabled ? (float)lbmMaxVelocityWorld : flowSpeed * 1.5f);
-            for (int k = 0; k <= 4; ++k) {
-                float frac = 1.0f - 0.25f * k;
-                float ty = y0 + (barH * k) / 4.0f - 6.0f;
-                char lbl[32];
-                std::snprintf(lbl, sizeof(lbl), "%.2f", vMax * frac);
-                dl->AddText(ImVec2(x0 + barW + 6.0f, ty), IM_COL32(220, 225, 235, 240), lbl);
-            }
-        }
-    }
         if (physClock.saturated)
             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s",
                 _TR("Physics is LAGGING behind real time (tick limit reached) — lower the rate or the load",
@@ -993,7 +950,7 @@ if (!g_vertices.empty()) {
             if (i) ImGui::SameLine();
             if (ImGui::SmallButton(currentLanguage == Language::Russian ? labelRu[i] : labelEn[i])) {
                 voxelResolution = presets[i];
-                if (loadModel(aeroModelPath)) caeSyncGeometry();
+                if (reloadActiveModel()) caeSyncGeometry();
             }
         }
         const VoxelPlan plan = voxelPlan(modelSize, voxelResolution, membudget::budgetBytes());
@@ -1042,7 +999,7 @@ if (!g_vertices.empty()) {
         if (ImGui::Button(_TR("Increase resolution", "Увеличить разрешение"))) {
             const int next = std::min(512, std::max(8, g_voxelUsedRes * 2));
             voxelResolution = next;
-            if (loadModel(aeroModelPath)) caeSyncGeometry();
+            if (reloadActiveModel()) caeSyncGeometry();
         }
     }
     if (!g_voxelBuildError.empty()) {
@@ -1300,9 +1257,6 @@ if (uiSelectedLeaf == 3 && ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.1
     ImGui::Checkbox(_TR("Meshlet Culling", "Отсечение мешлетов"), &optMeshletCulling);
     if (optLOD) {
         ImGui::SliderFloat(_TR("LOD Distance", "Дистанция LOD"), &optLODDistance, 0.5f, 10.0f, "%.1f");
-    }
-        const char* lodNamesEn[] = {"Full", "Half", "Quarter"};
-        const char* lodNamesRu[] = {"Полный", "Половина", "Четверть"};
     }
 
     ImGui::Separator();
@@ -2586,6 +2540,8 @@ if (uiSelectedLeaf == 17 && ImGui::CollapsingHeader(_TR("Compute & Export v1.19.
             debugLogAction("выбрана модель", "%s", p.c_str());
             if (loadModel(p)) {
                 aeroModelPath = p;   // v1.31.0 — источник геометрии для исследования
+                recentfiles::add(p, recentfiles::defaultPath(), 6);
+                caeSyncGeometry();
                 DBG_INFO("модель загружена из UI: %s (вершин %d)", p.c_str(), modelVertexCount);
             }
             else DBG_ERROR("не удалось загрузить модель из UI: %s", p.c_str());
@@ -2962,6 +2918,7 @@ if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra
         for (int i = shown - 1; i >= 0; --i)
             ImGui::TextUnformatted(debugLogRecent(i).c_str());
     }
+    }
     // ===== конец панели «Модель» =====
     uiDockEndPanel();
 }   // v1.31.0 — конец панели свойств
@@ -3120,10 +3077,11 @@ if (g_voxelDialogPending) {
                 g_voxelBuildError.clear();
                 debugLogAction("вокселизация", "разрешение уменьшено до %d по выбору пользователя",
                                voxelResolution);
-                if (!aeroModelPath.empty() && aeroModelPath.rfind("demo:", 0) != 0) {
-                    if (!loadModel(aeroModelPath))
-                        debugLogAction("вокселизация", "повторная загрузка %s не удалась",
-                                       aeroModelPath.c_str());
+                if (reloadActiveModel()) {
+                    caeSyncGeometry();
+                } else {
+                    debugLogAction("вокселизация", "повторная загрузка %s не удалась",
+                                   aeroModelPath.c_str());
                 }
                 ImGui::CloseCurrentPopup();
             }
@@ -3135,6 +3093,50 @@ if (g_voxelDialogPending) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
+    }
+}
+
+// Легенда скорости в области 3D-вида (на фоне ImGui, поверх 3D-сцены и не перекрывая панели)
+if (showColorLegend && !g_vertices.empty() && L.viewport.valid() &&
+    (showSlicePlane || showStreamlines || showPressure)) {
+    if (L.viewport.w > 260.0f && L.viewport.h > 260.0f) {
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const float barW = 18.0f, barH = 160.0f;
+        const float x0 = L.viewport.x + L.viewport.w - 86.0f;
+        const float y0 = L.viewport.y + L.viewport.h - barH - 24.0f;
+        dl->AddRectFilled(ImVec2(x0 - 10.0f, y0 - 26.0f), ImVec2(x0 + barW + 64.0f, y0 + barH + 12.0f), IM_COL32(16, 18, 24, 195), 6.0f);
+        dl->AddText(ImVec2(x0 - 4.0f, y0 - 20.0f), IM_COL32(230, 235, 245, 255), _TR("|V| (m/s)", "|V| (м/с)"));
+        const int segs = 32;
+        for (int i = 0; i < segs; ++i) {
+            float t = 1.0f - (float)i / (float)(segs - 1);
+            float r = 0.0f, g = 0.0f, b = 0.0f;
+            if (aeroColorMap == 1) {
+                r = std::clamp(0.267f + t * (0.993f - 0.267f) * t, 0.0f, 1.0f);
+                g = std::clamp(0.005f + 0.90f * std::sin(t * 1.57f), 0.0f, 1.0f);
+                b = std::clamp(0.329f + 0.50f * std::sin(t * 3.14159f) - 0.20f * t, 0.0f, 1.0f);
+            } else if (aeroColorMap == 3) {
+                r = std::clamp(0.23f + 0.72f * t, 0.0f, 1.0f);
+                g = std::clamp(0.30f + 0.55f * (1.0f - std::fabs(2.0f * t - 1.0f)), 0.0f, 1.0f);
+                b = std::clamp(0.75f - 0.55f * t, 0.0f, 1.0f);
+            } else {
+                r = std::clamp(1.5f - std::fabs(4.0f * t - 3.0f), 0.0f, 1.0f);
+                g = std::clamp(1.5f - std::fabs(4.0f * t - 2.0f), 0.0f, 1.0f);
+                b = std::clamp(1.5f - std::fabs(4.0f * t - 1.0f), 0.0f, 1.0f);
+            }
+            ImU32 col = IM_COL32((int)(r * 255.0f), (int)(g * 255.0f), (int)(b * 255.0f), 255);
+            float sy0 = y0 + (barH * i) / segs;
+            float sy1 = y0 + (barH * (i + 1)) / segs + 0.5f;
+            dl->AddRectFilled(ImVec2(x0, sy0), ImVec2(x0 + barW, sy1), col);
+        }
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x0 + barW, y0 + barH), IM_COL32(180, 190, 210, 180));
+        const float vMax = std::max(0.01f, lbmParams.enabled ? (float)lbmMaxVelocityWorld : flowSpeed * 1.5f);
+        for (int k = 0; k <= 4; ++k) {
+            float frac = 1.0f - 0.25f * k;
+            float ty = y0 + (barH * k) / 4.0f - 6.0f;
+            char lbl[32];
+            std::snprintf(lbl, sizeof(lbl), "%.2f", vMax * frac);
+            dl->AddText(ImVec2(x0 + barW + 6.0f, ty), IM_COL32(220, 225, 235, 240), lbl);
+        }
     }
 }
 

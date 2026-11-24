@@ -359,6 +359,7 @@ std::string g_lastTimelapsePath;
 
 // --- v1.28.0 — компоновка интерфейса (панели по краям экрана) ---
 std::string aeroModelPath;        // v1.31.0 — путь к загруженной модели (STL)
+void* g_mainWin32Hwnd = nullptr;  // Win32 HWND главного окна для модальных диалогов
 bool aeroExitRequested = false;   // v1.31.0 — «Файл → Выход» в главном меню
 // v1.34.0 — главное меню (стартовый экран) и флаг занятости клавиатуры UI.
 bool aeroStartScreen = true;

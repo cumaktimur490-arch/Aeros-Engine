@@ -946,14 +946,17 @@ int main(int argc, char** argv) {
 
     // v1.19.0: Set window icon — AoS ENG.
     applyWindowIcon(window);
+#ifdef _WIN32
+    g_mainWin32Hwnd = (void*)glfwGetWin32Window(window);
+#endif
+    glfwSetDropCallback(window, dropCallback);   // v1.35.0 — drag&drop STL/проекта (OpenGL и Vulkan)
 
     // Init renderer abstraction — v1.19.0 Vulkan+OpenGL
     RendererConfig rendCfg;
     rendCfg.api = requestedAPI;
     rendCfg.vsync = vsyncEnabled;
     if (!useVulkanWindow) {
-        glfwSetDropCallback(window, dropCallback);   // v1.35.0 — drag&drop STL/проекта
-    glfwMakeContextCurrent(window);
+        glfwMakeContextCurrent(window);
         glfwSwapInterval(vsyncEnabled ? 1 : 0);
     }
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
@@ -981,6 +984,7 @@ int main(int argc, char** argv) {
     if (!initRenderer(window, requestedAPI)) {
         std::cerr << "[Main] Рендерер не инициализировался, пробуем OpenGL" << std::endl;
         if (useVulkanWindow) {
+            g_mainWin32Hwnd = nullptr;
             glfwDestroyWindow(window);
             glfwDefaultWindowHints();
             glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
@@ -997,6 +1001,10 @@ int main(int argc, char** argv) {
                 return -1;
             }
             applyWindowIcon(window);   // окно пересоздано — иконку ставим заново
+#ifdef _WIN32
+            g_mainWin32Hwnd = (void*)glfwGetWin32Window(window);
+#endif
+            glfwSetDropCallback(window, dropCallback);
             glfwMakeContextCurrent(window);
             glfwSwapInterval(vsyncEnabled ? 1 : 0);
             glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
@@ -1665,11 +1673,11 @@ int main(int argc, char** argv) {
                         glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.18f);
                         glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.3f, 0.3f, 0.35f);
                         glBindVertexArray(gridVAO);
-                        glDrawArrays(GL_LINES, 0, 82*2);
+                        glDrawArrays(GL_LINES, 0, 21 * 4);
                         glBindVertexArray(0);
                     }
                 }
-                if (showModel && modelInFrustum) {
+                if (showModel && modelInFrustum && modelVAO != 0 && modelVertexCount > 0) {
                     glUseProgram(modelShaderProgram);
                     glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
                     glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
@@ -1679,7 +1687,7 @@ int main(int argc, char** argv) {
                     glUniform3fv(glGetUniformLocation(modelShaderProgram, "lightColor"), 1, &lightColor[0]);
                     glUniform3fv(glGetUniformLocation(modelShaderProgram, "objectColor"), 1, &modelColor[0]);
                     glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), lightingEnabled ? 1 : 0);
-                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), showPressure ? 1 : 0);
+                    glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), (showPressure || caeColorOverride) ? 1 : 0);
                     glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), aeroUseRealisticLighting ? 1 : 0);
                     glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), 1.0f);
                     glBindVertexArray(modelVAO);
@@ -1928,6 +1936,7 @@ int main(int argc, char** argv) {
     }
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+    g_mainWin32Hwnd = nullptr;
     shutdownRenderer();
     glfwTerminate();
     DBG_INFO("=== завершение работы: кадров %lld, ошибок в журнале %d, откатов GPU на CPU %d ===",

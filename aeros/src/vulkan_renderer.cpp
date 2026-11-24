@@ -34,6 +34,7 @@
 #include <commdlg.h>
 #else
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #ifndef GLFW_INCLUDE_NONE
@@ -1947,12 +1948,16 @@ RendererAPI getRendererAPI() { return g_currentAPI; }
 // =====================================================
 namespace {
 #ifndef _WIN32
+enum class VkDialogStatus { NotFound, Cancelled, Ok };
+
 // v1.36.0 — общий безопасный запуск zenity/kdialog (без shell).
-// Возвращает строку из stdout; пусто = отмена или диалог не установлен.
-std::string runDialogCapture(const std::vector<std::string>& argv) {
+VkDialogStatus runDialogCapture(const std::vector<std::string>& argv, std::string& outPath) {
+    outPath.clear();
     const procutil::Result r = procutil::runCapture(argv);
-    if (!r.ok) return "";
-    return procutil::firstLine(r.output);
+    if (!r.launched || r.exitCode == 127) return VkDialogStatus::NotFound;
+    if (!r.ok) return VkDialogStatus::Cancelled;
+    outPath = procutil::firstLine(r.output);
+    return outPath.empty() ? VkDialogStatus::Cancelled : VkDialogStatus::Ok;
 }
 #endif
 } // namespace
@@ -1963,13 +1968,16 @@ std::string openFileDialogNative() {
 #else
     // v1.36.0 — без shell: argv передаётся execvp напрямую (см. proc_util.h).
     {
-        std::string s = runDialogCapture({
+        std::string s;
+        VkDialogStatus st = runDialogCapture({
             "zenity", "--file-selection",
             "--file-filter=STL files | *.stl *.STL",
-            "--title=Открыть модель STL"});
-        if (!s.empty()) return s;
-        s = runDialogCapture({"kdialog", "--getopenfilename", ".", "*.stl | STL Models"});
-        if (!s.empty()) return s;
+            "--title=Открыть модель STL"}, s);
+        if (st == VkDialogStatus::Ok) return s;
+        if (st == VkDialogStatus::Cancelled) return "";
+        st = runDialogCapture({"kdialog", "--getopenfilename", ".", "*.stl | STL Models"}, s);
+        if (st == VkDialogStatus::Ok) return s;
+        if (st == VkDialogStatus::Cancelled) return "";
     }
     std::cout << "[FileDialog] Нативный диалог не найден, проверяем ./models/ и ./bin/" << std::endl;
     const std::vector<std::string> candidates = {
@@ -1982,9 +1990,10 @@ std::string openFileDialogNative() {
             return c;
         }
     }
+    if (!isatty(STDIN_FILENO)) return "";
     std::cout << "Введите путь к файлу STL: ";
     std::string input;
-    std::getline(std::cin, input);
+    if (!std::getline(std::cin, input)) return "";
     return input;
 #endif
 }
@@ -1992,7 +2001,7 @@ std::string openFileDialogNative() {
 std::string saveFileDialogNative(const std::string& defaultName) {
 #ifdef _WIN32
     OPENFILENAMEA ofn;
-    char szFile[260] = {0};
+    char szFile[4096] = {0};
     // v1.36.0 — раньше длинное имя молча обрезалось strncpy(): диалог
     // открывался с усечённым именем, и файл сохранялся не под тем именем,
     // которое показала программа. Теперь это явный отказ с сообщением.
@@ -2004,24 +2013,29 @@ std::string saveFileDialogNative(const std::string& defaultName) {
     std::memcpy(szFile, defaultName.c_str(), defaultName.size() + 1);
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
+    HWND owner = (HWND)g_mainWin32Hwnd;
+    if (!owner) owner = GetActiveWindow();
+    ofn.hwndOwner = owner;
     ofn.lpstrFile = szFile;
-    ofn.nMaxFile = sizeof(szFile);
+    ofn.nMaxFile = (DWORD)sizeof(szFile);
     ofn.lpstrFilter = "All Files\0*.*\0";
     ofn.nFilterIndex = 1;
     ofn.lpstrFileTitle = NULL;
     ofn.nMaxFileTitle = 0;
     ofn.lpstrInitialDir = NULL;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
     if (GetSaveFileNameA(&ofn)) return std::string(szFile);
     return "";
 #else
     // v1.36.0 — было popen("... --filename='" + defaultName + "'"), то есть
     // апостроф в имени файла закрывал кавычки и превращал остаток пути в
     // команды оболочки. Теперь " --filename=<имя>" — ОДИН аргумент execvp.
-    const std::string s = runDialogCapture({
+    std::string s;
+    const VkDialogStatus st = runDialogCapture({
         "zenity", "--file-selection", "--save", "--confirm-overwrite",
-        "--filename=" + defaultName});
-    if (!s.empty()) return s;
+        "--filename=" + defaultName}, s);
+    if (st == VkDialogStatus::Ok) return s;
+    if (st == VkDialogStatus::Cancelled) return "";
     return defaultName;
 #endif
 }

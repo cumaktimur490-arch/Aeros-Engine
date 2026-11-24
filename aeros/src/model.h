@@ -15,4 +15,7 @@ bool loadModel(const std::string& path);
 // (тогда сцена не меняется).
 bool loadDemoBody(int kind);
 
+// Повторная загрузка текущей модели (STL или демо-тела) с новым разрешением сетки.
+bool reloadActiveModel();
+
 #endif // MODEL_H
