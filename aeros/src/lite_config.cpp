@@ -474,7 +474,7 @@ void applyDynamicQualityScaling(float currentFPS) {
     float target = g_isUltraLite ? ULTRA_LITE_TARGET_FPS : (g_isLiteMode ? LITE_TARGET_FPS : 60.0f);
     if (g_currentFPSAverage < target * 0.6f) {
         // FPS сильно просел — снижаем качество
-         else if (numStreamlines > 4) {
+        if (numStreamlines > 4) {
             int newSL = numStreamlines - 1;
             std::cout << "[Lite AutoQuality] FPS " << g_currentFPSAverage << " low — reducing streamlines " << numStreamlines << " -> " << newSL << std::endl;
             numStreamlines = newSL;
@@ -486,7 +486,6 @@ void applyDynamicQualityScaling(float currentFPS) {
         }
     } else if (g_currentFPSAverage > target * 1.2f && g_currentFPSAverage > target + 10) {
         // FPS выше цели — можно немного повысить качество (только если не Ultra-Lite)
-        
     }
 }
 

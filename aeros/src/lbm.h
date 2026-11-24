@@ -2,11 +2,26 @@
 // =====================================================
 // LBM — Lattice Boltzmann Method D3Q19
 // v1.9.0 Ultra Realistic+ — фотореалистичная аэродинамика + новые режимы
+// v1.39.0 Flagship Physics — MRT, Regularized, WALE SGS, BFL curved walls,
+//         Non-Equilibrium Extrapolation + Sponge Layer, 3D Cache-Blocked Tiling
 // =====================================================
 
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
+
+enum class LBMCollisionMode {
+    BGK = 0,          // Single-relaxation-time BGK
+    TRT = 1,          // Two-relaxation-time (magic Lambda = 3/16)
+    MRT = 2,          // d'Humieres 2002 orthogonal 19-moment MRT
+    Regularized = 3   // Latt-Chopard 2006 2nd-order Hermite regularized
+};
+
+enum class LBMTurbulenceModel {
+    None = 0,
+    Smagorinsky = 1,  // Smagorinsky-Lilly + Van Driest wall damping
+    WALE = 2          // Nicoud-Ducros 1999 Wall-Adapting Local Eddy-viscosity
+};
 
 struct LBMParams {
     bool enabled = false;
@@ -21,56 +36,35 @@ struct LBMParams {
     float convergenceThreshold = 1e-5f;
     bool useGround = false;
     float groundHeight = 0.0f;
-    // v1.36.2 — TRT: две частоты релаксации вместо одной (BGK). s+ = 1/tau
-    // отвечает за вязкость, s- выводится из «магического» параметра
-    // L = (1/s+ - 1/2)(1/s- - 1/2) = 3/16. На точном решении (Пуазейль)
-    // L2 = 0.071 % против 0.163 % у BGK; вязкость и дрейф массы те же.
-    // По умолчанию выключено: включение сдвигает установившиеся числа во всех
-    // эталонах, а они измеряются на коротком окне (см. docs/LBM-STABILITY...).
+    // v1.36.2 — TRT: две частоты релаксации вместо одной (BGK).
+    // По умолчанию выключено для совместимости с короткими эталонными тестами.
     bool useTRT = false;
     bool useConvectiveOutlet = true;
     float inletTurbulence = 0.02f;
-    // v1.34.0 — масштаб внешней области вокруг модели: 1.0 = 2L вверх по потоку,
-    // 4L вниз и 2.5L по бокам (стандарт для внешнего обтекания). Меньше 1 имеет
-    // смысл только для быстрых тестов и предпросмотра: блокировка потока растёт,
-    // и это честно пишется в журнал при инициализации.
-    // 1.0 — стандарт внешнего обтекания (2L вверх по потоку, 4L вниз, 2.5L по
-    // бокам). Но стоимость шага растёт как объём: на модели 48 ячеек по длине
-    // это ~7.7 млн ячеек и ~2 с на шаг даже на 2 потоках. Поэтому по умолчанию
-    // берётся четверть масштаба (0.5L/1L/0.6L) — след уже существует и виден,
-    // а расчёт остаётся интерактивным. Увеличивать — ползунком в панели LBM,
-    // с ростом перекрытия домена и времени шага.
     float domainPadding = 0.25f;
-    // v1.34.0 — как выбирается вязкость (tau):
-    //   true  — из физического числа Рейнольдса (Sutherland), с явным отчётом о
-    //           том, какой Re реально разрешает решётка;
-    //   false — ровно то, что задал пользователь ползунком tau.
-    // Раньше стоял «тихий откат»: если tau из физики оказывалась ниже 0.52,
-    // молча подставлялась пользовательская. В отчёте при этом оставался
-    // физический Re, а считался совсем другой — цифры не соответствовали расчёту.
     bool autoViscosity = true;
 
-    // v1.36.0 — ВНЕШНЯЯ ОБЪЁМНАЯ СИЛА и периодичность по X.
-    //
-    // Зачем это вообще нужно в решателе внешнего обтекания: эталонное течение
-    // Пуазейля задаётся не скоростью на входе, а постоянным градиентом давления.
-    // Без объёмной силы такой эталон в этом решателе невоспроизводим, то есть
-    // проверить вязкость/пристеночное трение было не на чем (сравнивать Cd
-    // с корреляцией — это проверка целого тракта, а не отдельной физики).
-    //
-    // Единицы — решёточные: a = F/rho, [F] = ячейка/шаг². Ноль по умолчанию,
-    // поэтому на обычные расчёты поле не влияет вообще (слагаемое не добавляется).
+    // v1.39.0 — Флагманская физика:
+    // collisionMode: 0=BGK, 1=TRT, 2=MRT (d'Humieres), 3=Regularized.
+    // Если collisionMode==0 и useTRT==true, автоматически используется TRT.
+    int collisionMode = 0;
+    // turbulenceModel: 0=выкл, 1=Smagorinsky+VanDriest, 2=WALE (Nicoud-Ducros).
+    int turbulenceModel = 1;
+    float waleC = 0.325f;
+    // Неравновесная экстраполяция (Guo 2002) на входе/выходе + свободное
+    // скольжение на боковых границах + поглощающий губчатый слой на выходе.
+    bool useFlagshipBoundaries = false;
+    int spongeLayers = 6;
+    float spongeStrength = 0.6f;
+    // Субвоксельная интерполяция криволинейных стенок (Bouzidi-Firdaouss-Lallemand)
+    // по полю расстояний g_distanceField (2-й порядок точности геометрии).
+    bool useCurvedBoundary = false;
+
+    // v1.36.0 — ВНЕШНЯЯ ОБЪЁМНАЯ СИЛА и периодичность по X/Z.
     float bodyForceX = 0.0f;
     float bodyForceY = 0.0f;
     float bodyForceZ = 0.0f;
-    // Периодичность по X: поток, выходящий за границу, входит с другой стороны
-    // (масса и импульс сохраняются). Внешние вход/выход при этом отключаются —
-    // иначе на одной и той же границе стояли бы два разных условия.
     bool periodicX = false;
-    // Периодичность по Z: боковые границы канала. Нужна вместе с periodicX для
-    // течения в канале: иначе на z-границах остаётся ветка «скопировать
-    // популяцию на месте», которая не является физическим условием и на
-    // длинном прогоне раскачивает поле.
     bool periodicZ = false;
 };
 
@@ -158,10 +152,28 @@ void resetLBM();
 void shutdownLBM();
 
 void stepLBMCPU(int steps = 1);
+// v1.39.0 — пакетный шаг для автономного пре-расчёта: если updateWorldFields == false,
+// мировые поля (lbmUxWorld..lbmPressure) и статистика сходимости обновляются
+// только при необходимости (экономит память и время в пакете).
+void stepLBMCPUEx(int steps, bool updateWorldFields);
 // v1.29.0 — forceSteps: сколько шагов решётки сделать. >=0 задаёт число шагов
 // явно (это путь фиксированного такта физики), -1 означает прежнее поведение —
 // по lbmParams.stepsPerFrame с адаптацией к длине кадра.
 void updateLBM(float deltaTime, int forceSteps = -1);
+
+// v1.39.0 — Флагманский пресет и диагностика
+void lbmApplyFlagshipPreset();
+LBMCollisionMode lbmEffectiveCollisionMode();
+LBMTurbulenceModel lbmEffectiveTurbulenceModel();
+const char* lbmCollisionModeName(LBMCollisionMode m);
+const char* lbmTurbulenceModelName(LBMTurbulenceModel m);
+float lbmMaxNuTRatio();
+float lbmMassDrift();
+float lbmEnstrophy();
+long long lbmFluidCellCount();
+float lbmGetResidualRho();
+float lbmGetResidualU();
+bool lbmVerifyMRTOrthogonality();
 
 // v1.29.0 — сколько ФИЗИЧЕСКИХ секунд занимает один шаг решётки LBM.
 // В решёточных единицах c = Δx/Δt = 1, поэтому Δt = Δx_физ / velScale, где

@@ -72,6 +72,7 @@ SOURCES=(
  "$SRCDIR/lite_config.cpp"
  "$SRCDIR/debug_log.cpp"
  "$SRCDIR/timelapse.cpp"
+ "$SRCDIR/phys_sim.cpp"
  "$SRCDIR/benchmark.cpp"
  "$SRCDIR/cuda_stub.cpp"
  "$SRCDIR/glad.c"

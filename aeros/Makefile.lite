@@ -53,6 +53,7 @@ SOURCES = \
  $(SRCDIR)/benchmark.cpp \
  $(SRCDIR)/debug_log.cpp \
  $(SRCDIR)/timelapse.cpp \
+ $(SRCDIR)/phys_sim.cpp \
  $(SRCDIR)/cuda_stub.cpp \
  $(SRCDIR)/glad.c \
  $(SRCDIR)/imgui/imgui.cpp \

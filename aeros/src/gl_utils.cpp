@@ -308,7 +308,6 @@ void cleanupGLResources() {
     safeDeleteVAO(groundVAO); safeDeleteBuf(groundVBO); safeDeleteBuf(groundEBO);
     safeDeleteVAO(sliceVAO); safeDeleteBuf(sliceVBO);
     safeDeleteVAO(gridVAO); safeDeleteBuf(gridVBO);
-    safeDeleteVAO(particleVAO); safeDeleteBuf(particleVBO_pos); safeDeleteBuf(particleVBO_col);
     safeDeleteVAO(streamlineVAO); safeDeleteBuf(streamlineVBO);
     safeDeleteVAO(liftDragVAO); safeDeleteBuf(liftDragVBO);
     obstacleIndexCount = 0;

@@ -173,6 +173,7 @@ set(SOURCES
  src/benchmark.cpp
  src/debug_log.cpp
  src/timelapse.cpp
+ src/phys_sim.cpp
  src/glad.c
  src/imgui/imgui.cpp
  src/imgui/imgui_draw.cpp

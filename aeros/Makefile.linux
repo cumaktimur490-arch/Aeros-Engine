@@ -74,7 +74,6 @@ SOURCES = \
  $(SRCDIR)/stl_loader.cpp \
  $(SRCDIR)/voxel_grid.cpp \
  $(SRCDIR)/flow_field.cpp \
- $(SRCDIR)/
  $(SRCDIR)/streamlines.cpp \
  $(SRCDIR)/forces.cpp \
  $(SRCDIR)/model.cpp \
@@ -93,6 +92,7 @@ SOURCES = \
  $(SRCDIR)/benchmark.cpp \
  $(SRCDIR)/debug_log.cpp \
  $(SRCDIR)/timelapse.cpp \
+ $(SRCDIR)/phys_sim.cpp \
  $(SRCDIR)/glad.c \
  $(SRCDIR)/imgui/imgui.cpp \
  $(SRCDIR)/imgui/imgui_draw.cpp \

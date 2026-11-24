@@ -74,6 +74,33 @@ static int   sFluidCells = 1;
 // на КАЖДОМ шаге — только ради множителя Ван Дристе; на сетке 1.4 млн ячеек
 // это 175 млн итераций за шаг.
 static std::vector<unsigned char> lbmWallDist;
+static std::vector<float> s_nuT;          // v1.39.0 — подсеточная вязкость (Smagorinsky/WALE) из градиентного прохода
+static std::vector<float> s_lbmSDF;       // v1.39.0 — SDF в ячейках LBM (для криволинейных границ BFL)
+static float s_maxNuTRatio = 0.0f;
+static float s_lastEnstrophy = 0.0f;
+static float s_lastResidualU = 0.0f;
+
+// v1.39.0 — 3D тайловая классификация для кэш-блокированной обработки без ветвлений
+static constexpr int TILE_X = 32;
+static constexpr int TILE_Y = 8;
+static constexpr int TILE_Z = 8;
+enum TileKind : unsigned char {
+    TILE_ALL_SOLID = 0,
+    TILE_FLUID_INTERIOR = 1,
+    TILE_MIXED = 2
+};
+struct LBMTile {
+    int x0, x1, y0, y1, z0, z1;
+    TileKind kind;
+};
+static std::vector<LBMTile> s_tiles;
+static int s_tileGrid[3] = {0, 0, 0};
+static int s_tileSpongeCfg = -1;
+static bool s_tileFlagshipCfg = false;
+static bool s_tilePeriodicXCfg = false;
+static bool s_tilePeriodicZCfg = false;
+static int s_tileAxisCfg = -1;
+static int s_tileSignCfg = 0;
 
 std::vector<float> lbmRho;
 std::vector<float> lbmUx, lbmUy, lbmUz;
@@ -181,6 +208,398 @@ inline float computeEquilibriumFast(int qi, float rho, float ux, float uy, float
     // нарушало сохранение массы и импульса (сумма feq переставала равняться rho),
     // из-за чего плотность дрейфовала, а решатель уходил в перезапуск.
     return feq;
+}
+
+// =====================================================
+// v1.39.0 — ФЛАГМАНСКОЕ ЯДРО LBM D3Q19: MRT (d'Humieres 2002),
+// Regularized (Latt-Chopard 2006), WALE (Nicoud-Ducros 1999) и 3D-тайлинг.
+// =====================================================
+static const float kMRT_M[19][19] = {
+    // 0: rho = 1
+    { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+    // 1: e = -30 + 19*|c|^2  (|c|^2=0:-30, 1:-11, 2:+8)
+    { -30, -11,-11,-11,-11,-11,-11, 8,8,8,8, 8,8,8,8, 8,8,8,8 },
+    // 2: eps = 12 (0), -4 (1), +1 (2)
+    { 12, -4,-4,-4,-4,-4,-4, 1,1,1,1, 1,1,1,1, 1,1,1,1 },
+    // 3: jx = cx
+    { 0, 1,-1, 0,0, 0,0, 1,-1,1,-1, 1,-1,1,-1, 0,0,0,0 },
+    // 4: qx = (-4 if |c|^2==1 else 1) * cx
+    { 0, -4,4, 0,0, 0,0, 1,-1,1,-1, 1,-1,1,-1, 0,0,0,0 },
+    // 5: jy = cy
+    { 0, 0,0, 1,-1, 0,0, 1,-1,-1,1, 0,0,0,0, 1,-1,1,-1 },
+    // 6: qy = (-4 if |c|^2==1 else 1) * cy
+    { 0, 0,0, -4,4, 0,0, 1,-1,-1,1, 0,0,0,0, 1,-1,1,-1 },
+    // 7: jz = cz
+    { 0, 0,0, 0,0, 1,-1, 0,0,0,0, 1,-1,-1,1, 1,-1,-1,1 },
+    // 8: qz = (-4 if |c|^2==1 else 1) * cz
+    { 0, 0,0, 0,0, -4,4, 0,0,0,0, 1,-1,-1,1, 1,-1,-1,1 },
+    // 9: 3*pxx = 3*cx^2 - |c|^2
+    { 0, 2,2, -1,-1, -1,-1, 1,1,1,1, 1,1,1,1, -2,-2,-2,-2 },
+    // 10: 3*pi_xx = (-2 if |c|^2==1 else 1) * (3*cx^2 - |c|^2)
+    { 0, -4,-4, 2,2, 2,2, 1,1,1,1, 1,1,1,1, -2,-2,-2,-2 },
+    // 11: pww = cy^2 - cz^2
+    { 0, 0,0, 1,1, -1,-1, 1,1,1,1, -1,-1,-1,-1, 0,0,0,0 },
+    // 12: pi_ww = (-2 if |c|^2==1 else 1) * (cy^2 - cz^2)
+    { 0, 0,0, -2,-2, 2,2, 1,1,1,1, -1,-1,-1,-1, 0,0,0,0 },
+    // 13: pxy = cx*cy
+    { 0, 0,0, 0,0, 0,0, 1,1,-1,-1, 0,0,0,0, 0,0,0,0 },
+    // 14: pyz = cy*cz
+    { 0, 0,0, 0,0, 0,0, 0,0,0,0, 0,0,0,0, 1,1,-1,-1 },
+    // 15: pxz = cx*cz
+    { 0, 0,0, 0,0, 0,0, 0,0,0,0, 1,1,-1,-1, 0,0,0,0 },
+    // 16: mx = (cy^2 - cz^2)*cx
+    { 0, 0,0, 0,0, 0,0, 1,-1,1,-1, -1,1,-1,1, 0,0,0,0 },
+    // 17: my = (cz^2 - cx^2)*cy
+    { 0, 0,0, 0,0, 0,0, -1,1,1,-1, 0,0,0,0, 1,-1,1,-1 },
+    // 18: mz = (cx^2 - cy^2)*cz
+    { 0, 0,0, 0,0, 0,0, 0,0,0,0, 1,-1,-1,1, -1,1,1,-1 }
+};
+static const float kMRT_invD[19] = {
+    1.0f/19.0f, 1.0f/2394.0f, 1.0f/252.0f,
+    1.0f/10.0f, 1.0f/40.0f, 1.0f/10.0f, 1.0f/40.0f, 1.0f/10.0f, 1.0f/40.0f,
+    1.0f/36.0f, 1.0f/72.0f, 1.0f/12.0f, 1.0f/24.0f,
+    1.0f/4.0f, 1.0f/4.0f, 1.0f/4.0f,
+    1.0f/8.0f, 1.0f/8.0f, 1.0f/8.0f
+};
+
+bool lbmVerifyMRTOrthogonality() {
+    for (int i = 0; i < 19; ++i) {
+        for (int j = 0; j < 19; ++j) {
+            double dot = 0.0;
+            for (int k = 0; k < 19; ++k) dot += (double)kMRT_M[i][k] * (double)kMRT_M[j][k];
+            if (i == j) {
+                double expected = 1.0 / (double)kMRT_invD[i];
+                if (std::fabs(dot - expected) > 1e-3) return false;
+            } else {
+                if (std::fabs(dot) > 1e-6) return false;
+            }
+        }
+    }
+    return true;
+}
+
+LBMCollisionMode lbmEffectiveCollisionMode() {
+    if (lbmParams.collisionMode == 2) return LBMCollisionMode::MRT;
+    if (lbmParams.collisionMode == 3) return LBMCollisionMode::Regularized;
+    if (lbmParams.collisionMode == 1 || (lbmParams.collisionMode == 0 && lbmParams.useTRT))
+        return LBMCollisionMode::TRT;
+    return LBMCollisionMode::BGK;
+}
+
+LBMTurbulenceModel lbmEffectiveTurbulenceModel() {
+    if (!lbmParams.useTurbulence || lbmParams.turbulenceModel == 0)
+        return LBMTurbulenceModel::None;
+    if (lbmParams.turbulenceModel == 2) return LBMTurbulenceModel::WALE;
+    return LBMTurbulenceModel::Smagorinsky;
+}
+
+const char* lbmCollisionModeName(LBMCollisionMode m) {
+    switch (m) {
+        case LBMCollisionMode::BGK: return "BGK (SRT)";
+        case LBMCollisionMode::TRT: return "TRT (Lambda=3/16)";
+        case LBMCollisionMode::MRT: return "MRT (d'Humieres D3Q19)";
+        case LBMCollisionMode::Regularized: return "Regularized (Hermite PR-LBM)";
+    }
+    return "BGK";
+}
+
+const char* lbmTurbulenceModelName(LBMTurbulenceModel m) {
+    switch (m) {
+        case LBMTurbulenceModel::None: return "Laminar (SGS off)";
+        case LBMTurbulenceModel::Smagorinsky: return "Smagorinsky + Van Driest";
+        case LBMTurbulenceModel::WALE: return "WALE (Nicoud-Ducros 1999)";
+    }
+    return "Smagorinsky";
+}
+
+void lbmApplyFlagshipPreset() {
+    lbmParams.enabled = true;
+    lbmParams.collisionMode = (int)LBMCollisionMode::MRT;
+    lbmParams.useTRT = false;
+    lbmParams.useTurbulence = true;
+    lbmParams.turbulenceModel = (int)LBMTurbulenceModel::WALE;
+    lbmParams.waleC = 0.325f;
+    lbmParams.useFlagshipBoundaries = true;
+    lbmParams.useConvectiveOutlet = true;
+    lbmParams.spongeLayers = 8;
+    lbmParams.spongeStrength = 0.65f;
+    lbmParams.useCurvedBoundary = true;
+}
+
+float lbmMaxNuTRatio() { return s_maxNuTRatio; }
+float lbmMassDrift() { return std::fabs(lbmAvgRho - 1.0f); }
+float lbmEnstrophy() { return s_lastEnstrophy; }
+long long lbmFluidCellCount() { return (long long)sFluidCells; }
+float lbmGetResidualRho() { return lbmResidualRho; }
+float lbmGetResidualU() { return s_lastResidualU; }
+
+static inline void collideCellMRT(float* __restrict cellF, float rho,
+                                  float ueX, float ueY, float ueZ, float ueSqr,
+                                  float invTau, bool hasForce, float Fx, float Fy, float Fz,
+                                  long long& negPops) {
+    float fLoc[19];
+    for (int qi = 0; qi < 19; ++qi) {
+        float fi = cellF[qi];
+        fLoc[qi] = std::isfinite(fi) ? fi : equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
+    }
+    float m[19];
+    for (int r = 0; r < 19; ++r) {
+        float acc = 0.0f;
+        for (int qi = 0; qi < 19; ++qi) acc += kMRT_M[r][qi] * fLoc[qi];
+        m[r] = acc;
+    }
+    const float invRho = (rho > 1e-6f) ? (1.0f / rho) : 1.0f;
+    const float jx = rho * ueX, jy = rho * ueY, jz = rho * ueZ;
+    const float j2 = jx*jx + jy*jy + jz*jz;
+    float meq[19];
+    meq[0]  = rho;
+    meq[1]  = -11.0f * rho + 19.0f * j2 * invRho;
+    meq[2]  =   3.0f * rho - 5.5f  * j2 * invRho;
+    meq[3]  = jx;
+    meq[4]  = -(2.0f/3.0f) * jx;
+    meq[5]  = jy;
+    meq[6]  = -(2.0f/3.0f) * jy;
+    meq[7]  = jz;
+    meq[8]  = -(2.0f/3.0f) * jz;
+    meq[9]  = (2.0f*jx*jx - jy*jy - jz*jz) * invRho;
+    meq[10] = -0.5f * meq[9];
+    meq[11] = (jy*jy - jz*jz) * invRho;
+    meq[12] = -0.5f * meq[11];
+    meq[13] = (jx * jy) * invRho;
+    meq[14] = (jy * jz) * invRho;
+    meq[15] = (jx * jz) * invRho;
+    meq[16] = 0.0f;
+    meq[17] = 0.0f;
+    meq[18] = 0.0f;
+
+    const float mm = invTau - 0.5f;
+    const float denom = (std::fabs(mm) > 1e-6f) ? (0.1875f / mm + 0.5f) : 1.0f;
+    const float sQ = 1.0f / std::max(0.05f, denom);
+    const float s[19] = {
+        0.0f, 1.19f, 1.40f,
+        0.0f, sQ, 0.0f, sQ, 0.0f, sQ,
+        invTau, 1.40f, invTau, 1.40f,
+        invTau, invTau, invTau,
+        1.98f, 1.98f, 1.98f
+    };
+
+    float fm[19];
+    if (hasForce) {
+        float src[19];
+        for (int qi = 0; qi < 19; ++qi) {
+            const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
+            const float cu = cx*ueX + cy*ueY + cz*ueZ;
+            src[qi] = 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                      (cy - ueY + 3.0f*cu*cy) * Fy +
+                                      (cz - ueZ + 3.0f*cu*cz) * Fz);
+        }
+        for (int r = 0; r < 19; ++r) {
+            float acc = 0.0f;
+            for (int qi = 0; qi < 19; ++qi) acc += kMRT_M[r][qi] * src[qi];
+            fm[r] = acc;
+        }
+    }
+
+    float mPost[19];
+    for (int r = 0; r < 19; ++r) {
+        float val = m[r] - s[r] * (m[r] - meq[r]);
+        if (hasForce) val += (1.0f - 0.5f * s[r]) * fm[r];
+        mPost[r] = val;
+    }
+
+    for (int qi = 0; qi < 19; ++qi) {
+        float sum = 0.0f;
+        for (int r = 0; r < 19; ++r) sum += kMRT_M[r][qi] * kMRT_invD[r] * mPost[r];
+        if (!std::isfinite(sum)) sum = equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
+        if (sum < 0.0f) negPops++;
+        cellF[qi] = sum;
+    }
+}
+
+static inline void collideCellRegularized(float* __restrict cellF, float rho,
+                                          float ueX, float ueY, float ueZ, float ueSqr,
+                                          float invTau, bool hasForce, float Fx, float Fy, float Fz,
+                                          long long& negPops) {
+    float feq[19];
+    float Pxx = 0.0f, Pyy = 0.0f, Pzz = 0.0f, Pxy = 0.0f, Pxz = 0.0f, Pyz = 0.0f;
+    for (int qi = 0; qi < 19; ++qi) {
+        float eq = equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
+        float fi = cellF[qi];
+        if (!std::isfinite(fi)) fi = eq;
+        float neq = fi - eq;
+        if (hasForce) {
+            const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
+            const float cu = cx*ueX + cy*ueY + cz*ueZ;
+            float src = 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                        (cy - ueY + 3.0f*cu*cy) * Fy +
+                                        (cz - ueZ + 3.0f*cu*cz) * Fz);
+            neq += 0.5f * src;
+        }
+        feq[qi] = eq;
+        const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
+        Pxx += cx * cx * neq;
+        Pyy += cy * cy * neq;
+        Pzz += cz * cz * neq;
+        Pxy += cx * cy * neq;
+        Pxz += cx * cz * neq;
+        Pyz += cy * cz * neq;
+    }
+    const float oneMinusOmega = 1.0f - invTau;
+    const float guoK = 1.0f - 0.5f * invTau;
+    for (int qi = 0; qi < 19; ++qi) {
+        const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
+        const float qPi = (cx*cx - cs2)*Pxx + (cy*cy - cs2)*Pyy + (cz*cz - cs2)*Pzz
+                        + 2.0f*(cx*cy*Pxy + cx*cz*Pxz + cy*cz*Pyz);
+        const float f1 = 4.5f * w[qi] * qPi;
+        float fNew = feq[qi] + oneMinusOmega * f1;
+        if (hasForce) {
+            const float cu = cx*ueX + cy*ueY + cz*ueZ;
+            const float src = 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                              (cy - ueY + 3.0f*cu*cy) * Fy +
+                                              (cz - ueZ + 3.0f*cu*cz) * Fz);
+            fNew += guoK * src;
+        }
+        if (!std::isfinite(fNew)) fNew = feq[qi];
+        if (fNew < 0.0f) negPops++;
+        cellF[qi] = fNew;
+    }
+}
+
+static inline void collideCellBGKOrTRT(float* __restrict cellF, float rho,
+                                        float ueX, float ueY, float ueZ, float ueSqr,
+                                        float invTau, bool trt, float sMinus,
+                                        bool hasForce, float Fx, float Fy, float Fz,
+                                        long long& negPops) {
+    for (int qi = 0; qi < 19; ++qi) {
+        const int qo = opp[qi];
+        if (qo < qi) continue;
+        float feq = equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
+        float fi = cellF[qi];
+        if (!std::isfinite(fi)) fi = feq;
+        float srcI = 0.0f;
+        if (hasForce) {
+            const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
+            const float cu = cx*ueX + cy*ueY + cz*ueZ;
+            srcI = 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                   (cy - ueY + 3.0f*cu*cy) * Fy +
+                                   (cz - ueZ + 3.0f*cu*cz) * Fz);
+        }
+        if (qo == qi) {
+            float fNew = fi - (fi - feq) * invTau + (1.0f - 0.5f*invTau) * srcI;
+            if (!std::isfinite(fNew)) fNew = feq;
+            if (fNew < 0.0f) negPops++;
+            cellF[qi] = fNew;
+            continue;
+        }
+        float feqO = equilibriumKernel(qo, rho, ueX, ueY, ueZ, ueSqr);
+        float fo = cellF[qo];
+        if (!std::isfinite(fo)) fo = feqO;
+        float srcO = 0.0f;
+        if (hasForce) {
+            const float cx = (float)c[qo][0], cy = (float)c[qo][1], cz = (float)c[qo][2];
+            const float cu = cx*ueX + cy*ueY + cz*ueZ;
+            srcO = 3.0f * w[qo] * ((cx - ueX + 3.0f*cu*cx) * Fx +
+                                   (cy - ueY + 3.0f*cu*cy) * Fy +
+                                   (cz - ueZ + 3.0f*cu*cz) * Fz);
+        }
+        const float srcP = 0.5f*(srcI + srcO);
+        const float srcM = 0.5f*(srcI - srcO);
+        const float fp = 0.5f*(fi + fo), fm = 0.5f*(fi - fo);
+        const float ep = 0.5f*(feq + feqO), em = 0.5f*(feq - feqO);
+        const float fpN = fp - invTau*(fp - ep);
+        const float fmN = trt ? (fm - sMinus*(fm - em)) : (fm - invTau*(fm - em));
+        float newI = fpN + fmN + (1.0f - 0.5f*invTau)*srcP + (1.0f - 0.5f*sMinus)*srcM;
+        float newO = fpN - fmN + (1.0f - 0.5f*invTau)*srcP - (1.0f - 0.5f*sMinus)*srcM;
+        if (!std::isfinite(newI)) newI = feq;
+        if (!std::isfinite(newO)) newO = feqO;
+        if (newI < 0.0f) negPops++;
+        if (newO < 0.0f) negPops++;
+        cellF[qi] = newI;
+        cellF[qo] = newO;
+    }
+}
+
+static void computeFlowAxis(int& axis, int& sign, glm::vec3& dirNorm);
+
+static void rebuildLBMTiles() {
+    s_tiles.clear();
+    if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return;
+    int flowAxis, flowSign;
+    glm::vec3 flowDir;
+    computeFlowAxis(flowAxis, flowSign, flowDir);
+    const int Nx = lbmNx, Ny = lbmNy, Nz = lbmNz;
+    const int spongeN = (lbmParams.useFlagshipBoundaries && !lbmParams.periodicX)
+                      ? std::max(0, std::min(lbmParams.spongeLayers, Nx / 3)) : 0;
+
+    s_tileGrid[0] = (Nx + TILE_X - 1) / TILE_X;
+    s_tileGrid[1] = (Ny + TILE_Y - 1) / TILE_Y;
+    s_tileGrid[2] = (Nz + TILE_Z - 1) / TILE_Z;
+    s_tiles.reserve((size_t)s_tileGrid[0] * s_tileGrid[1] * s_tileGrid[2]);
+
+    const char* solidPtr = lbmIsSolid.data();
+    const char* groundPtr = lbmIsGround.data();
+
+    for (int tz = 0; tz < Nz; tz += TILE_Z) {
+        const int z1 = std::min(Nz, tz + TILE_Z);
+        for (int ty = 0; ty < Ny; ty += TILE_Y) {
+            const int y1 = std::min(Ny, ty + TILE_Y);
+            for (int tx = 0; tx < Nx; tx += TILE_X) {
+                const int x1 = std::min(Nx, tx + TILE_X);
+                bool anyFluid = false;
+                bool anySolidOrHalo = false;
+                bool touchesBoundary = (tx == 0 || x1 == Nx || ty == 0 || y1 == Ny || tz == 0 || z1 == Nz);
+                if (!touchesBoundary && spongeN > 0) {
+                    if (flowAxis == 0) {
+                        if (flowSign > 0 && x1 > Nx - 1 - spongeN) touchesBoundary = true;
+                        if (flowSign < 0 && tx < 1 + spongeN) touchesBoundary = true;
+                    } else if (flowAxis == 1) {
+                        if (flowSign > 0 && y1 > Ny - 1 - spongeN) touchesBoundary = true;
+                        if (flowSign < 0 && ty < 1 + spongeN) touchesBoundary = true;
+                    } else {
+                        if (flowSign > 0 && z1 > Nz - 1 - spongeN) touchesBoundary = true;
+                        if (flowSign < 0 && tz < 1 + spongeN) touchesBoundary = true;
+                    }
+                }
+                for (int z = tz; z < z1; ++z) {
+                    for (int y = ty; y < y1; ++y) {
+                        const int row = (z*Ny + y)*Nx;
+                        for (int x = tx; x < x1; ++x) {
+                            const int c0 = row + x;
+                            if (solidPtr[c0] || groundPtr[c0]) anySolidOrHalo = true;
+                            else anyFluid = true;
+                        }
+                    }
+                }
+                if (anyFluid && !touchesBoundary && !anySolidOrHalo) {
+                    // Проверяем 1-слойное гало вокруг тайла: чтобы внутренний
+                    // проход и перенос не знали слова "граница"
+                    const int hx0 = tx - 1, hx1 = x1;
+                    const int hy0 = ty - 1, hy1 = y1;
+                    const int hz0 = tz - 1, hz1 = z1;
+                    for (int z = hz0; z <= hz1 && !anySolidOrHalo; ++z)
+                        for (int y = hy0; y <= hy1 && !anySolidOrHalo; ++y) {
+                            const int row = (z*Ny + y)*Nx;
+                            for (int x = hx0; x <= hx1; ++x) {
+                                if (solidPtr[row + x] || groundPtr[row + x]) {
+                                    anySolidOrHalo = true;
+                                    break;
+                                }
+                            }
+                        }
+                }
+                TileKind kind = TILE_MIXED;
+                if (!anyFluid) kind = TILE_ALL_SOLID;
+                else if (!touchesBoundary && !anySolidOrHalo) kind = TILE_FLUID_INTERIOR;
+                s_tiles.push_back(LBMTile{tx, x1, ty, y1, tz, z1, kind});
+            }
+        }
+    }
+    s_tileSpongeCfg = lbmParams.spongeLayers;
+    s_tileFlagshipCfg = lbmParams.useFlagshipBoundaries;
+    s_tilePeriodicXCfg = lbmParams.periodicX;
+    s_tilePeriodicZCfg = lbmParams.periodicZ;
+    s_tileAxisCfg = flowAxis;
+    s_tileSignCfg = flowSign;
 }
 
 static void computeInletVelocityLB(float& ux, float& uy, float& uz) {
@@ -578,6 +997,8 @@ void initLBM() {
         lbmStrainMag.assign(total, 0.0f);
         lbmIsSolid.assign(total, 0);
         lbmIsGround.assign(total, 0);
+        s_nuT.assign(total, 0.0f);
+        s_lbmSDF.assign(total, 5.0f);
         f.assign(total*Q, 0.0f);
         fNext.assign(total*Q, 0.0f);
     } catch (const std::bad_alloc& e) {
@@ -616,6 +1037,10 @@ void initLBM() {
                     int gIdx = (gz*g_voxNy + gy)*g_voxNx + gx;
                     if (gIdx < 0 || gIdx >= voxTotal) continue;
                     lbmIsSolid[(z*lbmNy + y)*lbmNx + x] = (vox[gIdx] == 1) ? 1 : 0;
+                    if (gIdx < (int)g_distanceField.size()) {
+                        float d = g_distanceField[gIdx];
+                        s_lbmSDF[(z*lbmNy + y)*lbmNx + x] = std::isfinite(d) ? d : ((vox[gIdx] == 1) ? -0.5f : 0.5f);
+                    }
                 }
             }
         }
@@ -854,6 +1279,10 @@ void initLBM() {
 
     lbmReynolds = RePhys;
     aeroReNumber = lbmReynolds;
+    s_maxNuTRatio = 0.0f;
+    s_lastEnstrophy = 0.0f;
+    s_lastResidualU = 0.0f;
+    rebuildLBMTiles();
 
     auto t1 = std::chrono::high_resolution_clock::now();
     lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
@@ -898,6 +1327,12 @@ void shutdownLBM() {
     thermalShutdown();
     lbmWallDist.clear();
     lbmWallDist.shrink_to_fit();
+    s_nuT.clear();
+    s_nuT.shrink_to_fit();
+    s_lbmSDF.clear();
+    s_lbmSDF.shrink_to_fit();
+    s_tiles.clear();
+    s_tiles.shrink_to_fit();
     lbmInitialized = false;
     sHasBody = false;
     lbmCurrentStep = 0;
@@ -905,6 +1340,10 @@ void shutdownLBM() {
 }
 
 void stepLBMCPU(int steps) {
+    stepLBMCPUEx(steps, true);
+}
+
+void stepLBMCPUEx(int steps, bool updateWorldFields) {
     if (!lbmInitialized) return;
     if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return;
     size_t totalSz = (size_t)lbmNx * (size_t)lbmNy * (size_t)lbmNz;
@@ -912,12 +1351,14 @@ void stepLBMCPU(int steps) {
     int total = (int)totalSz;
     if (total != (int)lbmRho.size()) return;
     if (f.size() != totalSz * (size_t)Q) return;
+    if ((int)s_nuT.size() != total) s_nuT.assign(total, 0.0f);
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
     float tau0 = lbmParams.tau;
-    if (!std::isfinite(tau0) || tau0 < 0.51f) tau0 = 0.55f;
+    if (!std::isfinite(tau0) || tau0 < 0.501f) tau0 = 0.55f;
     if (tau0 > 1.5f) tau0 = 1.5f;
+    const float nu0 = (tau0 - 0.5f) * cs2;
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
     float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
@@ -927,387 +1368,544 @@ void stepLBMCPU(int steps) {
     glm::vec3 flowDir;
     computeFlowAxis(flowAxis, flowSign, flowDir);
 
-    // v1.27.0 — масштаб скорости (решёточные -> м/с) и его квадрат: нужны, чтобы
-    // подсеточная кинетическая энергия была в м²/с², а не в безразмерных единицах.
+    if (s_tiles.empty() ||
+        s_tileSpongeCfg != lbmParams.spongeLayers ||
+        s_tileFlagshipCfg != lbmParams.useFlagshipBoundaries ||
+        s_tilePeriodicXCfg != lbmParams.periodicX ||
+        s_tilePeriodicZCfg != lbmParams.periodicZ ||
+        s_tileAxisCfg != flowAxis ||
+        s_tileSignCfg != flowSign) {
+        rebuildLBMTiles();
+    }
+
     float velScale = flowSpeed / U0mag;
     if (!std::isfinite(velScale) || velScale > 1000.0f) velScale = 20.0f;
     if (velScale < 0.01f) velScale = 0.01f;
     const float velScale2 = velScale * velScale;
 
-    float* fPtr = f.data();
-    float* fNextPtr = fNext.data();
-    float* rhoPtr = lbmRho.data();
-    float* uxPtr = lbmUx.data();
-    float* uyPtr = lbmUy.data();
-    float* uzPtr = lbmUz.data();
-    float* tkePtr = lbmTKEField.data();
-    float* strainPtr = lbmStrainMag.data();
-    char* solidPtr = lbmIsSolid.data();
-    char* groundPtr = lbmIsGround.data();
+    float* __restrict fPtr = f.data();
+    float* __restrict fNextPtr = fNext.data();
+    float* __restrict rhoPtr = lbmRho.data();
+    float* __restrict uxPtr = lbmUx.data();
+    float* __restrict uyPtr = lbmUy.data();
+    float* __restrict uzPtr = lbmUz.data();
+    float* __restrict tkePtr = lbmTKEField.data();
+    float* __restrict strainPtr = lbmStrainMag.data();
+    float* __restrict nuTPtr = s_nuT.data();
+    const char* __restrict solidPtr = lbmIsSolid.data();
+    const char* __restrict groundPtr = lbmIsGround.data();
+    const unsigned char* __restrict wallDistPtr = lbmWallDist.data();
+    const float* __restrict sdfPtr = s_lbmSDF.data();
 
     const int Nx = lbmNx, Ny = lbmNy, Nz = lbmNz;
     const int strideY = Nx;
     const int strideZ = Nx*Ny;
+    const int numTiles = (int)s_tiles.size();
+    const LBMCollisionMode colMode = lbmEffectiveCollisionMode();
+    const LBMTurbulenceModel turbMode = lbmEffectiveTurbulenceModel();
+    const bool flagshipBC = lbmParams.useFlagshipBoundaries;
+    const bool useBFL = lbmParams.useCurvedBoundary && ((int)s_lbmSDF.size() == total);
+    const int spongeN = (flagshipBC && !lbmParams.periodicX)
+                      ? std::max(0, std::min(lbmParams.spongeLayers, Nx / 3)) : 0;
+    const float spongeStr = std::max(0.0f, std::min(lbmParams.spongeStrength, 2.0f));
+    const float CsCfg = glm::clamp(std::isfinite(lbmParams.smagorinskyC) ? lbmParams.smagorinskyC : 0.12f, 0.0f, 0.3f);
+    const float CwCfg = glm::clamp(std::isfinite(lbmParams.waleC) ? lbmParams.waleC : 0.325f, 0.0f, 0.6f);
+
+    // Таблицы зеркального отражения по одной оси (для свободного скольжения на боковых стенках)
+    static const int reflY[19] = { 0, 1,2, 4,3, 5,6, 9,10,7,8, 11,12,13,14, 17,18,15,16 };
+    static const int reflZ[19] = { 0, 1,2, 3,4, 6,5, 7,8,9,10, 13,14,11,12, 17,18,15,16 };
+
+    int offQ[19];
+    for (int qi = 0; qi < Q; ++qi)
+        offQ[qi] = -(c[qi][2]*Ny*Nx) - c[qi][1]*Nx - c[qi][0];
 
     static float prevKinetic = 0.0f;
     bool hasDiverged = false;
 
     for (int s = 0; s < steps; ++s) {
         float maxVelGlobal = 0.0f;
+        float maxNuTLocal = 0.0f;
         double avgRhoAcc = 0.0;
         double kineticAcc = 0.0;
         double tkeAcc = 0.0;
+        double enstrophyAcc = 0.0;
         int nanCount = 0;
-        // v1.27.0 — счётчики «грязных» данных. Раньше такие значения молча
-        // подменялись, и потеря устойчивости была не видна ни в UI, ни в отчёте.
-        long long negPops = 0;      // популяций ушло в отрицательные значения
-        long long badPops = 0;      // значений вне физического диапазона / NaN
-        // Явная диагностика вместо тихой подмены: сколько ячеек вышло за диапазон
-        // плотности, который раньше молча обрезался в computeEquilibriumFast,
-        // сколько плотностей оказалось неконечными и сколько раз сработал
-        // ограничитель |u| < 0.3.
+        long long negPops = 0;
+        long long badPops = 0;
         long long rhoOut = 0, rhoNonFin = 0, uLim = 0;
 
-        // --- Подсеточная модель: |S| по скорости ПРЕДЫДУЩЕГО шага -----------
-        //
-        // v1.38.1 — расчёт вынесен из прохода столкновения (см. комментарий
-        // там). Здесь читаются только поля скорости, которые ещё никто не
-        // перезаписывает, поэтому результат не зависит ни от числа потоков, ни
-        // от расписания OpenMP. Проход идёт только при включённой модели
-        // Смагоринского: без неё strainPtr обнуляется в столкновении, как
-        // и раньше.
-        if (lbmParams.useTurbulence) {
+        // 1) Предварительный проход градиентов скорости: WALE / Smagorinsky + Enstrophy
+        // Читает только lbmUx/Uy/Uz предыдущего шага -> детерминирован при любом числе потоков!
+        if (turbMode != LBMTurbulenceModel::None) {
             #ifdef _OPENMP
-            #pragma omp parallel for
+            #pragma omp parallel reduction(+:enstrophyAcc)
+            {
+            float tMaxNuT = 0.0f;
+            #pragma omp for schedule(dynamic, 4) nowait
+            #else
+            float tMaxNuT = 0.0f;
             #endif
-            for (int z = 0; z < Nz; ++z) {
-                for (int y = 0; y < Ny; ++y) {
-                    const int rowBase = (z*Ny + y)*Nx;
-                    for (int x = 0; x < Nx; ++x) {
-                        const int cell = rowBase + x;
-                        if (solidPtr[cell] || groundPtr[cell]) { strainPtr[cell] = 0.0f; continue; }
-                        bool lesInlet = false, lesOutlet = false;
-                        if (flowAxis == 0) {
-                            lesInlet  = (flowSign > 0) ? (x == 0)     : (x == Nx-1);
-                            lesOutlet = (flowSign > 0) ? (x == Nx-1)  : (x == 0);
-                        } else if (flowAxis == 1) {
-                            lesInlet  = (flowSign > 0) ? (y == 0)     : (y == Ny-1);
-                            lesOutlet = (flowSign > 0) ? (y == Ny-1)  : (y == 0);
-                        } else {
-                            lesInlet  = (flowSign > 0) ? (z == 0)     : (z == Nz-1);
-                            lesOutlet = (flowSign > 0) ? (z == Nz-1)  : (z == 0);
-                        }
-                        if (lesInlet || lesOutlet ||
-                            !(x > 0 && x < Nx-1 && y > 0 && y < Ny-1 && z > 0 && z < Nz-1)) {
-                            strainPtr[cell] = 0.0f;
-                            continue;
-                        }
-                        int xm = cell - 1, xp = cell + 1;
-                        int ym = cell - strideY, yp = cell + strideY;
-                        int zm = cell - strideZ, zp = cell + strideZ;
-                        // Условия те же, что были в столкновении: шесть соседей
-                        // по осям должны быть не твёрдыми, иначе центральная
-                        // разность не определена.
-                        if (xm < 0 || xp >= total || ym < 0 || yp >= total || zm < 0 || zp >= total ||
-                            solidPtr[xm] || solidPtr[xp] || solidPtr[ym] ||
-                            solidPtr[yp] || solidPtr[zm] || solidPtr[zp]) {
-                            strainPtr[cell] = 0.0f;
-                            continue;
-                        }
-                        float dux_dx = (uxPtr[xp] - uxPtr[xm]) * 0.5f;
-                        float duy_dy = (uyPtr[yp] - uyPtr[ym]) * 0.5f;
-                        float duz_dz = (uzPtr[zp] - uzPtr[zm]) * 0.5f;
-                        float dux_dy = (uxPtr[yp] - uxPtr[ym]) * 0.5f;
-                        float dux_dz = (uxPtr[zp] - uxPtr[zm]) * 0.5f;
-                        float duy_dx = (uyPtr[xp] - uyPtr[xm]) * 0.5f;
-                        float duy_dz = (uyPtr[zp] - uyPtr[zm]) * 0.5f;
-                        float duz_dx = (uzPtr[xp] - uzPtr[xm]) * 0.5f;
-                        float duz_dy = (uzPtr[yp] - uzPtr[ym]) * 0.5f;
+            for (int ti = 0; ti < numTiles; ++ti) {
+                const LBMTile& tile = s_tiles[ti];
+                if (tile.kind == TILE_ALL_SOLID) continue;
 
-                        float Sxx = dux_dx, Syy = duy_dy, Szz = duz_dz;
-                        float Sxy = 0.5f*(dux_dy + duy_dx);
-                        float Sxz = 0.5f*(dux_dz + duz_dx);
-                        float Syz = 0.5f*(duy_dz + duz_dy);
-                        float S2 = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0f*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
-                        strainPtr[cell] = std::sqrt(2.0f*S2);
+                if (tile.kind == TILE_FLUID_INTERIOR) {
+                    for (int z = tile.z0; z < tile.z1; ++z) {
+                        for (int y = tile.y0; y < tile.y1; ++y) {
+                            const int rowBase = (z*Ny + y)*Nx;
+                            for (int x = tile.x0; x < tile.x1; ++x) {
+                                const int cell = rowBase + x;
+                                const int xm = cell - 1, xp = cell + 1;
+                                const int ym = cell - strideY, yp = cell + strideY;
+                                const int zm = cell - strideZ, zp = cell + strideZ;
+
+                                const float dux_dx = (uxPtr[xp] - uxPtr[xm]) * 0.5f;
+                                const float duy_dy = (uyPtr[yp] - uyPtr[ym]) * 0.5f;
+                                const float duz_dz = (uzPtr[zp] - uzPtr[zm]) * 0.5f;
+                                const float dux_dy = (uxPtr[yp] - uxPtr[ym]) * 0.5f;
+                                const float dux_dz = (uxPtr[zp] - uxPtr[zm]) * 0.5f;
+                                const float duy_dx = (uyPtr[xp] - uyPtr[xm]) * 0.5f;
+                                const float duy_dz = (uyPtr[zp] - uyPtr[zm]) * 0.5f;
+                                const float duz_dx = (uzPtr[xp] - uzPtr[xm]) * 0.5f;
+                                const float duz_dy = (uzPtr[yp] - uzPtr[ym]) * 0.5f;
+
+                                const float wx = duz_dy - duy_dz;
+                                const float wy = dux_dz - duz_dx;
+                                const float wz = duy_dx - dux_dy;
+                                enstrophyAcc += (double)(wx*wx + wy*wy + wz*wz);
+
+                                const float Sxx = dux_dx, Syy = duy_dy, Szz = duz_dz;
+                                const float Sxy = 0.5f*(dux_dy + duy_dx);
+                                const float Sxz = 0.5f*(dux_dz + duz_dx);
+                                const float Syz = 0.5f*(duy_dz + duz_dy);
+                                const float S2 = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0f*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+                                const float sMag = std::sqrt(2.0f * S2);
+                                strainPtr[cell] = sMag;
+
+                                float nut = 0.0f;
+                                if (turbMode == LBMTurbulenceModel::WALE) {
+                                    const float gxx2 = dux_dx*dux_dx + dux_dy*duy_dx + dux_dz*duz_dx;
+                                    const float gyy2 = duy_dx*dux_dy + duy_dy*duy_dy + duy_dz*duz_dy;
+                                    const float gzz2 = duz_dx*dux_dz + duz_dy*duy_dz + duz_dz*duz_dz;
+                                    const float gxy2 = dux_dx*dux_dy + dux_dy*duy_dy + dux_dz*duz_dy;
+                                    const float gyx2 = duy_dx*dux_dx + duy_dy*duy_dx + duy_dz*duz_dx;
+                                    const float gxz2 = dux_dx*dux_dz + dux_dy*duy_dz + dux_dz*duz_dz;
+                                    const float gzx2 = duz_dx*dux_dx + duz_dy*duy_dx + duz_dz*duz_dx;
+                                    const float gyz2 = duy_dx*dux_dz + duy_dy*duy_dz + duy_dz*duz_dz;
+                                    const float gzy2 = duz_dx*dux_dy + duz_dy*duy_dy + duz_dz*duz_dy;
+                                    const float tr3 = (gxx2 + gyy2 + gzz2) * (1.0f / 3.0f);
+                                    const float Sdxx = gxx2 - tr3, Sdyy = gyy2 - tr3, Sdzz = gzz2 - tr3;
+                                    const float Sdxy = 0.5f*(gxy2 + gyx2);
+                                    const float Sdxz = 0.5f*(gxz2 + gzx2);
+                                    const float Sdyz = 0.5f*(gyz2 + gzy2);
+                                    const float Sd2 = Sdxx*Sdxx + Sdyy*Sdyy + Sdzz*Sdzz + 2.0f*(Sdxy*Sdxy + Sdxz*Sdxz + Sdyz*Sdyz);
+                                    if (Sd2 > 1e-18f) {
+                                        const float num = std::pow(Sd2, 1.5f);
+                                        const float den = std::pow(S2, 2.5f) + std::pow(Sd2, 1.25f) + 1e-24f;
+                                        nut = (CwCfg * CwCfg) * (num / den);
+                                    }
+                                } else {
+                                    float Cs = CsCfg;
+                                    const int wd = lbmWallDist.empty() ? 6 : (int)wallDistPtr[cell];
+                                    if (wd <= 5) Cs *= kVanDriest[wd];
+                                    nut = Cs * Cs * sMag;
+                                }
+                                if (!std::isfinite(nut) || nut < 0.0f) nut = 0.0f;
+                                if (nut > 0.35f) nut = 0.35f;
+                                nuTPtr[cell] = nut;
+                                if (nut > tMaxNuT) tMaxNuT = nut;
+                            }
+                        }
+                    }
+                } else {
+                    for (int z = tile.z0; z < tile.z1; ++z) {
+                        for (int y = tile.y0; y < tile.y1; ++y) {
+                            const int rowBase = (z*Ny + y)*Nx;
+                            for (int x = tile.x0; x < tile.x1; ++x) {
+                                const int cell = rowBase + x;
+                                if (solidPtr[cell] || groundPtr[cell]) {
+                                    strainPtr[cell] = 0.0f; nuTPtr[cell] = 0.0f; continue;
+                                }
+                                bool lesInlet = false, lesOutlet = false;
+                                if (flowAxis == 0) {
+                                    lesInlet  = (flowSign > 0) ? (x == 0)     : (x == Nx-1);
+                                    lesOutlet = (flowSign > 0) ? (x == Nx-1)  : (x == 0);
+                                } else if (flowAxis == 1) {
+                                    lesInlet  = (flowSign > 0) ? (y == 0)     : (y == Ny-1);
+                                    lesOutlet = (flowSign > 0) ? (y == Ny-1)  : (y == 0);
+                                } else {
+                                    lesInlet  = (flowSign > 0) ? (z == 0)     : (z == Nz-1);
+                                    lesOutlet = (flowSign > 0) ? (z == Nz-1)  : (z == 0);
+                                }
+                                if (lesInlet || lesOutlet ||
+                                    !(x > 0 && x < Nx-1 && y > 0 && y < Ny-1 && z > 0 && z < Nz-1)) {
+                                    strainPtr[cell] = 0.0f; nuTPtr[cell] = 0.0f; continue;
+                                }
+                                const int xm = cell - 1, xp = cell + 1;
+                                const int ym = cell - strideY, yp = cell + strideY;
+                                const int zm = cell - strideZ, zp = cell + strideZ;
+                                if (solidPtr[xm] || solidPtr[xp] || solidPtr[ym] ||
+                                    solidPtr[yp] || solidPtr[zm] || solidPtr[zp] ||
+                                    groundPtr[xm] || groundPtr[xp] || groundPtr[ym] ||
+                                    groundPtr[yp] || groundPtr[zm] || groundPtr[zp]) {
+                                    strainPtr[cell] = 0.0f; nuTPtr[cell] = 0.0f; continue;
+                                }
+                                const float dux_dx = (uxPtr[xp] - uxPtr[xm]) * 0.5f;
+                                const float duy_dy = (uyPtr[yp] - uyPtr[ym]) * 0.5f;
+                                const float duz_dz = (uzPtr[zp] - uzPtr[zm]) * 0.5f;
+                                const float dux_dy = (uxPtr[yp] - uxPtr[ym]) * 0.5f;
+                                const float dux_dz = (uxPtr[zp] - uxPtr[zm]) * 0.5f;
+                                const float duy_dx = (uyPtr[xp] - uyPtr[xm]) * 0.5f;
+                                const float duy_dz = (uyPtr[zp] - uyPtr[zm]) * 0.5f;
+                                const float duz_dx = (uzPtr[xp] - uzPtr[xm]) * 0.5f;
+                                const float duz_dy = (uzPtr[yp] - uzPtr[ym]) * 0.5f;
+
+                                const float wx = duz_dy - duy_dz;
+                                const float wy = dux_dz - duz_dx;
+                                const float wz = duy_dx - dux_dy;
+                                enstrophyAcc += (double)(wx*wx + wy*wy + wz*wz);
+
+                                const float Sxx = dux_dx, Syy = duy_dy, Szz = duz_dz;
+                                const float Sxy = 0.5f*(dux_dy + duy_dx);
+                                const float Sxz = 0.5f*(dux_dz + duz_dx);
+                                const float Syz = 0.5f*(duy_dz + duz_dy);
+                                const float S2 = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0f*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+                                const float sMag = std::sqrt(2.0f * S2);
+                                strainPtr[cell] = sMag;
+
+                                float nut = 0.0f;
+                                if (turbMode == LBMTurbulenceModel::WALE) {
+                                    const float gxx2 = dux_dx*dux_dx + dux_dy*duy_dx + dux_dz*duz_dx;
+                                    const float gyy2 = duy_dx*dux_dy + duy_dy*duy_dy + duy_dz*duz_dy;
+                                    const float gzz2 = duz_dx*dux_dz + duz_dy*duy_dz + duz_dz*duz_dz;
+                                    const float gxy2 = dux_dx*dux_dy + dux_dy*duy_dy + dux_dz*duz_dy;
+                                    const float gyx2 = duy_dx*dux_dx + duy_dy*duy_dx + duy_dz*duz_dx;
+                                    const float gxz2 = dux_dx*dux_dz + dux_dy*duy_dz + dux_dz*duz_dz;
+                                    const float gzx2 = duz_dx*dux_dx + duz_dy*duy_dx + duz_dz*duz_dx;
+                                    const float gyz2 = duy_dx*dux_dz + duy_dy*duy_dz + duy_dz*duz_dz;
+                                    const float gzy2 = duz_dx*dux_dy + duz_dy*duy_dy + duz_dz*duz_dy;
+                                    const float tr3 = (gxx2 + gyy2 + gzz2) * (1.0f / 3.0f);
+                                    const float Sdxx = gxx2 - tr3, Sdyy = gyy2 - tr3, Sdzz = gzz2 - tr3;
+                                    const float Sdxy = 0.5f*(gxy2 + gyx2);
+                                    const float Sdxz = 0.5f*(gxz2 + gzx2);
+                                    const float Sdyz = 0.5f*(gyz2 + gzy2);
+                                    const float Sd2 = Sdxx*Sdxx + Sdyy*Sdyy + Sdzz*Sdzz + 2.0f*(Sdxy*Sdxy + Sdxz*Sdxz + Sdyz*Sdyz);
+                                    if (Sd2 > 1e-18f) {
+                                        const float num = std::pow(Sd2, 1.5f);
+                                        const float den = std::pow(S2, 2.5f) + std::pow(Sd2, 1.25f) + 1e-24f;
+                                        nut = (CwCfg * CwCfg) * (num / den);
+                                    }
+                                } else {
+                                    float Cs = CsCfg;
+                                    const int wd = lbmWallDist.empty() ? 6 : (int)wallDistPtr[cell];
+                                    if (wd <= 5) Cs *= kVanDriest[wd];
+                                    nut = Cs * Cs * sMag;
+                                }
+                                if (!std::isfinite(nut) || nut < 0.0f) nut = 0.0f;
+                                if (nut > 0.35f) nut = 0.35f;
+                                nuTPtr[cell] = nut;
+                                if (nut > tMaxNuT) tMaxNuT = nut;
+                            }
+                        }
+                    }
+                }
+            }
+            #ifdef _OPENMP
+            #pragma omp critical
+            {
+                if (tMaxNuT > maxNuTLocal) maxNuTLocal = tMaxNuT;
+            }
+            }
+            #else
+            if (tMaxNuT > maxNuTLocal) maxNuTLocal = tMaxNuT;
+            #endif
+        } else {
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
+            for (int cell = 0; cell < total; ++cell) {
+                nuTPtr[cell] = 0.0f;
+            }
+        }
+
+        // 2) Столкновение — кэш-блокированный проход по тайлам
+        const bool hasBuoyancy = (thermalParams.enabled && !thermalBuoyancyY.empty());
+        const bool hasExtForce = (lbmParams.bodyForceX != 0.0f || lbmParams.bodyForceY != 0.0f || lbmParams.bodyForceZ != 0.0f || hasBuoyancy);
+
+        #ifdef _OPENMP
+        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount,negPops,badPops,rhoOut,rhoNonFin,uLim)
+        {
+        float tMaxVel = 0.0f;
+        #pragma omp for schedule(dynamic, 4) nowait
+        #else
+        float tMaxVel = 0.0f;
+        #endif
+        for (int ti = 0; ti < numTiles; ++ti) {
+            const LBMTile& tile = s_tiles[ti];
+            if (tile.kind == TILE_ALL_SOLID) {
+                for (int z = tile.z0; z < tile.z1; ++z)
+                    for (int y = tile.y0; y < tile.y1; ++y) {
+                        const int rowBase = (z*Ny + y)*Nx;
+                        for (int x = tile.x0; x < tile.x1; ++x) {
+                            const int cell = rowBase + x;
+                            rhoPtr[cell] = 1.0f;
+                            uxPtr[cell] = 0.0f; uyPtr[cell] = 0.0f; uzPtr[cell] = 0.0f;
+                            tkePtr[cell] = 0.0f; strainPtr[cell] = 0.0f;
+                        }
+                    }
+                continue;
+            }
+
+            if (tile.kind == TILE_FLUID_INTERIOR) {
+                for (int z = tile.z0; z < tile.z1; ++z) {
+                    for (int y = tile.y0; y < tile.y1; ++y) {
+                        const int rowBase = (z*Ny + y)*Nx;
+                        for (int x = tile.x0; x < tile.x1; ++x) {
+                            const int cell = rowBase + x;
+                            float* __restrict cellF = fPtr + (size_t)cell * Q;
+
+                            float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
+                            for (int qi = 0; qi < Q; ++qi) {
+                                float fi = cellF[qi];
+                                if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
+                                if (fi < -1.0f || fi > 10.0f) { fi = w[qi]; badPops++; }
+                                cellF[qi] = fi;
+                                rho += fi;
+                                ux += fi * (float)c[qi][0];
+                                uy += fi * (float)c[qi][1];
+                                uz += fi * (float)c[qi][2];
+                            }
+                            if (!std::isfinite(rho)) { rhoNonFin++; nanCount++; rho = 1.0f; }
+                            else if (rho < 0.5f || rho > 1.5f) { rhoOut++; nanCount++; rho = 1.0f; }
+                            const float invRho = 1.0f / rho;
+                            ux *= invRho; uy *= invRho; uz *= invRho;
+                            if (!std::isfinite(ux) || !std::isfinite(uy) || !std::isfinite(uz)) { ux = 0; uy = 0; uz = 0; nanCount++; }
+
+                            float usqr = ux*ux + uy*uy + uz*uz;
+                            if (usqr > 0.09f) {
+                                uLim++;
+                                float sc = sqrtf(0.09f / usqr);
+                                ux *= sc; uy *= sc; uz *= sc;
+                                usqr = ux*ux + uy*uy + uz*uz;
+                            }
+
+                            float tauEff = tau0;
+                            float strainMag = 0.0f;
+                            if (turbMode != LBMTurbulenceModel::None) {
+                                strainMag = strainPtr[cell];
+                                const float nut = nuTPtr[cell];
+                                if (nut > 0.0f) {
+                                    tauEff = tau0 + nut * 3.0f;
+                                    if (tauEff > 1.5f) tauEff = 1.5f;
+                                }
+                            } else {
+                                strainPtr[cell] = 0.0f;
+                            }
+                            const float invTau = 1.0f / tauEff;
+
+                            float Fx = lbmParams.bodyForceX;
+                            float Fy = lbmParams.bodyForceY + (hasBuoyancy ? thermalBuoyancyY[cell] : 0.0f);
+                            float Fz = lbmParams.bodyForceZ;
+                            const bool hasForce = hasExtForce && (Fx != 0.0f || Fy != 0.0f || Fz != 0.0f);
+                            float ueX = ux, ueY = uy, ueZ = uz, ueSqr = usqr;
+                            if (hasForce) {
+                                const float half = 0.5f / rho;
+                                ueX += Fx * half; ueY += Fy * half; ueZ += Fz * half;
+                                ueSqr = ueX*ueX + ueY*ueY + ueZ*ueZ;
+                            }
+
+                            if (colMode == LBMCollisionMode::MRT) {
+                                collideCellMRT(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, hasForce, Fx, Fy, Fz, negPops);
+                            } else if (colMode == LBMCollisionMode::Regularized) {
+                                collideCellRegularized(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, hasForce, Fx, Fy, Fz, negPops);
+                            } else {
+                                const bool trt = (colMode == LBMCollisionMode::TRT);
+                                float sMinus = invTau;
+                                if (trt) {
+                                    const float m = invTau - 0.5f;
+                                    const float denom = (std::fabs(m) > 1e-6f) ? (0.1875f / m + 0.5f) : 1.0f;
+                                    sMinus = 1.0f / std::max(0.05f, denom);
+                                }
+                                collideCellBGKOrTRT(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, trt, sMinus, hasForce, Fx, Fy, Fz, negPops);
+                            }
+
+                            rhoPtr[cell] = rho;
+                            if (hasForce) {
+                                const float halfInvRho = 0.5f / rho;
+                                uxPtr[cell] = ux + Fx * halfInvRho;
+                                uyPtr[cell] = uy + Fy * halfInvRho;
+                                uzPtr[cell] = uz + Fz * halfInvRho;
+                            } else {
+                                uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
+                            }
+
+                            float tke = 0.0f;
+                            if (turbMode != LBMTurbulenceModel::None) {
+                                const float nut = nuTPtr[cell];
+                                const float tkeLb = (turbMode == LBMTurbulenceModel::WALE)
+                                    ? (nut * strainMag)
+                                    : ((CsCfg * strainMag) * (CsCfg * strainMag));
+                                tke = tkeLb * velScale2;
+                                if (!std::isfinite(tke) || tke < 0.0f) tke = 0.0f;
+                                if (tke > 1.0e6f) tke = 1.0e6f;
+                            }
+                            tkePtr[cell] = tke;
+
+                            const float velMag = std::sqrt(usqr);
+                            if (velMag > tMaxVel) tMaxVel = velMag;
+                            avgRhoAcc += rho;
+                            kineticAcc += usqr;
+                            tkeAcc += tke;
+                        }
+                    }
+                }
+            } else {
+                for (int z = tile.z0; z < tile.z1; ++z) {
+                    for (int y = tile.y0; y < tile.y1; ++y) {
+                        const int rowBase = (z*Ny + y)*Nx;
+                        for (int x = tile.x0; x < tile.x1; ++x) {
+                            const int cell = rowBase + x;
+                            if (solidPtr[cell] || groundPtr[cell]) {
+                                rhoPtr[cell] = 1.0f;
+                                uxPtr[cell] = 0.0f; uyPtr[cell] = 0.0f; uzPtr[cell] = 0.0f;
+                                tkePtr[cell] = 0.0f; strainPtr[cell] = 0.0f;
+                                continue;
+                            }
+
+                            float* __restrict cellF = fPtr + (size_t)cell * Q;
+                            float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
+                            for (int qi = 0; qi < Q; ++qi) {
+                                float fi = cellF[qi];
+                                if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
+                                if (fi < -1.0f || fi > 10.0f) { fi = w[qi]; badPops++; }
+                                cellF[qi] = fi;
+                                rho += fi;
+                                ux += fi * (float)c[qi][0];
+                                uy += fi * (float)c[qi][1];
+                                uz += fi * (float)c[qi][2];
+                            }
+                            if (!std::isfinite(rho)) { rhoNonFin++; nanCount++; rho = 1.0f; }
+                            else if (rho < 0.5f || rho > 1.5f) { rhoOut++; nanCount++; rho = 1.0f; }
+                            const float invRho = 1.0f / rho;
+                            ux *= invRho; uy *= invRho; uz *= invRho;
+                            if (!std::isfinite(ux) || !std::isfinite(uy) || !std::isfinite(uz)) { ux = 0; uy = 0; uz = 0; nanCount++; }
+
+                            bool isInlet = false, isOutlet = false;
+                            if (flowAxis == 0) {
+                                isInlet  = (flowSign > 0) ? (x == 0)     : (x == Nx-1);
+                                isOutlet = (flowSign > 0) ? (x == Nx-1)  : (x == 0);
+                            } else if (flowAxis == 1) {
+                                isInlet  = (flowSign > 0) ? (y == 0)     : (y == Ny-1);
+                                isOutlet = (flowSign > 0) ? (y == Ny-1)  : (y == 0);
+                            } else {
+                                isInlet  = (flowSign > 0) ? (z == 0)     : (z == Nz-1);
+                                isOutlet = (flowSign > 0) ? (z == Nz-1)  : (z == 0);
+                            }
+
+                            if (isInlet && !lbmParams.periodicX && !flagshipBC) {
+                                rho = 1.0f;
+                                ux = inUx; uy = inUy; uz = inUz;
+                            }
+
+                            float usqr = ux*ux + uy*uy + uz*uz;
+                            if (usqr > 0.09f) {
+                                uLim++;
+                                float sc = sqrtf(0.09f / usqr);
+                                ux *= sc; uy *= sc; uz *= sc;
+                                usqr = ux*ux + uy*uy + uz*uz;
+                            }
+
+                            float tauEff = tau0;
+                            float strainMag = 0.0f;
+                            if (turbMode != LBMTurbulenceModel::None && !isInlet && !isOutlet) {
+                                strainMag = strainPtr[cell];
+                                const float nut = nuTPtr[cell];
+                                if (nut > 0.0f) {
+                                    tauEff = tau0 + nut * 3.0f;
+                                    if (tauEff > 1.5f) tauEff = 1.5f;
+                                }
+                            } else {
+                                strainPtr[cell] = 0.0f;
+                            }
+
+                            if (spongeN > 0 && !isInlet) {
+                                int distOut = 9999;
+                                if (flowAxis == 0) distOut = (flowSign > 0) ? (Nx - 1 - x) : x;
+                                else if (flowAxis == 1) distOut = (flowSign > 0) ? (Ny - 1 - y) : y;
+                                else distOut = (flowSign > 0) ? (Nz - 1 - z) : z;
+                                if (distOut >= 0 && distOut < spongeN) {
+                                    float xi = 1.0f - (float)distOut / (float)spongeN;
+                                    tauEff = std::min(1.8f, tauEff + spongeStr * xi * xi);
+                                }
+                            }
+                            const float invTau = 1.0f / tauEff;
+
+                            float Fx = lbmParams.bodyForceX;
+                            float Fy = lbmParams.bodyForceY + (hasBuoyancy ? thermalBuoyancyY[cell] : 0.0f);
+                            float Fz = lbmParams.bodyForceZ;
+                            const bool hasForce = hasExtForce && (Fx != 0.0f || Fy != 0.0f || Fz != 0.0f);
+                            float ueX = ux, ueY = uy, ueZ = uz, ueSqr = usqr;
+                            if (hasForce) {
+                                const float half = 0.5f / rho;
+                                ueX += Fx * half; ueY += Fy * half; ueZ += Fz * half;
+                                ueSqr = ueX*ueX + ueY*ueY + ueZ*ueZ;
+                            }
+
+                            if (colMode == LBMCollisionMode::MRT) {
+                                collideCellMRT(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, hasForce, Fx, Fy, Fz, negPops);
+                            } else if (colMode == LBMCollisionMode::Regularized) {
+                                collideCellRegularized(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, hasForce, Fx, Fy, Fz, negPops);
+                            } else {
+                                const bool trt = (colMode == LBMCollisionMode::TRT);
+                                float sMinus = invTau;
+                                if (trt) {
+                                    const float m = invTau - 0.5f;
+                                    const float denom = (std::fabs(m) > 1e-6f) ? (0.1875f / m + 0.5f) : 1.0f;
+                                    sMinus = 1.0f / std::max(0.05f, denom);
+                                }
+                                collideCellBGKOrTRT(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, trt, sMinus, hasForce, Fx, Fy, Fz, negPops);
+                            }
+
+                            rhoPtr[cell] = rho;
+                            if (hasForce) {
+                                const float halfInvRho = 0.5f / rho;
+                                uxPtr[cell] = ux + Fx * halfInvRho;
+                                uyPtr[cell] = uy + Fy * halfInvRho;
+                                uzPtr[cell] = uz + Fz * halfInvRho;
+                            } else {
+                                uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
+                            }
+
+                            float tke = 0.0f;
+                            if (turbMode != LBMTurbulenceModel::None) {
+                                const float nut = nuTPtr[cell];
+                                const float tkeLb = (turbMode == LBMTurbulenceModel::WALE)
+                                    ? (nut * strainMag)
+                                    : ((CsCfg * strainMag) * (CsCfg * strainMag));
+                                tke = tkeLb * velScale2;
+                                if (!std::isfinite(tke) || tke < 0.0f) tke = 0.0f;
+                                if (tke > 1.0e6f) tke = 1.0e6f;
+                            }
+                            tkePtr[cell] = tke;
+
+                            const float velMag = std::sqrt(usqr);
+                            if (velMag > tMaxVel) tMaxVel = velMag;
+                            avgRhoAcc += rho;
+                            kineticAcc += usqr;
+                            tkeAcc += tke;
+                        }
                     }
                 }
             }
         }
-
         #ifdef _OPENMP
-        #pragma omp parallel reduction(+:avgRhoAcc,kineticAcc,tkeAcc,nanCount,negPops,badPops,rhoOut,rhoNonFin,uLim) reduction(max:maxVelGlobal)
+        #pragma omp critical
         {
-            #pragma omp for nowait
-        #endif
-        // v1.37.1 — вложенные циклы вместо одного с делением по модулю.
-        // Раньше на КАЖДУЮ ячейку каждый шаг приходилось три целочисленных
-        // деления (cell % Nx, cell / Nx % Ny, cell / strideZ) только чтобы
-        // узнать x, y, z. Деление в процессоре — десятки тактов, и на сетке
-        // 3.3 млн ячеек это было заметной долей шага. Здесь индексы идут
-        // инкрементом, делений нет вообще.
-        for (int z = 0; z < Nz; ++z) {
-        for (int y = 0; y < Ny; ++y) {
-        const int rowBase = (z*Ny + y)*Nx;
-        for (int x = 0; x < Nx; ++x) {
-            const int cell = rowBase + x;
-            if (solidPtr[cell] || groundPtr[cell]) {
-                rhoPtr[cell] = 1.0f;
-                uxPtr[cell] = 0; uyPtr[cell] = 0; uzPtr[cell] = 0;
-                tkePtr[cell] = 0; strainPtr[cell] = 0;
-                continue;
-            }
-
-            float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
-            for (int qi = 0; qi < Q; ++qi) {
-                float fi = fPtr[cell*Q + qi];
-                if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
-                // v1.27.0 — пороги расширены до заведомо нефизических значений и
-                // считаются. Прежние (-0.2 и 1.0) подменяли вполне рабочие
-                // популяции, а каждая подмена меняла сумму f, то есть массу и
-                // импульс ячейки, причём без единого сообщения.
-                if (fi < -1.0f || fi > 10.0f) { fi = w[qi]; badPops++; }
-                rho += fi;
-                ux += fi * (float)c[qi][0];
-                uy += fi * (float)c[qi][1];
-                uz += fi * (float)c[qi][2];
-            }
-            // Защита от РАСХОДИМОСТИ (не от «некрасивой» плотности): за пределами
-            // [0.5; 1.5] либо неконечное значение — это уже развалившийся расчёт,
-            // продолжать с ним нельзя. Подмена считается явно и видна в панели,
-            // в журнале и в отладочном отчёте, а не происходит молча.
-            if (!std::isfinite(rho)) { rhoNonFin++; nanCount++; rho = 1.0f; }
-            else if (rho < 0.5f || rho > 1.5f) { rhoOut++; nanCount++; rho = 1.0f; }
-            float invRho = 1.0f / rho;
-            ux *= invRho; uy *= invRho; uz *= invRho;
-            if (!std::isfinite(ux)) { ux = 0; uy = 0; uz = 0; nanCount++; }
-
-            float usqrTmp = ux*ux + uy*uy + uz*uz;
-            if (usqrTmp > 0.09f) {
-                float scale = sqrtf(0.09f / usqrTmp);
-                ux *= scale; uy *= scale; uz *= scale;
-            }
-
-            bool isInlet = false;
-            bool isOutlet = false;
-            if (flowAxis == 0) {
-                isInlet = (flowSign > 0) ? (x == 0) : (x == Nx-1);
-                isOutlet = (flowSign > 0) ? (x == Nx-1) : (x == 0);
-            } else if (flowAxis == 1) {
-                isInlet = (flowSign > 0) ? (y == 0) : (y == Ny-1);
-                isOutlet = (flowSign > 0) ? (y == Ny-1) : (y == 0);
-            } else {
-                isInlet = (flowSign > 0) ? (z == 0) : (z == Nz-1);
-                isOutlet = (flowSign > 0) ? (z == Nz-1) : (z == 0);
-            }
-
-            // v1.36.0 — при периодичности по X входной границы нет: иначе
-            // равновесный вход на x=0 подменял бы популяции, только что
-            // перенесённые с x=Nx-1, то есть периодичность была бы фиктивной.
-            if (isInlet && !lbmParams.periodicX) {
-                rho = 1.0f;
-                ux = inUx; uy = inUy; uz = inUz;
-            }
-
-            // Smagorinsky LES — v1.11.0 Physics Fix: правильная формула с (Cs*dx)^2.
-            //
-            // v1.38.1 — сам расчёт |S| вынесен в отдельный проход ДО этого
-            // (см. ниже, «Подсеточная модель»). Причина не в скорости, а в
-            // корректности: производные брались из uxPtr/uyPtr/uzPtr соседних
-            // ячеек, а этот же проход записывает uxPtr[cell]. Под OpenMP
-            // соседняя ячейка могла быть уже обновлена другим потоком, то есть
-            // |S| считался по смеси скоростей текущего и следующего шага.
-            //
-            // Измерено (стенд make bench, 120 шагов, сумма rho по домену): при
-            // включённой модели один поток даёт 414728.365294, два —
-            // 414728.368045; при выключенной совпадает знак в знак. Теперь |S|
-            // берётся из поля скорости предыдущего шага — это и правильно для
-            // явной схемы, и убирает зависимость результата от числа потоков.
-            float tauEff = tau0;
-            float strainMag = 0.0f;
-            if (lbmParams.useTurbulence && !isInlet && !isOutlet) {
-                strainMag = strainPtr[cell];
-                // Каноническая запись (Yu и др.): nu_t = (Cs*Delta)^2 * |S|,
-                // Delta = 1 в решёточных единицах. Демпфирование Ван Дриста —
-                // по расстоянию до стенки из поля lbmWallDist и таблице
-                // kVanDriest (см. комментарий к полю).
-                if (std::isfinite(strainMag) && strainMag < 10.0f && strainMag > 1e-6f) {
-                    float Cs = lbmParams.smagorinskyC;
-                    if (!std::isfinite(Cs) || Cs < 0.0f) Cs = 0.12f;
-                    if (Cs > 0.3f) Cs = 0.3f;
-                    const int wallDist = lbmWallDist.empty() ? 6 : (int)lbmWallDist[cell];
-                    if (wallDist <= 5) Cs *= kVanDriest[wallDist];
-                    const float nu_t = Cs * Cs * strainMag;
-                    tauEff = tau0 + nu_t / cs2;
-                    if (tauEff > 1.5f) tauEff = 1.5f;
-                    if (tauEff < 0.51f) tauEff = 0.51f;
-                }
-            }
-
-            float usqr = ux*ux + uy*uy + uz*uz;
-            if (usqr > 0.09f) {
-                uLim++;   // ограничение |u| < 0.3 сработало — это уже видно в диагностике
-                float scale = sqrtf(0.09f / usqr);
-                ux *= scale; uy *= scale; uz *= scale;
-                usqr = ux*ux + uy*uy + uz*uz;
-            }
-            float invTau = 1.0f / tauEff;
-
-            // v1.36.0 — объёмная сила по схеме Го (Guo, Zheng & Shi, 2002).
-            // Половина силы добавляется к скорости, по которой считается
-            // равновесие, полная — к популяциям как источник. Без первой половины
-            // установившееся течение в канале смещено на O(F·dt), то есть ошибка
-            // как раз того же порядка, что и проверяемый профиль.
-            float Fx = lbmParams.bodyForceX;
-            float Fy = lbmParams.bodyForceY;
-            float Fz = lbmParams.bodyForceZ;
-            // v1.37.0 — плавучесть: сила по Y от отклонения температуры.
-            // Считается по маске на предыдущем шаге, поэтому входит в схему Го
-            // так же, как внешняя объёмная сила.
-            if (thermalParams.enabled && !thermalBuoyancyY.empty())
-                Fy += thermalBuoyancyY[cell];
-            const bool hasForce = (Fx != 0.0f || Fy != 0.0f || Fz != 0.0f);
-            float ueX = ux, ueY = uy, ueZ = uz;
-            float ueSqr = usqr;
-            if (hasForce) {
-                const float half = 0.5f / rho;
-                ueX += Fx * half; ueY += Fy * half; ueZ += Fz * half;
-                ueSqr = ueX*ueX + ueY*ueY + ueZ*ueZ;
-            }
-            // Множитель (1 - 1/(2 s)) — обязательная часть схемы Го: без него
-            // установившаяся скорость в канале завышается в (1/2 + tau)/(...)
-            // раз. Проверено на течении Пуазейля (physics_ref_headless):
-            // без множителя u_max = 0.0353 вместо 0.0200 при F = 7.8e-6.
-            // Под TRT множитель свой у каждой моды: (1 - s+/2) и (1 - s-/2).
-
-            // --- TRT: две частоты релаксации (v1.36.2) -------------------
-            // s+ отвечает за вязкость и совпадает с BGK (1/tau), s- — за
-            // остальные моды. Связь задаёт «магический» параметр
-            //   L = (1/s+ - 1/2)(1/s- - 1/2) = 3/16   (d'Humieres & Ginzburg)
-            // При L = 3/16 граница bounce-back не зависит от вязкости, а
-            // устойчивость перестаёт падать при tau -> 0.5.
-            //
-            // Проверено на точном решении (Пуазейль, канал 8x34x8, 40 000 шагов):
-            // BGK дает L2 = 0.163 %, TRT = 0.071 % (в 2.3 раза точнее), максимум
-            // 0.099 % от u_max, вязкость по затуханию в пределах 3 %, дрейф массы
-            // 9.9e-4. По умолчанию ВЫКЛЮЧЕН: включение меняет установившиеся
-            // числа во всех уже снятых эталонах, а они сейчас измеряются на
-            // коротком окне (см. docs/LBM-STABILITY-2026-10-09.md).
-            const bool trt = lbmParams.useTRT;
-            float sMinus = invTau;
-            if (trt) {
-                const float m = invTau - 0.5f;
-                const float denom = (std::fabs(m) > 1e-6f) ? (0.1875f / m + 0.5f) : 1.0f;
-                sMinus = 1.0f / std::max(0.05f, denom);
-            }
-
-            for (int qi = 0; qi < Q; ++qi) {
-                const int qo = opp[qi];
-                if (qo < qi) continue;              // пара обрабатывается один раз
-
-                float feq = equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
-                float fi = fPtr[cell*Q + qi];
-                if (!std::isfinite(fi)) fi = feq;
-                float srcI = 0.0f;
-                if (hasForce) {
-                    const float cx = (float)c[qi][0], cy = (float)c[qi][1], cz = (float)c[qi][2];
-                    const float cu = cx*ueX + cy*ueY + cz*ueZ;
-                    srcI = 3.0f * w[qi] * ((cx - ueX + 3.0f*cu*cx) * Fx +
-                                                  (cy - ueY + 3.0f*cu*cy) * Fy +
-                                                  (cz - ueZ + 3.0f*cu*cz) * Fz);
-                }
-                if (qo == qi) {
-                    float fNew = fi - (fi - feq) * invTau + (1.0f - 0.5f*invTau) * srcI;
-                    if (!std::isfinite(fNew)) fNew = feq;
-                    if (fNew < 0.0f) negPops++;
-                    fPtr[cell*Q + qi] = fNew;
-                    continue;
-                }
-
-                float feqO = equilibriumKernel(qo, rho, ueX, ueY, ueZ, ueSqr);
-                float fo = fPtr[cell*Q + qo];
-                if (!std::isfinite(fo)) fo = feqO;
-                float srcO = 0.0f;
-                if (hasForce) {
-                    const float cx = (float)c[qo][0], cy = (float)c[qo][1], cz = (float)c[qo][2];
-                    const float cu = cx*ueX + cy*ueY + cz*ueZ;
-                    srcO = 3.0f * w[qo] * ((cx - ueX + 3.0f*cu*cx) * Fx +
-                                                  (cy - ueY + 3.0f*cu*cy) * Fy +
-                                                  (cz - ueZ + 3.0f*cu*cz) * Fz);
-                }
-
-                float newI, newO;
-                // Источник силы раскладывается по модам так же, как популяции:
-                // антисимметричная часть релаксирует с s-, поэтому и множитель
-                // (1 - s/2) у неё свой. Общий guoK = 1 - s+/2 для обеих частей
-                // смещал установившуюся скорость в канале на 3.6 % (измерено).
-                const float srcP = 0.5f*(srcI + srcO);
-                const float srcM = 0.5f*(srcI - srcO);
-                const float fp = 0.5f*(fi + fo), fm = 0.5f*(fi - fo);
-                const float ep = 0.5f*(feq + feqO), em = 0.5f*(feq - feqO);
-                float fpN, fmN;
-                if (trt) {
-                    fpN = fp - invTau*(fp - ep);
-                    fmN = fm - sMinus*(fm - em);
-                } else {
-                    fpN = fp - invTau*(fp - ep);
-                    fmN = fm - invTau*(fm - em);
-                }
-                newI = fpN + fmN + (1.0f - 0.5f*invTau)*srcP + (1.0f - 0.5f*sMinus)*srcM;
-                newO = fpN - fmN + (1.0f - 0.5f*invTau)*srcP - (1.0f - 0.5f*sMinus)*srcM;
-                if (!std::isfinite(newI)) newI = feq;
-                if (!std::isfinite(newO)) newO = feqO;
-                if (newI < 0.0f) negPops++;
-                if (newO < 0.0f) negPops++;
-                fPtr[cell*Q + qi] = newI;
-                fPtr[cell*Q + qo] = newO;
-            }
-
-            rhoPtr[cell] = rho;
-            // v1.37.0 — ФИЗИЧЕСКАЯ скорость: под схемой Го импульс, посчитанный
-            // по популяциям, отличается от скорости жидкости на F/(2 rho).
-            // Раньше это не учитывалось, и при объёмной силе поле скорости было
-            // смещено на постоянную величину: на Пуазейле это 4e-6 (незаметно),
-            // а на плавучести — тот же сдвиг, умноженный на Ra, и он «сдувал»
-            // температуру: при Ra = 1000 (ниже порога конвекции) профиль
-            // отклонялся от линейного на 0.0045, а Nu был 1.037 вместо 1.000.
-            // Физически верная скорость — (sum f c + F/2)/rho.
-            if (hasForce) {
-                const float halfInvRho = 0.5f / rho;
-                uxPtr[cell] = ux + Fx * halfInvRho;
-                uyPtr[cell] = uy + Fy * halfInvRho;
-                uzPtr[cell] = uz + Fz * halfInvRho;
-            } else {
-                uxPtr[cell] = ux; uyPtr[cell] = uy; uzPtr[cell] = uz;
-            }
-            strainPtr[cell] = strainMag;
-            // v1.27.0 — подсеточная кинетическая энергия в ФИЗИЧЕСКИХ единицах (м²/с²).
-            //
-            // Было: Cs²·dx²·S² с dx в метрах и S в решёточных единицах — величина
-            // без размерности смысла, к тому же сверху зажатая единицей, поэтому
-            // режим «Turbulent KE» и поле lbmTKEField показывали произвольные числа.
-            // По модели Смагоринского k = (Cs·Δ·|S|)² в решёточных единицах (Δ = 1),
-            // затем перевод в м²/с² квадратом масштаба скорости V∞/U0 — тем же,
-            // которым переводятся скорости решётки в мировые.
-            float CsT = lbmParams.smagorinskyC;
-            if (!std::isfinite(CsT) || CsT < 0.0f) CsT = 0.12f;
-            if (CsT > 0.3f) CsT = 0.3f;
-            float tkeLb = (CsT * strainMag) * (CsT * strainMag);
-            float tke = tkeLb * velScale2;
-            if (!std::isfinite(tke) || tke < 0.0f) tke = 0.0f;
-            if (tke > 1.0e6f) tke = 1.0e6f;
-            tkePtr[cell] = tke;
-
-            float velMag = std::sqrt(usqr);
-            if (velMag > maxVelGlobal) maxVelGlobal = velMag;
-            avgRhoAcc += rho;
-            kineticAcc += usqr;
-            tkeAcc += tke;
+            if (tMaxVel > maxVelGlobal) maxVelGlobal = tMaxVel;
         }
         }
-        }
-        #ifdef _OPENMP
-        }
+        #else
+        if (tMaxVel > maxVelGlobal) maxVelGlobal = tMaxVel;
         #endif
 
         if (nanCount > total/10) {
@@ -1318,89 +1916,100 @@ void stepLBMCPU(int steps) {
             break;
         }
 
-        // Streaming с bounce-back
-        //
-        // v1.37.1 — перенос разделён на внутреннюю часть и граничную оболочку.
-        // Внутри домена у ячейки все 19 соседей существуют, поэтому ни проверки
-        // выходов за границу, ни сворачивание периодики не нужны: адрес
-        // источника — это просто dest + offQ[qi], смещение посчитано один раз
-        // на шаг. Раньше на каждое из 19 направлений каждой ячейки приходилось
-        // три вычитания, два условия сворачивания, шесть сравнений границ и
-        // три умножения на сборку индекса. Граничная оболочка (шесть плоскостей,
-        // это O(N^2) ячеек из O(N^3)) считается прежним общим кодом.
-        int offQ[19];
-        for (int qi = 0; qi < Q; ++qi)
-            offQ[qi] = -(c[qi][2]*Ny * Nx) - c[qi][1]*Nx - c[qi][0];
-
-        // Диапазоны внутренней части ВСЕГДА отступом в одну ячейку: сворачивание
-        // периодики — это не сдвиг индекса, а переход на другой конец строки,
-        // поэтому плоским смещением его не выразить. Граничная оболочка
-        // обрабатывает эти плоскости общим кодом (и периодику в том числе).
-        const int xLo = 1, xHi = Nx-1;
-        const int zLo = 1, zHi = Nz-1;
-
+        // 3) Перенос (pull streaming) — кэш-блокированный проход по тайлам
         #ifdef _OPENMP
-        #pragma omp parallel for
+        #pragma omp parallel for schedule(dynamic, 4)
         #endif
-        for (int z = zLo; z < zHi; ++z) {
-            for (int y = 1; y < Ny-1; ++y) {
-                int rowBase = (z*Ny + y)*Nx;
-                for (int x = xLo; x < xHi; ++x) {
-                    int dest = rowBase + x;
-                    if (solidPtr[dest] || groundPtr[dest]) continue;
-                    int destBase = dest*Q;
-                    for (int qi = 0; qi < Q; ++qi) {
-                        int src = dest + offQ[qi];
-                        fNextPtr[destBase + qi] = (solidPtr[src] || groundPtr[src])
-                            ? fPtr[destBase + opp[qi]]     // bounce-back
-                            : fPtr[src*Q + qi];
+        for (int ti = 0; ti < numTiles; ++ti) {
+            const LBMTile& tile = s_tiles[ti];
+            if (tile.kind == TILE_ALL_SOLID) continue;
+
+            if (tile.kind == TILE_FLUID_INTERIOR) {
+                for (int z = tile.z0; z < tile.z1; ++z) {
+                    for (int y = tile.y0; y < tile.y1; ++y) {
+                        const int rowBase = (z*Ny + y)*Nx;
+                        for (int x = tile.x0; x < tile.x1; ++x) {
+                            const int dest = rowBase + x;
+                            float* __restrict dstF = fNextPtr + (size_t)dest * Q;
+                            for (int qi = 0; qi < Q; ++qi) {
+                                const int src = dest + offQ[qi];
+                                dstF[qi] = fPtr[(size_t)src * Q + qi];
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-        // Граничная оболочка: тот же перенос, но с проверками и периодикой.
-        #ifdef _OPENMP
-        #pragma omp parallel for
-        #endif
-        for (int z = 0; z < Nz; ++z) {
-            for (int y = 0; y < Ny; ++y) {
-                int rowBase = (z*Ny + y)*Nx;
-                const bool yEdge = (y == 0 || y == Ny-1);
-                const bool zEdge = (z == 0 || z == Nz-1);
-                for (int x = 0; x < Nx; ++x) {
-                    // Уже посчитано внутренней частью
-                    if (!yEdge && !zEdge && x > 0 && x < Nx-1) continue;
-                    int dest = rowBase + x;
-                    if (solidPtr[dest] || groundPtr[dest]) continue;
-                    for (int qi = 0; qi < Q; ++qi) {
-                        int sx = x - c[qi][0];
-                        int sy = y - c[qi][1];
-                        int sz = z - c[qi][2];
-                        // v1.36.0 — периодическая граница по X: популяции,
-                        // ушедшие за край, приходят с противоположной стороны.
-                        // Это не «мягкая» замена стенки, а точное сохранение
-                        // массы и импульса в канале (течение Пуазейля).
-                        if (lbmParams.periodicX) {
-                            if (sx < 0) sx += Nx;
-                            else if (sx >= Nx) sx -= Nx;
-                        }
-                        if (lbmParams.periodicZ) {
-                            if (sz < 0) sz += Nz;
-                            else if (sz >= Nz) sz -= Nz;
-                        }
-                        if (sx < 0 || sx >= Nx || sy < 0 || sy >= Ny || sz < 0 || sz >= Nz) {
-                            // Граница — будет обработано отдельно как inlet/outlet
-                            fNextPtr[dest*Q + qi] = fPtr[dest*Q + qi];
-                        } else {
-                            int src = (sz*Ny + sy)*Nx + sx;
-                            if (src < 0 || src >= total) {
-                                fNextPtr[dest*Q + qi] = fPtr[dest*Q + qi];
-                            } else if (solidPtr[src] || groundPtr[src]) {
-                                // Bounce-back: отражение
-                                fNextPtr[dest*Q + qi] = fPtr[dest*Q + opp[qi]];
-                            } else {
-                                fNextPtr[dest*Q + qi] = fPtr[src*Q + qi];
+            } else {
+                for (int z = tile.z0; z < tile.z1; ++z) {
+                    for (int y = tile.y0; y < tile.y1; ++y) {
+                        const int rowBase = (z*Ny + y)*Nx;
+                        for (int x = tile.x0; x < tile.x1; ++x) {
+                            const int dest = rowBase + x;
+                            if (solidPtr[dest] || groundPtr[dest]) continue;
+                            float* __restrict dstF = fNextPtr + (size_t)dest * Q;
+                            const size_t destBase = (size_t)dest * Q;
+                            for (int qi = 0; qi < Q; ++qi) {
+                                int sx = x - c[qi][0];
+                                int sy = y - c[qi][1];
+                                int sz = z - c[qi][2];
+                                if (lbmParams.periodicX) {
+                                    if (sx < 0) sx += Nx;
+                                    else if (sx >= Nx) sx -= Nx;
+                                }
+                                if (lbmParams.periodicZ) {
+                                    if (sz < 0) sz += Nz;
+                                    else if (sz >= Nz) sz -= Nz;
+                                }
+                                if (sx < 0 || sx >= Nx || sy < 0 || sy >= Ny || sz < 0 || sz >= Nz) {
+                                    if (flagshipBC) {
+                                        bool oobX = (sx < 0 || sx >= Nx);
+                                        bool oobY = (sy < 0 || sy >= Ny);
+                                        bool oobZ = (sz < 0 || sz >= Nz);
+                                        if (!oobX && oobY && !oobZ) {
+                                            dstF[qi] = fPtr[destBase + reflY[qi]];
+                                        } else if (!oobX && !oobY && oobZ) {
+                                            dstF[qi] = fPtr[destBase + reflZ[qi]];
+                                        } else if (!oobX && oobY && oobZ) {
+                                            dstF[qi] = fPtr[destBase + reflY[reflZ[qi]]];
+                                        } else {
+                                            dstF[qi] = fPtr[destBase + qi];
+                                        }
+                                    } else {
+                                        dstF[qi] = fPtr[destBase + qi];
+                                    }
+                                    continue;
+                                }
+                                const int src = (sz*Ny + sy)*Nx + sx;
+                                if (solidPtr[src]) {
+                                    if (useBFL && qi != 0) {
+                                        float df = sdfPtr[dest];
+                                        float ds = sdfPtr[src];
+                                        float denom = df - ds;
+                                        float q = (df > 0.0f && ds <= 0.0f && denom > 1e-4f)
+                                                  ? glm::clamp(df / denom, 0.05f, 0.95f) : 0.5f;
+                                        if (q < 0.5f) {
+                                            int fx2 = x + c[qi][0], fy2 = y + c[qi][1], fz2 = z + c[qi][2];
+                                            if (fx2 >= 0 && fx2 < Nx && fy2 >= 0 && fy2 < Ny && fz2 >= 0 && fz2 < Nz) {
+                                                int f2 = (fz2*Ny + fy2)*Nx + fx2;
+                                                if (!solidPtr[f2] && !groundPtr[f2]) {
+                                                    dstF[qi] = 2.0f*q*fPtr[destBase + opp[qi]]
+                                                             + (1.0f - 2.0f*q)*fPtr[(size_t)f2 * Q + opp[qi]];
+                                                    continue;
+                                                }
+                                            }
+                                            dstF[qi] = fPtr[destBase + opp[qi]];
+                                        } else {
+                                            float inv2q = 0.5f / q;
+                                            dstF[qi] = inv2q * fPtr[destBase + opp[qi]]
+                                                     + (1.0f - inv2q) * fPtr[destBase + qi];
+                                        }
+                                    } else {
+                                        dstF[qi] = fPtr[destBase + opp[qi]];
+                                    }
+                                } else if (groundPtr[src]) {
+                                    dstF[qi] = fPtr[destBase + opp[qi]];
+                                } else {
+                                    dstF[qi] = fPtr[(size_t)src * Q + qi];
+                                }
                             }
                         }
                     }
@@ -1408,146 +2017,222 @@ void stepLBMCPU(int steps) {
             }
         }
 
-        // Вход: все f = равновесные популяции от (rho_in, u_in).
-        // Схемы Zou/He здесь нет и не было — см. комментарий в lbm.h.
-        if (lbmParams.periodicX) {
-            // границы нет — см. ветку переноса выше
-        } else if (flowAxis == 0) {
-            int ix = (flowSign > 0) ? 0 : Nx-1;
-            float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
-            #ifdef _OPENMP
-            #pragma omp parallel for
-            #endif
-            for (int z = 0; z < Nz; ++z) {
-                for (int y = 0; y < Ny; ++y) {
-                    int cell = (z*Ny + y)*Nx + ix;
-                    if (cell < 0 || cell >= total) continue;
-                    if (solidPtr[cell] || groundPtr[cell]) continue;
-                    for (int qi = 0; qi < Q; ++qi) {
-                        fNextPtr[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+        // 4) Вход и выход
+        if (!lbmParams.periodicX) {
+            if (flagshipBC) {
+                auto applyNonEqInlet = [&](int cellInlet, int cellNb) {
+                    if (cellNb < 0 || cellNb >= total || solidPtr[cellNb] || groundPtr[cellNb]) {
+                        float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                        for (int qi = 0; qi < Q; ++qi)
+                            fNextPtr[(size_t)cellInlet*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        return;
                     }
-                }
-            }
-        } else if (flowAxis == 1) {
-            int iy = (flowSign > 0) ? 0 : Ny-1;
-            float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
-            #ifdef _OPENMP
-            #pragma omp parallel for
-            #endif
-            for (int z = 0; z < Nz; ++z) {
-                for (int x = 0; x < Nx; ++x) {
-                    int cell = (z*Ny + iy)*Nx + x;
-                    if (cell < 0 || cell >= total) continue;
-                    if (solidPtr[cell] || groundPtr[cell]) continue;
+                    float rhoNb = 0.0f, uxNb = 0.0f, uyNb = 0.0f, uzNb = 0.0f;
                     for (int qi = 0; qi < Q; ++qi) {
-                        fNextPtr[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        float v = fNextPtr[(size_t)cellNb*Q + qi];
+                        rhoNb += v;
+                        uxNb += v * (float)c[qi][0];
+                        uyNb += v * (float)c[qi][1];
+                        uzNb += v * (float)c[qi][2];
                     }
-                }
-            }
-        } else {
-            int iz = (flowSign > 0) ? 0 : Nz-1;
-            float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
-            #ifdef _OPENMP
-            #pragma omp parallel for
-            #endif
-            for (int y = 0; y < Ny; ++y) {
-                for (int x = 0; x < Nx; ++x) {
-                    int cell = (iz*Ny + y)*Nx + x;
-                    if (cell < 0 || cell >= total) continue;
-                    if (solidPtr[cell] || groundPtr[cell]) continue;
+                    if (!std::isfinite(rhoNb) || rhoNb < 0.85f || rhoNb > 1.15f) rhoNb = 1.0f;
+                    float invR = 1.0f / rhoNb;
+                    uxNb *= invR; uyNb *= invR; uzNb *= invR;
+                    float usNb = uxNb*uxNb + uyNb*uyNb + uzNb*uzNb;
+                    if (usNb > 0.09f) { float sc = sqrtf(0.09f/usNb); uxNb*=sc; uyNb*=sc; uzNb*=sc; usNb = 0.09f; }
+                    float usIn = inUx*inUx + inUy*inUy + inUz*inUz;
                     for (int qi = 0; qi < Q; ++qi) {
-                        fNextPtr[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        float feqIn = equilibriumKernel(qi, rhoNb, inUx, inUy, inUz, usIn);
+                        float feqNb = equilibriumKernel(qi, rhoNb, uxNb, uyNb, uzNb, usNb);
+                        float fneq  = fNextPtr[(size_t)cellNb*Q + qi] - feqNb;
+                        fNextPtr[(size_t)cellInlet*Q + qi] = feqIn + fneq;
                     }
-                }
-            }
-        }
+                };
+                auto applyNonEqOutlet = [&](int cellOut, int cellNb) {
+                    if (cellNb < 0 || cellNb >= total || solidPtr[cellNb] || groundPtr[cellNb]) return;
+                    float rhoNb = 0.0f, uxNb = 0.0f, uyNb = 0.0f, uzNb = 0.0f;
+                    for (int qi = 0; qi < Q; ++qi) {
+                        float v = fNextPtr[(size_t)cellNb*Q + qi];
+                        rhoNb += v;
+                        uxNb += v * (float)c[qi][0];
+                        uyNb += v * (float)c[qi][1];
+                        uzNb += v * (float)c[qi][2];
+                    }
+                    if (!std::isfinite(rhoNb) || rhoNb < 0.7f || rhoNb > 1.3f) rhoNb = 1.0f;
+                    float invR = 1.0f / rhoNb;
+                    uxNb *= invR; uyNb *= invR; uzNb *= invR;
+                    float usNb = uxNb*uxNb + uyNb*uyNb + uzNb*uzNb;
+                    if (usNb > 0.08f) { float sc = sqrtf(0.08f/usNb); uxNb*=sc; uyNb*=sc; uzNb*=sc; usNb = 0.08f; }
+                    for (int qi = 0; qi < Q; ++qi) {
+                        if (c[qi][flowAxis] * flowSign >= 0) continue;
+                        float feqOut = equilibriumKernel(qi, 1.0f, uxNb, uyNb, uzNb, usNb);
+                        float feqNb  = equilibriumKernel(qi, rhoNb, uxNb, uyNb, uzNb, usNb);
+                        float fneq   = fNextPtr[(size_t)cellNb*Q + qi] - feqNb;
+                        fNextPtr[(size_t)cellOut*Q + qi] = feqOut + fneq;
+                    }
+                };
 
-        // Outlet — конвективный: df/dt + U*df/dx =0 => f_out(t+dt)=f_out - U*dt/dx*(f_out-f_in)
-        // Более физично чем zero-gradient, сохраняет вихри
-        if (lbmParams.useConvectiveOutlet && !lbmParams.periodicX) {
-            float convCoeff = U0mag * 0.8f; // U*dt/dx, dt=1, dx=1, U~0.08
-            if (convCoeff > 0.5f) convCoeff = 0.5f;
-            if (convCoeff < 0.01f) convCoeff = 0.08f;
-            if (flowAxis == 0) {
-                int ox = (flowSign > 0) ? Nx-1 : 0;
-                int ix = (flowSign > 0) ? Nx-2 : 1;
-                int ix2 = (flowSign > 0) ? Nx-3 : 2;
-                #ifdef _OPENMP
-                #pragma omp parallel for
-                #endif
-                for (int z = 0; z < Nz; ++z) {
-                    for (int y = 0; y < Ny; ++y) {
-                        int cellOut = (z*Ny + y)*Nx + ox;
-                        int cellIn = (z*Ny + y)*Nx + ix;
-                        int cellIn2 = (z*Ny + y)*Nx + ix2;
-                        if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
-                        if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
-
-                        for (int qi = 0; qi < Q; ++qi) {
-                            // Конвективный: f_out_new = f_out + coeff*(f_in - f_out) + 0.1*coeff*(f_in - f_in2) для второго порядка
-                            float fOut = fPtr[cellOut*Q + qi];
-                            float fIn = fPtr[cellIn*Q + qi];
-                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[cellIn2*Q + qi] : fIn;
-                            float df = fIn - fOut;
-                            float df2 = fIn - fIn2;
-                            fNextPtr[cellOut*Q + qi] = fOut + convCoeff*df + 0.15f*convCoeff*df2;
+                if (flowAxis == 0) {
+                    const int ix = (flowSign > 0) ? 0 : Nx-1;
+                    const int ixNb = (flowSign > 0) ? 1 : Nx-2;
+                    const int ox = (flowSign > 0) ? Nx-1 : 0;
+                    const int oxNb = (flowSign > 0) ? Nx-2 : 1;
+                    #ifdef _OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int z = 0; z < Nz; ++z)
+                        for (int y = 0; y < Ny; ++y) {
+                            const int cIn = (z*Ny + y)*Nx + ix;
+                            if (!solidPtr[cIn] && !groundPtr[cIn]) applyNonEqInlet(cIn, (z*Ny + y)*Nx + ixNb);
+                            const int cOut = (z*Ny + y)*Nx + ox;
+                            if (!solidPtr[cOut] && !groundPtr[cOut]) applyNonEqOutlet(cOut, (z*Ny + y)*Nx + oxNb);
                         }
-                    }
-                }
-            } else if (flowAxis == 1) {
-                int oy = (flowSign > 0) ? Ny-1 : 0;
-                int iy = (flowSign > 0) ? Ny-2 : 1;
-                int iy2 = (flowSign > 0) ? Ny-3 : 2;
-                #ifdef _OPENMP
-                #pragma omp parallel for
-                #endif
-                for (int z = 0; z < Nz; ++z) {
-                    for (int x = 0; x < Nx; ++x) {
-                        int cellOut = (z*Ny + oy)*Nx + x;
-                        int cellIn = (z*Ny + iy)*Nx + x;
-                        int cellIn2 = (z*Ny + iy2)*Nx + x;
-                        if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
-                        if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
-
-                        for (int qi = 0; qi < Q; ++qi) {
-                            float fOut = fPtr[cellOut*Q + qi];
-                            float fIn = fPtr[cellIn*Q + qi];
-                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[cellIn2*Q + qi] : fIn;
-                            fNextPtr[cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                } else if (flowAxis == 1) {
+                    const int iy = (flowSign > 0) ? 0 : Ny-1;
+                    const int iyNb = (flowSign > 0) ? 1 : Ny-2;
+                    const int oy = (flowSign > 0) ? Ny-1 : 0;
+                    const int oyNb = (flowSign > 0) ? Ny-2 : 1;
+                    #ifdef _OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int z = 0; z < Nz; ++z)
+                        for (int x = 0; x < Nx; ++x) {
+                            const int cIn = (z*Ny + iy)*Nx + x;
+                            if (!solidPtr[cIn] && !groundPtr[cIn]) applyNonEqInlet(cIn, (z*Ny + iyNb)*Nx + x);
+                            const int cOut = (z*Ny + oy)*Nx + x;
+                            if (!solidPtr[cOut] && !groundPtr[cOut]) applyNonEqOutlet(cOut, (z*Ny + oyNb)*Nx + x);
                         }
-                    }
+                } else {
+                    const int iz = (flowSign > 0) ? 0 : Nz-1;
+                    const int izNb = (flowSign > 0) ? 1 : Nz-2;
+                    const int oz = (flowSign > 0) ? Nz-1 : 0;
+                    const int ozNb = (flowSign > 0) ? Nz-2 : 1;
+                    #ifdef _OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int y = 0; y < Ny; ++y)
+                        for (int x = 0; x < Nx; ++x) {
+                            const int cIn = (iz*Ny + y)*Nx + x;
+                            if (!solidPtr[cIn] && !groundPtr[cIn]) applyNonEqInlet(cIn, (izNb*Ny + y)*Nx + x);
+                            const int cOut = (oz*Ny + y)*Nx + x;
+                            if (!solidPtr[cOut] && !groundPtr[cOut]) applyNonEqOutlet(cOut, (ozNb*Ny + y)*Nx + x);
+                        }
                 }
             } else {
-                int oz = (flowSign > 0) ? Nz-1 : 0;
-                int iz = (flowSign > 0) ? Nz-2 : 1;
-                int iz2 = (flowSign > 0) ? Nz-3 : 2;
-                #ifdef _OPENMP
-                #pragma omp parallel for
-                #endif
-                for (int y = 0; y < Ny; ++y) {
-                    for (int x = 0; x < Nx; ++x) {
-                        int cellOut = (oz*Ny + y)*Nx + x;
-                        int cellIn = (iz*Ny + y)*Nx + x;
-                        int cellIn2 = (iz2*Ny + y)*Nx + x;
-                        if (cellOut < 0 || cellOut >= total || cellIn < 0 || cellIn >= total) continue;
-                        if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
-
-                        for (int qi = 0; qi < Q; ++qi) {
-                            float fOut = fPtr[cellOut*Q + qi];
-                            float fIn = fPtr[cellIn*Q + qi];
-                            float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[cellIn2*Q + qi] : fIn;
-                            fNextPtr[cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                if (flowAxis == 0) {
+                    int ix = (flowSign > 0) ? 0 : Nx-1;
+                    float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                    #ifdef _OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int z = 0; z < Nz; ++z)
+                        for (int y = 0; y < Ny; ++y) {
+                            int cell = (z*Ny + y)*Nx + ix;
+                            if (!solidPtr[cell] && !groundPtr[cell])
+                                for (int qi = 0; qi < Q; ++qi)
+                                    fNextPtr[(size_t)cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
                         }
+                } else if (flowAxis == 1) {
+                    int iy = (flowSign > 0) ? 0 : Ny-1;
+                    float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                    #ifdef _OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int z = 0; z < Nz; ++z)
+                        for (int x = 0; x < Nx; ++x) {
+                            int cell = (z*Ny + iy)*Nx + x;
+                            if (!solidPtr[cell] && !groundPtr[cell])
+                                for (int qi = 0; qi < Q; ++qi)
+                                    fNextPtr[(size_t)cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        }
+                } else {
+                    int iz = (flowSign > 0) ? 0 : Nz-1;
+                    float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                    #ifdef _OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int y = 0; y < Ny; ++y)
+                        for (int x = 0; x < Nx; ++x) {
+                            int cell = (iz*Ny + y)*Nx + x;
+                            if (!solidPtr[cell] && !groundPtr[cell])
+                                for (int qi = 0; qi < Q; ++qi)
+                                    fNextPtr[(size_t)cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                        }
+                }
+
+                if (lbmParams.useConvectiveOutlet) {
+                    float convCoeff = U0mag * 0.8f;
+                    if (convCoeff > 0.5f) convCoeff = 0.5f;
+                    if (convCoeff < 0.01f) convCoeff = 0.08f;
+                    if (flowAxis == 0) {
+                        int ox = (flowSign > 0) ? Nx-1 : 0;
+                        int ix = (flowSign > 0) ? Nx-2 : 1;
+                        int ix2 = (flowSign > 0) ? Nx-3 : 2;
+                        #ifdef _OPENMP
+                        #pragma omp parallel for
+                        #endif
+                        for (int z = 0; z < Nz; ++z)
+                            for (int y = 0; y < Ny; ++y) {
+                                int cellOut = (z*Ny + y)*Nx + ox;
+                                int cellIn = (z*Ny + y)*Nx + ix;
+                                int cellIn2 = (z*Ny + y)*Nx + ix2;
+                                if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
+                                for (int qi = 0; qi < Q; ++qi) {
+                                    float fOut = fPtr[(size_t)cellOut*Q + qi];
+                                    float fIn = fPtr[(size_t)cellIn*Q + qi];
+                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[(size_t)cellIn2*Q + qi] : fIn;
+                                    fNextPtr[(size_t)cellOut*Q + qi] = fOut + convCoeff*(fIn - fOut) + 0.15f*convCoeff*(fIn - fIn2);
+                                }
+                            }
+                    } else if (flowAxis == 1) {
+                        int oy = (flowSign > 0) ? Ny-1 : 0;
+                        int iy = (flowSign > 0) ? Ny-2 : 1;
+                        int iy2 = (flowSign > 0) ? Ny-3 : 2;
+                        #ifdef _OPENMP
+                        #pragma omp parallel for
+                        #endif
+                        for (int z = 0; z < Nz; ++z)
+                            for (int x = 0; x < Nx; ++x) {
+                                int cellOut = (z*Ny + oy)*Nx + x;
+                                int cellIn = (z*Ny + iy)*Nx + x;
+                                int cellIn2 = (z*Ny + iy2)*Nx + x;
+                                if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
+                                for (int qi = 0; qi < Q; ++qi) {
+                                    float fOut = fPtr[(size_t)cellOut*Q + qi];
+                                    float fIn = fPtr[(size_t)cellIn*Q + qi];
+                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[(size_t)cellIn2*Q + qi] : fIn;
+                                    fNextPtr[(size_t)cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                                }
+                            }
+                    } else {
+                        int oz = (flowSign > 0) ? Nz-1 : 0;
+                        int iz = (flowSign > 0) ? Nz-2 : 1;
+                        int iz2 = (flowSign > 0) ? Nz-3 : 2;
+                        #ifdef _OPENMP
+                        #pragma omp parallel for
+                        #endif
+                        for (int y = 0; y < Ny; ++y)
+                            for (int x = 0; x < Nx; ++x) {
+                                int cellOut = (oz*Ny + y)*Nx + x;
+                                int cellIn = (iz*Ny + y)*Nx + x;
+                                int cellIn2 = (iz2*Ny + y)*Nx + x;
+                                if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
+                                for (int qi = 0; qi < Q; ++qi) {
+                                    float fOut = fPtr[(size_t)cellOut*Q + qi];
+                                    float fIn = fPtr[(size_t)cellIn*Q + qi];
+                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[(size_t)cellIn2*Q + qi] : fIn;
+                                    fNextPtr[(size_t)cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                                }
+                            }
                     }
                 }
             }
         }
 
         f.swap(fNext);
+        fPtr = f.data();
+        fNextPtr = fNext.data();
 
-        // v1.37.0 — перенос температуры текущим полем скорости. Стоит после
-        // обмена, потому что скорость в lbmUx/lbmUy/lbmUz посчитана на этом же
-        // шаге; плавучесть из нового поля войдёт в следующий шаг соударений.
         if (thermalParams.enabled)
             thermalStep(lbmUx.data(), lbmUy.data(), lbmUz.data());
 
@@ -1556,6 +2241,8 @@ void stepLBMCPU(int steps) {
         lbmAvgKineticEnergy = (float)(kineticAcc / sFluidCells);
         lbmMaxVelocityLB = maxVelGlobal;
         lbmTKE = (float)(tkeAcc / sFluidCells);
+        s_maxNuTRatio = (nu0 > 1e-9f) ? (maxNuTLocal / nu0) : 0.0f;
+        s_lastEnstrophy = (float)(0.5 * enstrophyAcc / (double)sFluidCells) * velScale2;
 
         float scale = flowSpeed / U0mag;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
@@ -1599,109 +2286,95 @@ void stepLBMCPU(int steps) {
         lbmAvgKineticEnergy = usqr;
     }
 
-    {
+    if (updateWorldFields || hasDiverged) {
         float inUx2, inUy2, inUz2;
         computeInletVelocityLB(inUx2, inUy2, inUz2);
         float U0mag2 = std::sqrt(inUx2*inUx2 + inUy2*inUy2 + inUz2*inUz2);
         if (!std::isfinite(U0mag2) || U0mag2 < 1e-6f) U0mag2 = 0.08f;
         float scale = flowSpeed / U0mag2;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
-        float* uxW = lbmUxWorld.data();
-        float* uyW = lbmUyWorld.data();
-        float* uzW = lbmUzWorld.data();
-        float* pPtr = lbmPressure.data();
-        char* solidPtr2 = lbmIsSolid.data();
-        char* groundPtr2 = lbmIsGround.data();
-        float rho0 = airDensity; // физическая плотность для масштабирования давления
-        long long pBad = 0;      // неконечных значений давления — явная диагностика
+        float* __restrict uxW = lbmUxWorld.data();
+        float* __restrict uyW = lbmUyWorld.data();
+        float* __restrict uzW = lbmUzWorld.data();
+        float* __restrict pPtr = lbmPressure.data();
+        const char* __restrict solidPtr2 = lbmIsSolid.data();
+        const char* __restrict groundPtr2 = lbmIsGround.data();
+        const float rho0 = airDensity;
+        const float pFactor = cs2 * scale * scale * rho0;
+        long long pBad = 0;
+        float pMin = 1e30f, pMax = -1e30f;
+
+        static std::vector<float> prevRho;
+        static int prevTotal = -1;
+        static int prevStep  = -1;
+        bool residualValid = ((int)prevRho.size() == total && prevTotal == total &&
+                              prevStep >= 0 && lbmCurrentStep >= prevStep);
+        if ((int)prevRho.size() != total) {
+            try { prevRho.assign((size_t)total, 1.0f); } catch (...) { prevRho.clear(); }
+        }
+        double sumSq = 0.0;
+        int nSampled = 0;
+        float* prevRhoPtr = prevRho.data();
+        const bool doRes = residualValid && ((int)prevRho.size() == total);
+
         #ifdef _OPENMP
-        #pragma omp parallel for reduction(+:pBad)
+        #pragma omp parallel reduction(+:pBad,sumSq,nSampled)
+        {
+        float tPMin = 1e30f, tPMax = -1e30f;
+        #pragma omp for nowait
+        #else
+        float tPMin = 1e30f, tPMax = -1e30f;
         #endif
         for (int cell = 0; cell < total; ++cell) {
             if (solidPtr2[cell] || groundPtr2[cell]) {
                 uxW[cell] = 0; uyW[cell] = 0; uzW[cell] = 0;
                 pPtr[cell] = 0;
+                if (doRes) prevRhoPtr[cell] = 1.0f;
             } else {
                 float ux = lbmUx[cell], uy = lbmUy[cell], uz = lbmUz[cell];
                 if (!std::isfinite(ux)) ux = 0;
+                if (!std::isfinite(uy)) uy = 0;
+                if (!std::isfinite(uz)) uz = 0;
                 uxW[cell] = ux * scale;
                 uyW[cell] = uy * scale;
                 uzW[cell] = uz * scale;
                 float rho = lbmRho[cell];
                 if (!std::isfinite(rho)) rho = 1.0f;
-                // v1.11.0: корректное давление p = rho0 * cs2*(rho-1) * scale^2
-                float pLat = cs2 * (rho - 1.0f);
-                float pPhys = pLat * scale * scale * rho0;
-                // Неконечное значение — признак развалившегося расчёта. Оно
-                // подменяется нулём, но не молча: счётчик lbmPressureNonFinite
-                // виден в панели решателя, в журнале и в отладочном отчёте.
+                float pPhys = (rho - 1.0f) * pFactor;
                 if (!std::isfinite(pPhys)) { pBad++; pPhys = 0.0f; }
-                // ИСПРАВЛЕНО: здесь стояло
-                //   float q = 0.5f*rho0*flowSpeed*flowSpeed;
-                //   if (fabsf(pPhys) > q) pPhys = glm::clamp(pPhys, -q, q);
-                // — ФИЗИЧЕСКОЕ поле давления обрезалось по скоростному напору
-                // (комментарий обещал 0.5*q, а код резал по q). lbmPressure читают
-                // силы (forces.cpp), трассировка давления, экспорт CSV, самописец и
-                // карта давления, поэтому на точках торможения и в следе вместо
-                // посчитанного перепада выдавался потолок ±q: Cp на теле становился
-                // ровно ±1.0, а сила давления систематически занижалась. Данные
-                // больше не ограничиваются; диапазон для КАРТИНКИ режет сама карта
-                // цвета (pressureColorInRange -> glm::clamp), а авто-масштаб
-                // aeroUpdateCpRange берёт квантили по настоящим значениям.
                 pPtr[cell] = pPhys;
-            }
-        }
-        lbmPressureNonFinite = pBad;
-
-        // v1.26.0 — мин/макс давления и остаток сходимости считаются здесь же,
-        // одним проходом с ограниченным числом ячеек (не больше 256K сравнений),
-        // чтобы UI и карта давления не делали max_element по всей сетке каждый кадр.
-        {
-            int stride = 1;
-            while (total / stride > 262144) stride *= 2;
-            float pMin = 1e30f, pMax = -1e30f;
-            static std::vector<float> prevRho;
-            static int prevTotal = -1;
-            static int prevStep  = -1;
-            bool residualValid = ((int)prevRho.size() == total && prevTotal == total &&
-                                  prevStep >= 0 && lbmCurrentStep >= prevStep);
-            if ((int)prevRho.size() != total) {
-                try { prevRho.assign((size_t)total, 1.0f); } catch (...) { prevRho.clear(); }
-            }
-            double sumSq = 0.0;
-            int nSampled = 0;
-            for (int cell = 0; cell < total; cell += stride) {
-                float p = pPtr[cell];
-                if (std::isfinite(p)) { if (p < pMin) pMin = p; if (p > pMax) pMax = p; }
-                if (residualValid && cell < (int)prevRho.size()) {
-                    float r = lbmRho[cell];
-                    if (std::isfinite(r)) {
-                        float d = r - prevRho[cell];
-                        sumSq += (double)d * (double)d;
-                        ++nSampled;
-                    }
+                if (pPhys < tPMin) tPMin = pPhys;
+                if (pPhys > tPMax) tPMax = pPhys;
+                if (doRes) {
+                    float d = rho - prevRhoPtr[cell];
+                    sumSq += (double)d * (double)d;
+                    ++nSampled;
+                    prevRhoPtr[cell] = rho;
+                } else if ((int)prevRho.size() == total) {
+                    prevRhoPtr[cell] = rho;
                 }
             }
-            lbmPressureMin = (pMin <= pMax && std::isfinite(pMin)) ? pMin : 0.0f;
-            lbmPressureMax = (pMin <= pMax && std::isfinite(pMax)) ? pMax : 0.0f;
-            if (residualValid && nSampled > 0)
-                lbmResidualRho = (float)std::sqrt(sumSq / (double)nSampled);
-            else
-                lbmResidualRho = 0.0f;
-            // Изменение максимальной скорости за кадр — дешёвый индикатор того,
-            // что поток ещё перестраивается (полный векторный остаток стоил бы
-            // ещё три поля памяти).
-            static float prevMaxVelLB = 0.0f;
-            lbmResidualU = std::fabs(lbmMaxVelocityLB - prevMaxVelLB);
-            prevMaxVelLB = lbmMaxVelocityLB;
-            // Сохраняем плотность для следующего сравнения (только жидкие ячейки)
-            for (int cell = 0; cell < total && cell < (int)prevRho.size(); ++cell) {
-                float r = lbmRho[cell];
-                prevRho[cell] = std::isfinite(r) ? r : 1.0f;
-            }
-            prevTotal = total;
-            prevStep  = lbmCurrentStep;
         }
+        #ifdef _OPENMP
+        #pragma omp critical
+        {
+            if (tPMin < pMin) pMin = tPMin;
+            if (tPMax > pMax) pMax = tPMax;
+        }
+        }
+        #else
+        pMin = tPMin; pMax = tPMax;
+        #endif
+        lbmPressureNonFinite = pBad;
+        lbmPressureMin = (pMin <= pMax && std::isfinite(pMin)) ? pMin : 0.0f;
+        lbmPressureMax = (pMin <= pMax && std::isfinite(pMax)) ? pMax : 0.0f;
+        lbmResidualRho = (doRes && nSampled > 0) ? (float)std::sqrt(sumSq / (double)nSampled) : 0.0f;
+        static float prevMaxVelLB = 0.0f;
+        lbmResidualU = std::fabs(lbmMaxVelocityLB - prevMaxVelLB);
+        s_lastResidualU = lbmResidualU;
+        prevMaxVelLB = lbmMaxVelocityLB;
+        prevTotal = total;
+        prevStep  = lbmCurrentStep;
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();

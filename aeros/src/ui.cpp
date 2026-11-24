@@ -26,6 +26,7 @@
 #include "atmosphere.h"
 #include "test_mode.h"
 #include "lbm.h"
+#include "phys_sim.h"
 #include "thermal_lbm.h"   // v1.37.0 — тепло и плавучесть
 #include "forces.h"
 #include "flow_field.h"  // v1.30.0 — aeroCpNonFinite, airSutherlandViscosity
@@ -564,6 +565,7 @@ static const UiLeaf kUiLeaves[] = {
     { 3, 12, "Линии тока",                  "Streamlines" },
     { 3,  6, "Эффекты и визуализация",      "Effects & visualization" },
     { 4, 19, "Самописец физики",            "Physics recorder" },
+    { 4, 23, "Предсимуляция и поведение",   "Pre-Simulation & Behavior" },
     { 4, 18, "Режим тестов",                "Test mode" },
     { 5, 15, "Отображение",                 "Display" },
     { 6, 20, "Журнал и отладочный отчёт",   "Journal & debug report" },
@@ -1243,7 +1245,8 @@ if (uiSelectedLeaf == 3 && ImGui::CollapsingHeader(_TR("FSR & Optimizations v1.1
         _TR("FSR", "ФСР"), perfFSRms,
         _TR("Culling", "Отсечение"), perfCullingMs,
         _TR("Culled", "Отсечено"), perfCulledTriangles);
-    ImGui::Text("%s: %d particles culled | Scale: %.2f -> %dx%d",
+    ImGui::Text("%s: %.2f -> %dx%d",
+        _TR("Scale", "Масштаб"),
         fsrCurrentScale,
         (int)(display_w*fsrCurrentScale), (int)(display_h*fsrCurrentScale));
 
@@ -2263,13 +2266,52 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     ImGui::Checkbox(_TR("Smagorinsky LES Turbulence", "Турбулентность Smagorinsky LES"), &lbmParams.useTurbulence);
     if (lbmParams.useTurbulence) ImGui::SliderFloat(_TR("Smagorinsky C", "Константа Smagorinsky"), &lbmParams.smagorinskyC, 0.01f, 0.3f, "%.3f");
     ImGui::Checkbox(_TR("Adaptive Stepping", "Адаптивные шаги"), &aeroAdaptiveLBM);
-    // v1.36.0 — заблокированные переключатели MRT / регуляризация / Zou-He
-    // удалены вместе с полями: они не читались решателем (коллизия BGK, вход —
-    // равновесные популяции, регуляризации нет) и половину панели занимали
-    // галочки, которые ничего не включали. Ниже — одна строка о том, что
-    // действительно считается, вместо трёх неработающих опций.
-    ImGui::TextDisabled("%s", _TR("Inlet: equilibrium populations, outlet: convective/bounce-back, collision: BGK with Smagorinsky",
-                                  "Вход: равновесные популяции, выход: конвективный/bounce-back, коллизия: BGK со Смагоринским"));
+    ImGui::Separator();
+    ImGui::Text("%s:", _TR("Flagship Physics Operators (v1.39.0 C++17)", "Флагманские операторы физики (v1.39.0 C++17)"));
+    {
+        const char* colItems[] = {
+            "BGK (SRT)",
+            "TRT (Magic 3/16)",
+            "MRT (d'Humieres 19-moment)",
+            "Regularized (Hermite 2nd)"
+        };
+        int colIdx = lbmParams.collisionMode;
+        if (colIdx < 0 || colIdx > 3) colIdx = 0;
+        if (ImGui::Combo(_TR("Collision Operator", "Оператор столкновений"), &colIdx, colItems, 4)) {
+            lbmParams.collisionMode = colIdx;
+            if (colIdx == 1) lbmParams.useTRT = true;
+            else if (colIdx == 0) lbmParams.useTRT = false;
+        }
+        const char* turbItems[] = {
+            "Off (DNS / Laminar)",
+            "Smagorinsky-Lilly + Van Driest",
+            "WALE (Nicoud-Ducros 1999)"
+        };
+        int turbIdx = lbmParams.useTurbulence ? lbmParams.turbulenceModel : 0;
+        if (turbIdx < 0 || turbIdx > 2) turbIdx = 1;
+        if (ImGui::Combo(_TR("Turbulence SGS", "Подсеточная турбулентность"), &turbIdx, turbItems, 3)) {
+            lbmParams.turbulenceModel = turbIdx;
+            lbmParams.useTurbulence = (turbIdx != 0);
+        }
+        if (lbmParams.useTurbulence && lbmParams.turbulenceModel == 2) {
+            ImGui::SliderFloat(_TR("WALE C_w", "Константа WALE C_w"), &lbmParams.waleC, 0.1f, 0.5f, "%.3f");
+        }
+        ImGui::Checkbox(_TR("Curved Wall BFL (2nd-order SDF)", "Криволинейная стенка BFL (2-й порядок SDF)"),
+                        &lbmParams.useCurvedBoundary);
+        ImGui::Checkbox(_TR("Flagship Boundaries (NonEq + Sponge + Free-Slip)",
+                            "Флагманские ГУ (NonEq + губка + скольжение)"),
+                        &lbmParams.useFlagshipBoundaries);
+        if (lbmParams.useFlagshipBoundaries) {
+            ImGui::SliderInt(_TR("Sponge Layers", "Слоёв губки"), &lbmParams.spongeLayers, 0, 20);
+            ImGui::SliderFloat(_TR("Sponge Strength", "Сила губки"), &lbmParams.spongeStrength, 0.0f, 1.5f, "%.2f");
+        }
+        if (ImGui::Button(_TR("Apply Flagship Preset (MRT + WALE + BFL)",
+                              "Применить флагманский пресет (MRT + WALE + BFL)"))) {
+            lbmApplyFlagshipPreset();
+            if (lbmInitialized) resetLBM();
+            debugLogAction("LBM", "применён флагманский пресет MRT+WALE+BFL");
+        }
+    }
     ImGui::Checkbox(_TR("Convective Outlet", "Конвективный выход"), &lbmParams.useConvectiveOutlet);
     ImGui::Checkbox(_TR("TRT collision (two relaxation times)", "TRT-коллизия (две частоты релаксации)"),
                     &lbmParams.useTRT);
@@ -2328,6 +2370,10 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     ImGui::Text("Avg Rho: %.4f | Kinetic: %.6f | MaxVel LB %.3f", lbmAvgRho, lbmAvgKineticEnergy, lbmMaxVelocityLB);
     ImGui::Text("Max Vel World: %.2f m/s | Re_phys: %.1f | Re_LB: %.1f | Conv: %.2e",
                 lbmMaxVelocityWorld, lbmReynolds, lbmReynoldsLB, lbmConvergence);
+    ImGui::Text("Operator: %s | SGS: %s | Enstrophy: %.3e | nu_t/nu0 max: %.2f",
+                lbmCollisionModeName(lbmEffectiveCollisionMode()),
+                lbmTurbulenceModelName(lbmEffectiveTurbulenceModel()),
+                lbmEnstrophy(), lbmMaxNuTRatio());
     if (lbmReynoldsLB > 0.0f && lbmReynolds > 0.0f &&
         (lbmReynolds / lbmReynoldsLB > 10.0f || lbmReynoldsLB / lbmReynolds > 10.0f)) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s",
@@ -2356,9 +2402,10 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     ImGui::SameLine(); if (ImGui::Button(_TR("Compute Vort/Q/Strain", "Вычислить вихрь/Q/деформацию"))) { computeLBMVorticityAndQ(); }
     ImGui::Separator();
     ImGui::Text("%s v1.19.0:", _TR("Realistic features", "Реалистичные фичи"));
-    // ИСПРАВЛЕНО: пункт обещал «Вход Zou/He», которого в решателе никогда не было.
-    ImGui::BulletText("%s", _TR("Equilibrium inlet + convective outlet + ground (Zou/He NOT implemented)",
-                                "Равновесный вход + конвективный выход + земля (Zou/He НЕ реализован)"));
+    ImGui::BulletText("%s", _TR("Operators: BGK / TRT / d'Humieres MRT / Regularized + Smagorinsky / WALE SGS",
+                                "Операторы: BGK / TRT / MRT д'Юмьера / Регуляризованный + Smagorinsky / WALE"));
+    ImGui::BulletText("%s", _TR("Boundaries: Curved BFL (SDF), NonEq Inlet/Outlet + Sponge Layer, Free-Slip Side",
+                                "Границы: криволинейные BFL (SDF), NonEq вход/выход + губка, свободное скольжение"));
     ImGui::BulletText("%s", _TR("Mach + Helicity + Total Pressure", "Мах + Спиральность + Полное давление"));
     ImGui::BulletText("%s", _TR("Adaptive stepping + stability checks", "Адаптивные шаги + проверки стабильности"));
     ImGui::BulletText("%s", _TR("Rainbow/Viridis/Parula/CoolWarm + EN/RU", "Радуга/Viridis/Parula/CoolWarm + EN/RU"));
@@ -2679,6 +2726,161 @@ if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra
     // разработчику диагностику и понять, почему не работает CUDA.
     // ============================================================
     if (uiSelectedLeaf == 19) drawTimelapsePanel();
+
+    if (uiSelectedLeaf == 23 && ImGui::CollapsingHeader(_TR("Two-Stage Physics: Pre-Simulation & Behavior Account",
+                                                            "Двухэтапная физика: предсимуляция и отчёт поведения"),
+                                                        ImGuiTreeNodeFlags_DefaultOpen)) {
+        PhysSimConfig& cfg = physSimConfig();
+        const bool running = physSimIsRunning();
+        const PhysSimStage st = physSimStage();
+
+        ImGui::TextWrapped("%s", _TR(
+            "Stage 1 pre-calculates the C++17 LBM (+Thermal) simulation in the background. "
+            "Stage 2 lets you scrub 3D snapshots in time and inspect the full physical behavior report.",
+            "Этап 1 предрассчитывает физику C++17 LBM (+Thermal) в фоне. "
+            "Этап 2 позволяет просматривать 3D-снимки во времени и изучать подробный отчёт о поведении системы."));
+        ImGui::Separator();
+
+        ImGui::BeginDisabled(running);
+        ImGui::SliderInt(_TR("Pre-sim Steps", "Шагов предсимуляции"), &cfg.targetSteps, 100, 10000);
+        ImGui::SliderInt(_TR("Metrics Every N Steps", "Сэмпл сил каждые N шагов"), &cfg.metricsEvery, 1, 50);
+        ImGui::SliderInt(_TR("3D Snapshot Every N Steps", "3D-снимок каждые N шагов"), &cfg.snapshotEvery, 5, 250);
+        ImGui::SliderInt(_TR("Snapshot Grid Res", "Разрешение снимка"), &cfg.snapshotRes, 8, 32);
+        ImGui::Checkbox(_TR("Apply Flagship Preset (MRT+WALE+BFL)", "Флагманский пресет (MRT+WALE+BFL)"), &cfg.flagshipMode);
+        ImGui::Checkbox(_TR("Reset Solver Before Run", "Сбросить решатель перед стартом"), &cfg.resetBeforeRun);
+        ImGui::Checkbox(_TR("Auto-Analyze & Export (.md/.csv/.json)", "Автоанализ и экспорт (.md/.csv/.json)"), &cfg.autoExport);
+        ImGui::EndDisabled();
+
+        if (!running) {
+            const bool hasModel = !g_vertices.empty();
+            ImGui::BeginDisabled(!hasModel);
+            if (ImGui::Button(_TR("Stage 1: Run Pre-Simulation", "Этап 1: Запустить предсимуляцию"))) {
+                physSimStartAsync(cfg);
+                debugLogAction("предсимуляция", "запущен расчёт %d шагов", cfg.targetSteps);
+            }
+            ImGui::EndDisabled();
+            if (!hasModel) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", _TR("(load a model first)", "(сначала загрузите модель)"));
+            }
+        } else {
+            if (ImGui::Button(_TR("Cancel Pre-Simulation", "Отменить предсимуляцию"))) {
+                physSimCancel();
+            }
+        }
+
+        ImGui::ProgressBar(physSimProgress(), ImVec2(-1.0f, 0.0f));
+        ImGui::Text("%s: %s | %d / %d (%.1f s, %.1f MLUPS)",
+                    _TR("Status", "Статус"),
+                    physSimStatusText().c_str(),
+                    physSimCurrentStepDone(),
+                    physSimTargetSteps(),
+                    physSimElapsedSec(),
+                    physSimCurrentMLUPS());
+
+        const int snapN = physSimSnapshotCount();
+        if (st == PhysSimStage::InspectReady || snapN > 0) {
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.6f, 1.0f), "%s",
+                               _TR("Stage 2: Post-Simulation Inspection & Behavior Account",
+                                   "Этап 2: Постинспекция и хроника физического поведения"));
+
+            static int s_uiSnapIdx = 0;
+            static bool s_uiPlaying = false;
+            static double s_lastPlayT = 0.0;
+            if (s_uiSnapIdx >= snapN) s_uiSnapIdx = snapN - 1;
+            if (s_uiSnapIdx < 0) s_uiSnapIdx = 0;
+
+            if (snapN > 0) {
+                bool applyNow = false;
+                if (ImGui::SliderInt(_TR("Timeline Snapshot", "Снимок на шкале времени"), &s_uiSnapIdx, 0, snapN - 1)) {
+                    applyNow = true;
+                }
+                if (ImGui::Button(_TR("Prev", "Назад"))) {
+                    s_uiSnapIdx = std::max(0, s_uiSnapIdx - 1);
+                    applyNow = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(s_uiPlaying ? _TR("Pause", "Пауза") : _TR("Play Timeline", "Воспроизвести"))) {
+                    s_uiPlaying = !s_uiPlaying;
+                    s_lastPlayT = ImGui::GetTime();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(_TR("Next", "Вперёд"))) {
+                    s_uiSnapIdx = std::min(snapN - 1, s_uiSnapIdx + 1);
+                    applyNow = true;
+                }
+                if (s_uiPlaying && snapN > 1) {
+                    double nowT = ImGui::GetTime();
+                    if (nowT - s_lastPlayT >= 0.12) {
+                        s_lastPlayT = nowT;
+                        s_uiSnapIdx = (s_uiSnapIdx + 1) % snapN;
+                        applyNow = true;
+                    }
+                }
+                if (applyNow) {
+                    if (physSimApplySnapshotToWorld(s_uiSnapIdx)) {
+                        if (showPressure) updateVertexColors();
+                        updateLiftDragArrows();
+                    }
+                }
+
+                PhysSimSnapshot sn;
+                if (physSimGetSnapshot(s_uiSnapIdx, &sn)) {
+                    ImGui::Text("Step %d (t=%.4f s) | Drag=%.3f N (Cd=%.4f) | Lift=%.3f N (Cl=%.4f)",
+                                sn.step, sn.timePhys, sn.dragN, sn.cd, sn.liftN, sn.cl);
+                    ImGui::Text("Cp=[%.2f, %.2f] | Max Vort=%.2f | Max Q=%.2f",
+                                sn.cpMin, sn.cpMax, sn.maxVorticity, sn.maxQCrit);
+                }
+            }
+
+            if (ImGui::Button(_TR("Re-Analyze Behavior", "Переанализировать поведение"))) {
+                physSimAnalyzeBehavior();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(_TR("Export .md / .csv / .json", "Экспорт .md / .csv / .json"))) {
+                physSimExportAll(cfg.outputDir, cfg.runTag);
+            }
+
+            const PhysBehaviorReport& rep = physSimReport();
+            if (rep.valid) {
+                ImGui::Separator();
+                ImGui::Text("%s: %s", _TR("Flow Regime", "Режим течения"), rep.regimeName.c_str());
+                ImGui::TextWrapped("%s", rep.regimeReason.c_str());
+                ImGui::Text("Cd = %.4f +/- %.4f | Cl = %.4f +/- %.4f | L/D = %.2f",
+                            rep.cdMean, rep.cdStd, rep.clMean, rep.clStd, rep.ldMean);
+                if (rep.hasDominantShedding) {
+                    ImGui::Text("Shedding: f = %.2f Hz | St = %.3f | Prominence = %.1fx",
+                                rep.dominantFreqHz, rep.strouhalNumber, rep.spectralProminence);
+                }
+                ImGui::Text("Mass drift = %.2e | Max Mach_LB = %.3f | Peak nu_t/nu0 = %.2f",
+                            rep.massDriftRel, rep.maxMachLB, rep.peakNuTRatio);
+                ImGui::Text("Wake deficit 1L/2L/4L: %.1f%% / %.1f%% / %.1f%%",
+                            rep.finalWakeDeficit1L * 100.0f,
+                            rep.finalWakeDeficit2L * 100.0f,
+                            rep.finalWakeDeficit4L * 100.0f);
+
+                if (ImGui::TreeNode(_TR("Chronological Behavior Events", "Хронология событий поведения"))) {
+                    for (const auto& ev : rep.events) {
+                        ImGui::BulletText("[Step %d, %.4fs] %s: %s",
+                                          ev.step, ev.timePhys, ev.title.c_str(), ev.detail.c_str());
+                    }
+                    ImGui::TreePop();
+                }
+                if (ImGui::TreeNode(_TR("Full Narrative Report (.md)", "Полный текстовый отчёт (.md)"))) {
+                    ImGui::BeginChild("PhysReportScroll", ImVec2(0, 220), true);
+                    ImGui::TextUnformatted(rep.markdownNarrative.c_str());
+                    ImGui::EndChild();
+                    ImGui::TreePop();
+                }
+            }
+            if (!physSimLastMdPath().empty()) {
+                ImGui::TextDisabled("MD: %s", physSimLastMdPath().c_str());
+                ImGui::TextDisabled("CSV: %s", physSimLastCsvPath().c_str());
+                ImGui::TextDisabled("JSON: %s", physSimLastJsonPath().c_str());
+            }
+        }
+    }
 
     if (uiSelectedLeaf == 20 && ImGui::CollapsingHeader(_TR("Debug & Journal v1.25.0", "Отладка и журнал v1.25.0"))) {
         ImGui::Text("%s", _TR("F9 — debug mode on/off, F10 — save report",

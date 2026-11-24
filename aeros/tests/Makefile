@@ -30,8 +30,8 @@ COMMON := $(SRC)/globals.cpp $(SRC)/debug_log.cpp
 
 IMGUI := $(SRC)/imgui
 
-.PHONY: all bench timelapse lbm physclock fem ui settings vulkan startup glyphs hotkeys validate openurl voxel stl physref thermal clean
-all: timelapse lbm physclock fem ui settings vulkan startup glyphs hotkeys validate openurl voxel stl physref thermal
+.PHONY: all bench timelapse lbm physclock fem ui settings vulkan startup glyphs hotkeys validate openurl voxel stl physref thermal physsim clean
+all: timelapse lbm physclock fem ui settings vulkan startup glyphs hotkeys validate openurl voxel stl physref thermal physsim
 
 timelapse:
 	g++ $(CXXFLAGS) timelapse_headless.cpp $(SRC)/timelapse.cpp $(SRC)/debug_log.cpp \
@@ -167,3 +167,9 @@ startup:
 vulkan:
 	g++ $(CXXFLAGS) vulkan_headless.cpp -o /tmp/aeros-test-vulkan
 	/tmp/aeros-test-vulkan
+
+physsim:
+	g++ $(CXXFLAGS) phys_sim_headless.cpp $(SRC)/phys_sim.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp \
+	    $(SRC)/flow_field.cpp $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
+	    -o /tmp/aeros-test-physsim -pthread
+	/tmp/aeros-test-physsim

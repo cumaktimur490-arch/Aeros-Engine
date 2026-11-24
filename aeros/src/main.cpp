@@ -45,11 +45,13 @@
 #include "ui_layout.h"   // v1.31.0 — компоновка оболочки CAD/CAE (сохранение между запусками)
 #include "model.h"
 #include "stl_loader.h"
+#include "voxel_grid.h"
 #include "streamlines.h"
 #include "forces.h"
 #include "atmosphere.h"
 #include "test_mode.h"
 #include "lbm.h"
+#include "phys_sim.h"
 #include "flow_field.h"   // v1.30.0 — aeroCpNonFinite, airSutherlandViscosity
 #include "lang.h"
 #include "fsr.h"
@@ -284,7 +286,7 @@ static void collectDebugFacts() {
                   flowSpeed, flowAzimuth, flowElevation, timeScale);
     debugLogAddFact("Физика", "Поток", buf);
     std::snprintf(buf, sizeof(buf), "частиц %d (рисуется %d, показ %s), линий тока %d (вершин %d, показ %s)",
-                  "0", 0, "нет",
+                  0, 0, "нет",
                   numStreamlines, streamlineVertexCount, showStreamlines ? "да" : "нет");
     debugLogAddFact("Физика", "Частицы и линии тока", buf);
     std::snprintf(buf, sizeof(buf), "LBM %s, сетка %dx%dx%d, шаг %d, шагов на кадр %d",
@@ -559,6 +561,13 @@ int main(int argc, char** argv) {
     bool  cliPhysNoFixed  = false;       // --no-fixed-physics (прежний покадровый режим)
     float cliPhysHz       = 0.0f;        // --physics-hz N
     int   cliPhysSubsteps = 0;           // --physics-substeps N
+    // v1.39.0 — двухэтапная предсимуляция + анализ поведения в CLI (без окна)
+    bool  cliPresim       = false;
+    int   cliPresimSteps  = 1500;
+    float cliPresimSpeed  = -1.0f;
+    bool  cliPresimFlagship = true;
+    std::string cliPresimOut   = "logs";
+    std::string cliPresimModel;
     for (int i=1; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--vulkan" || arg == "-vulkan" || arg == "--vk") {
@@ -597,6 +606,18 @@ int main(int argc, char** argv) {
             cliTLSpeed = (float)std::atof(argv[++i]);
         } else if (arg == "--save-report" || arg == "--report" || arg == "--debug-report") {
             cliSaveReport = true;
+        } else if (arg == "--presim") {
+            cliPresim = true;
+        } else if (arg == "--presim-steps" && i+1 < argc) {
+            cliPresimSteps = std::max(10, std::atoi(argv[++i]));
+        } else if (arg == "--presim-out" && i+1 < argc) {
+            cliPresimOut = argv[++i];
+        } else if (arg == "--presim-model" && i+1 < argc) {
+            cliPresimModel = argv[++i];
+        } else if (arg == "--presim-speed" && i+1 < argc) {
+            cliPresimSpeed = (float)std::atof(argv[++i]);
+        } else if (arg == "--presim-no-flagship") {
+            cliPresimFlagship = false;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Aeros Engine v" AEROS_VERSION_STRING " — Airflow Visualization\n";
             std::cout << "Full: Vulkan+OpenGL, CUDA, FSR, FG, all features\n";
@@ -623,6 +644,11 @@ int main(int argc, char** argv) {
             std::cout << "  --timelapse-capacity N — ring buffer size in frames (default 6000)\n";
             std::cout << "  --timelapse-field N    — capture a pressure-field snapshot every N frames (0 = off)\n";
             std::cout << "  --timelapse-speed X    — playback speed, 1.0 = real time (same as the panel slider)\n";
+            std::cout << "  --presim               — Stage 1+2 headless pre-simulation and behavior report, then exit\n";
+            std::cout << "  --presim-steps N       — LBM steps for --presim (default 1500)\n";
+            std::cout << "  --presim-out DIR       — output folder for .md/.csv/.json (default logs)\n";
+            std::cout << "  --presim-model FILE    — STL model for --presim (default analytical sphere)\n";
+            std::cout << "  --presim-speed V       — freestream m/s for --presim\n";
             std::cout << "  --help, -h        — this help\n";
             std::cout << "  model.stl         — STL file to load\n";
             std::cout << "Presets:\n";
@@ -727,6 +753,76 @@ int main(int argc, char** argv) {
 #endif
         debugLogClose();
         return 0;
+    }
+
+    // --presim: двухэтапный автономный прогон (Stage 1: C++ LBM + Stage 2: анализ/экспорт)
+    if (cliPresim) {
+        if (!cliPresimModel.empty()) {
+            if (!loadSTL(cliPresimModel, g_vertices, g_normals)) {
+                std::cerr << "[PreSim] Failed to load STL: " << cliPresimModel << std::endl;
+                debugLogClose();
+                return 2;
+            }
+        }
+        if (g_vertices.empty()) {
+            // Аналитическая сфера R=0.5 в качестве эталонного тела по умолчанию
+            const int rings = 16, slices = 24;
+            const float R = 0.5f;
+            auto pushTri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c) {
+                glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
+                g_vertices.insert(g_vertices.end(), {a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z});
+                g_normals.insert(g_normals.end(),   {n.x,n.y,n.z, n.x,n.y,n.z, n.x,n.y,n.z});
+            };
+            for (int r = 0; r < rings; ++r) {
+                float th0 = (float)r / rings * 3.14159265f;
+                float th1 = (float)(r + 1) / rings * 3.14159265f;
+                for (int s = 0; s < slices; ++s) {
+                    float ph0 = (float)s / slices * 6.2831853f;
+                    float ph1 = (float)(s + 1) / slices * 6.2831853f;
+                    auto pt = [&](float th, float ph) {
+                        return glm::vec3(R*sinf(th)*cosf(ph), R*cosf(th), R*sinf(th)*sinf(ph));
+                    };
+                    glm::vec3 p00 = pt(th0, ph0), p10 = pt(th1, ph0);
+                    glm::vec3 p11 = pt(th1, ph1), p01 = pt(th0, ph1);
+                    if (r > 0) pushTri(p00, p11, p10);
+                    if (r + 1 < rings) pushTri(p00, p01, p11);
+                }
+            }
+        }
+        // Вычисляем габариты и центр модели без OpenGL
+        glm::vec3 bmin(1e9f), bmax(-1e9f);
+        for (size_t vi = 0; vi + 2 < g_vertices.size(); vi += 3) {
+            glm::vec3 v(g_vertices[vi], g_vertices[vi+1], g_vertices[vi+2]);
+            bmin = glm::min(bmin, v); bmax = glm::max(bmax, v);
+        }
+        center = (bmin + bmax) * 0.5f;
+        minBB = bmin;
+        maxBB = bmax;
+        glm::vec3 ext = bmax - bmin;
+        maxDim = std::max(0.01f, std::max(ext.x, std::max(ext.y, ext.z)));
+        modelVertexCount = (int)g_vertices.size() / 3;
+        aeroRefArea = std::max(1e-4f, ext.y * ext.z);
+        if (cliPresimSpeed > 0.0f) flowSpeed = cliPresimSpeed;
+
+        buildVoxelGrid(g_vertices, voxelResolution);
+        PhysSimConfig pcfg = physSimConfig();
+        pcfg.targetSteps = cliPresimSteps;
+        pcfg.outputDir = cliPresimOut;
+        pcfg.flagshipMode = cliPresimFlagship;
+        pcfg.autoAnalyze = true;
+        pcfg.autoExport = true;
+        bool ok = physSimRunBlocking(pcfg);
+        const PhysBehaviorReport& rep = physSimReport();
+        std::cout << "[PreSim] Done=" << (ok ? "OK" : "FAIL")
+                  << " regime=\"" << rep.regimeName << "\""
+                  << " MLUPS=" << rep.achievedMLUPS
+                  << " Cd=" << rep.cdMean << " Cl=" << rep.clMean
+                  << " St=" << rep.strouhalNumber
+                  << " md=" << physSimLastMdPath() << std::endl;
+        physSimShutdown();
+        timelapseShutdown();
+        debugLogClose();
+        return ok ? 0 : 1;
     }
 
     // Try load settings
@@ -1240,7 +1336,7 @@ int main(int argc, char** argv) {
         // домен LBM/частиц давал бы нули, NaN и лишнюю нагрузку на кадр.
         const bool hasModel = !g_vertices.empty();
 
-        if (hasModel && lbmParams.enabled) {
+        if (hasModel && lbmParams.enabled && !physSimIsRunning()) {
             // v1.9.0 adaptive LBM stepping — только в прежнем покадровом режиме:
             // при фиксированном такте он менял бы частоту физики за спиной пользователя.
             if (!physClock.fixed && aeroAdaptiveLBM) {
@@ -1258,10 +1354,12 @@ int main(int argc, char** argv) {
 
 
         auto tForce0 = std::chrono::high_resolution_clock::now();
-        if (hasModel && showPressure) updateVertexColors();
-        if (hasModel) computeLiftDrag();
-        if (hasModel && lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
-        if (hasModel) updateLiftDragArrows();
+        if (hasModel && !physSimIsRunning()) {
+            if (showPressure) updateVertexColors();
+            computeLiftDrag();
+            if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
+            updateLiftDragArrows();
+        }
         // v1.19.0 Flight dynamics — обновляем после расчета сил
         if (hasModel && aeroFlightMode) {
             // v1.29.0 — динамика полёта интегрируется на модельном времени такта,
@@ -1817,6 +1915,7 @@ int main(int argc, char** argv) {
         glDeleteProgram(groundShaderProgram);
         cleanupGLResources();
     }
+    physSimShutdown();
     shutdownLBM();
 
     // Порядок важен: сначала бэкенд интерфейса (он владеет пулом дескрипторов и
