@@ -149,8 +149,6 @@ cl /c !CXXFLAGS! src\voxel_grid.cpp /Fo:bin\voxel_grid.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\flow_field.cpp /Fo:bin\flow_field.obj
 if !errorlevel! neq 0 exit /b 1
-cl /c !CXXFLAGS! src\ /Fo:bin\
-if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\streamlines.cpp /Fo:bin\streamlines.obj
 if !errorlevel! neq 0 exit /b 1
 cl /c !CXXFLAGS! src\forces.cpp /Fo:bin\forces.obj
@@ -208,7 +206,7 @@ if !errorlevel! neq 0 exit /b 1
 echo [Aeros Lite] Linking Lite (no LTCG, small binary)...
 link /OUT:bin\main-lite-%OUT_ARCH%.exe ^
  bin\main.obj bin\globals.obj bin\input.obj bin\gl_utils.obj bin\stl_loader.obj ^
- bin\voxel_grid.obj bin\flow_field.obj bin\ bin\streamlines.obj ^
+ bin\voxel_grid.obj bin\flow_field.obj bin\streamlines.obj ^
  bin\forces.obj bin\model.obj bin\ui.obj bin\atmosphere.obj bin\test_mode.obj bin\lbm.obj bin\thermal_lbm.obj bin\lang.obj bin\fsr.obj bin\framegen.obj bin\interesting.obj bin\vulkan_renderer.obj bin\vulkan_scene.obj bin\lite_config.obj bin\cuda_stub.obj bin\debug_log.obj bin\timelapse.obj bin\phys_sim.obj bin\glad.obj ^
  bin\imgui.obj bin\imgui_draw.obj bin\imgui_tables.obj bin\imgui_widgets.obj ^
  bin\imgui_impl_glfw.obj bin\imgui_impl_opengl3.obj bin\imgui_impl_vulkan.obj !ICON_RES! ^

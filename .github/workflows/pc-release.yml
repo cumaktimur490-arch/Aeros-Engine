@@ -163,19 +163,62 @@ jobs:
       - name: Build x64 (CUDA, fallback CPU)
         shell: pwsh
         run: |
-          $out = cmd /c "cd aeros && call build.bat x64" 2>&1 | Out-String
+          # Ищем MSVC 14.3x / 14.4x (VS 2022 / v143): CUDA 13.2 cudafe++ падает с
+          # 0xC0000005 на заголовках MSVC 14.5x (VS 2026).
+          $vcvars = $null
+          $vcVerArg = ""
+          $msvcRoots = @(Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*" -Directory -ErrorAction SilentlyContinue)
+          $vcFound = @($msvcRoots | ForEach-Object { $_.FullName })
+          $compat = @($msvcRoots | Where-Object { $_.Name -match '^14\.(3|4)\d\.' } | Sort-Object Name -Descending | Select-Object -First 1)
+          if ($compat) {
+            $vcDir = Split-Path (Split-Path (Split-Path $compat.FullName -Parent) -Parent) -Parent
+            $cand = Join-Path $vcDir "Auxiliary\Build\vcvarsall.bat"
+            if (Test-Path $cand) {
+              $vcvars = $cand
+              $vcVerArg = "-vcvars_ver=$($compat.Name)"
+            }
+          }
+          if (-not $vcvars) {
+            Write-Host "[ci] MSVC 14.3/14.4 не найден среди: $($vcFound -join '; ') — ставим VS 2022 Build Tools (v143)"
+            $bt = Join-Path $env:RUNNER_TEMP "vs_buildtools.exe"
+            Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile $bt -UseBasicParsing
+            $p = Start-Process -FilePath $bt -ArgumentList "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621" -Wait -PassThru
+            Write-Host "[ci] vs_buildtools exit=$($p.ExitCode)"
+            $msvcRoots2 = @(Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*" -Directory -ErrorAction SilentlyContinue)
+            $compat2 = @($msvcRoots2 | Where-Object { $_.Name -match '^14\.(3|4)\d\.' } | Sort-Object Name -Descending | Select-Object -First 1)
+            if ($compat2) {
+              $vcDir = Split-Path (Split-Path (Split-Path $compat2.FullName -Parent) -Parent) -Parent
+              $cand = Join-Path $vcDir "Auxiliary\Build\vcvarsall.bat"
+              if (Test-Path $cand) {
+                $vcvars = $cand
+                $vcVerArg = "-vcvars_ver=$($compat2.Name)"
+              }
+            }
+          }
+          if ($vcvars) {
+            Write-Host "::notice::x64-vc: using $vcvars $vcVerArg"
+            $out = cmd /c "call `"$vcvars`" x64 $vcVerArg && set AEROS_KEEP_VC=1 && cd aeros && call build.bat x64" 2>&1 | Out-String
+          } else {
+            Write-Host "::notice::x64-vc: fallback default (found: $($vcFound -join '; '))"
+            $out = cmd /c "cd aeros && call build.bat x64" 2>&1 | Out-String
+          }
           Write-Host $out
           $cudaOut = $out
 
           # Причина сбоя - всегда одной строкой. Многострочные аннотации GitHub
-          # отбрасывает (прежняя версия склеивала 30 строк через %0A, и в итоге
-          # при уходе сборки в CPU-fallback не было видно ни одной ошибки nvcc).
+          # отбрасывает. Вырезаем вывод до fallback (build-cpu.bat) и исключаем
+          # пути вроде vc2022 и warning C4xxx, чтобы видеть настоящую ошибку nvcc.
           function Build-Reason([string]$text) {
+            $idx = $text.IndexOf("[WARN] CUDA build failed")
+            if ($idx -gt 0) { $text = $text.Substring(0, $idx) }
             $lines = @(($text -split "`r?`n") | Where-Object { $_.Trim() })
-            $errs = @($lines | Where-Object { $_ -match "error|fatal|C\d{4}|LNK\d{4}|nvcc|failed|cannot|не удалось" } | Select-Object -Last 10)
-            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 8) }
+            $errs = @($lines | Where-Object {
+              $_ -notmatch "warning C\d{4}|lib-vc\d{4}" -and
+              $_ -match "error|fatal|LNK\d{4}|nvcc|failed|cannot|не удалось"
+            } | Select-Object -Last 10)
+            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 10) }
             $m = ($errs -join " // ") -replace "\s+", " "
-            if ($m.Length -gt 700) { $m = $m.Substring($m.Length - 700) }
+            if ($m.Length -gt 900) { $m = $m.Substring($m.Length - 900) }
             return $m
           }
 
