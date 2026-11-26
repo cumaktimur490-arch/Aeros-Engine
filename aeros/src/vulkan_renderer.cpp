@@ -1198,7 +1198,7 @@ bool VulkanRenderer::createBuffers() {
 
 bool VulkanRenderer::ensureFrameCapacity(size_t verts) {
     FrameData& f = frames[currentFrame];
-    if (f.buffer && verts <= f.capacityVerts) return true;
+    if (f.buffer && f.mapped && verts <= f.capacityVerts) return true;
     size_t want = std::max<size_t>(verts, 65536);
     if (f.capacityVerts > 0) want = std::max(want, f.capacityVerts + f.capacityVerts / 2);
 
@@ -1210,6 +1210,12 @@ bool VulkanRenderer::ensureFrameCapacity(size_t verts) {
         lastError = "нет памяти под буфер вершин кадра";
         return false;
     }
+    void* mapped = nullptr;
+    if (p_vkMapMemory((VkDevice)device, mem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped) {
+        vkrt::destroyBuffer((VkDevice)device, &buf, &mem);
+        lastError = "не удалось отобразить буфер вершин в память процесса";
+        return false;
+    }
     // Буфер этого кадра уже не используется: в beginFrame дождались его fence.
     if (f.mapped) p_vkUnmapMemory((VkDevice)device, (VkDeviceMemory)f.memory);
     VkBuffer oldBuf = (VkBuffer)f.buffer;
@@ -1218,11 +1224,7 @@ bool VulkanRenderer::ensureFrameCapacity(size_t verts) {
     f.buffer = buf;
     f.memory = mem;
     f.capacityVerts = want;
-    f.mapped = nullptr;
-    if (p_vkMapMemory((VkDevice)device, mem, 0, VK_WHOLE_SIZE, 0, &f.mapped) != VK_SUCCESS) {
-        lastError = "не удалось отобразить буфер вершин в память процесса";
-        return false;
-    }
+    f.mapped = mapped;
     return true;
 }
 

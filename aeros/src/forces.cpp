@@ -37,26 +37,34 @@ static std::vector<float> s_cpPerVertex;
 // отображения полей МКЭ: см. cae_ui.h).
 bool caeColorOverride = false;
 
+static size_t s_colorVboBytes = 0;
+
 void uploadVertexColorsToGPU() {
     if (!glBackendActive()) return;   // v1.33.0 — Vulkan читает g_vertexColors сам
     int numVerts = (int)(g_vertices.size() / 3);
-    if (numVerts == 0) return;
+    if (numVerts == 0 || modelVAO == 0) return;
     if (g_vertexColors.size() != (size_t)numVerts * 3) return;
-    // v1.33.0 — загрузка цветов в VBO нужна только OpenGL-ветке: Vulkan берёт
-    // g_vertexColors напрямую и контекста OpenGL не имеет.
-    if (glBackendActive()) {
+    const size_t needBytes = g_vertexColors.size() * sizeof(float);
     if (modelVBO_colors == 0) {
         glGenBuffers(1, &modelVBO_colors);
         glBindVertexArray(modelVAO);
         glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-        glBufferData(GL_ARRAY_BUFFER, g_vertexColors.size()*sizeof(float), g_vertexColors.data(), GL_DYNAMIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, needBytes, g_vertexColors.data(), GL_DYNAMIC_DRAW);
         glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
         glEnableVertexAttribArray(2);
         glBindVertexArray(0);
+        s_colorVboBytes = needBytes;
+    } else if (needBytes != s_colorVboBytes) {
+        glBindVertexArray(modelVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
+        glBufferData(GL_ARRAY_BUFFER, needBytes, g_vertexColors.data(), GL_DYNAMIC_DRAW);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+        glEnableVertexAttribArray(2);
+        glBindVertexArray(0);
+        s_colorVboBytes = needBytes;
     } else {
         glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
-    }
+        glBufferSubData(GL_ARRAY_BUFFER, 0, needBytes, g_vertexColors.data());
     }
 }
 
@@ -256,20 +264,7 @@ void updateVertexColors() {
         // Диапазон цветовой карты — по фактическим Cp этого кадра (для следующего)
         if (!s_cpPerVertex.empty()) aeroUpdateCpRange(s_cpPerVertex.data(), numVerts);
 
-        if (glBackendActive()) {
-            if (modelVBO_colors == 0) {
-                glGenBuffers(1, &modelVBO_colors);
-                glBindVertexArray(modelVAO);
-                glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-                glBufferData(GL_ARRAY_BUFFER, g_vertexColors.size()*sizeof(float), g_vertexColors.data(), GL_DYNAMIC_DRAW);
-                glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
-                glEnableVertexAttribArray(2);
-                glBindVertexArray(0);
-            } else {
-                glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-                glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
-            }
-        }
+        uploadVertexColorsToGPU();
         return;
     }
 
@@ -371,22 +366,7 @@ void updateVertexColors() {
         if (!s_cpPerVertex.empty()) aeroUpdateCpRange(s_cpPerVertex.data(), numVerts);
     }
 
-    // v1.33.0 — загрузка цветов в VBO нужна только OpenGL-ветке: Vulkan берёт
-    // g_vertexColors напрямую и контекста OpenGL не имеет.
-    if (glBackendActive()) {
-    if (modelVBO_colors == 0) {
-        glGenBuffers(1, &modelVBO_colors);
-        glBindVertexArray(modelVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-        glBufferData(GL_ARRAY_BUFFER, g_vertexColors.size()*sizeof(float), g_vertexColors.data(), GL_DYNAMIC_DRAW);
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
-        glEnableVertexAttribArray(2);
-        glBindVertexArray(0);
-    } else {
-        glBindBuffer(GL_ARRAY_BUFFER, modelVBO_colors);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, g_vertexColors.size()*sizeof(float), g_vertexColors.data());
-    }
-    }
+    uploadVertexColorsToGPU();
 }
 
 // =====================================================

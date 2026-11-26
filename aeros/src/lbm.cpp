@@ -7,6 +7,7 @@
 #include "voxel_grid.h"
 #include "forces.h"
 #include "atmosphere.h"
+#include "mem_budget.h"
 
 #include <glm/glm.hpp>
 #include <iostream>
@@ -942,23 +943,30 @@ void initLBM() {
     // Теперь решатель НЕ запускается, причина и фактическое число ячеек
     // показываются в окне «Сетка не помещается в память» с кнопкой уменьшения
     // разрешения (тот же путь, что у вокселизации, см. voxel_grid.cpp).
-    const int MAX_CELLS = 8*1024*1024;
-    const int totalEst = lbmNx*lbmNy*lbmNz;
-    if (totalEst > MAX_CELLS) {
-        const double ratio = (double)MAX_CELLS / (double)totalEst;
+    //
+    // Учитываем реальную доступную RAM (membudget::budgetBytes): ~224 Б/ячейку
+    // (два набора популяций D3Q19 + 14 вспомогательных полей + SDF/wallDist).
+    const unsigned long long lbmBudgetBytes = membudget::budgetBytes();
+    const long long budgetCells = (long long)(lbmBudgetBytes / 224ull);
+    const long long MAX_CELLS = std::max(65536LL, std::min(8LL * 1024LL * 1024LL, budgetCells));
+    const long long totalEst = (long long)lbmNx * (long long)lbmNy * (long long)lbmNz;
+    if (totalEst <= 0 || totalEst > MAX_CELLS) {
+        const double ratio = (totalEst > 0) ? ((double)MAX_CELLS / (double)totalEst) : 0.25;
         int suggested = (int)std::floor((double)voxelResolution * std::cbrt(ratio));
         suggested = std::max(8, (suggested / 2) * 2);      // чётное и не меньше 8
         char msg[384];
         std::snprintf(msg, sizeof(msg),
-                      "Домен LBM %dx%dx%d = %d ячеек не помещается в лимит %d "
-                      "(память под два набора популяций). Расчёт не запущен; "
+                      "Домен LBM %dx%dx%d = %lld ячеек не помещается в лимит %lld "
+                      "(бюджет памяти %s). Расчёт не запущен; "
                       "уменьшите разрешение примерно до %d.",
-                      lbmNx, lbmNy, lbmNz, totalEst, MAX_CELLS, suggested);
+                      lbmNx, lbmNy, lbmNz, totalEst, MAX_CELLS,
+                      membudget::formatBytes(lbmBudgetBytes).c_str(), suggested);
         DBG_ERROR("%s", msg);
         std::cout << "[LBM] " << msg << std::endl;
         g_voxelBuildError = msg;
         g_voxelSuggestedRes = suggested;
         g_voxelDialogPending = true;
+        lbmNx = lbmNy = lbmNz = 0;
         lbmInitialized = false;
         return;
     }
@@ -978,9 +986,24 @@ void initLBM() {
         std::cout << "[LBM] Invalid total cells: " << total << std::endl;
         DBG_ERROR("LBM: недопустимое число ячеек %d (сетка %dx%dx%d) — решатель не запущен",
                   total, lbmNx, lbmNy, lbmNz);
+        lbmNx = lbmNy = lbmNz = 0;
         lbmInitialized = false;
         return;
     }
+
+    auto releaseLbmBuffersOnFail = [&]() {
+        auto dropF = [](std::vector<float>& v) { std::vector<float>().swap(v); };
+        auto dropC = [](std::vector<char>& v) { std::vector<char>().swap(v); };
+        dropF(lbmRho); dropF(lbmUx); dropF(lbmUy); dropF(lbmUz);
+        dropF(lbmUxWorld); dropF(lbmUyWorld); dropF(lbmUzWorld);
+        dropF(lbmVorticityMag); dropF(lbmQCriterion); dropF(lbmPressure);
+        dropF(lbmTKEField); dropF(lbmStrainMag);
+        dropF(s_nuT); dropF(s_lbmSDF); dropF(f); dropF(fNext);
+        dropC(lbmIsSolid); dropC(lbmIsGround);
+        std::vector<unsigned char>().swap(lbmWallDist);
+        lbmNx = lbmNy = lbmNz = 0;
+        lbmInitialized = false;
+    };
 
     try {
         lbmRho.assign(total, 1.0f);
@@ -997,15 +1020,16 @@ void initLBM() {
         lbmStrainMag.assign(total, 0.0f);
         lbmIsSolid.assign(total, 0);
         lbmIsGround.assign(total, 0);
+        lbmWallDist.assign(total, 255);
         s_nuT.assign(total, 0.0f);
         s_lbmSDF.assign(total, 5.0f);
-        f.assign(total*Q, 0.0f);
-        fNext.assign(total*Q, 0.0f);
+        f.assign((size_t)total * (size_t)Q, 0.0f);
+        fNext.assign((size_t)total * (size_t)Q, 0.0f);
     } catch (const std::bad_alloc& e) {
         std::cout << "[LBM] Allocation failed: " << e.what() << " total=" << total << std::endl;
         DBG_ERROR("LBM: не хватило памяти на сетку %d ячеек (%s) — уменьшите разрешение сетки",
                   total, e.what());
-        lbmInitialized = false;
+        releaseLbmBuffersOnFail();
         return;
     }
 
@@ -1071,7 +1095,7 @@ void initLBM() {
     // (см. комментарий у sFluidCells).
     // ---- расстояние до стенки: двухпроходный чамфер (6-соседство) ----
     // Точное манхэттенское расстояние, O(N) за проход, кэш-дружелюбно.
-    lbmWallDist.assign(total, 255);
+    std::fill(lbmWallDist.begin(), lbmWallDist.end(), (unsigned char)255);
     for (int cell = 0; cell < total; ++cell)
         if (lbmIsSolid[cell] || lbmIsGround[cell]) lbmWallDist[cell] = 0;
     for (int z = 0; z < lbmNz; ++z)
@@ -2277,7 +2301,7 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
         for (int cell = 0; cell < total; ++cell) {
             if (lbmIsSolid[cell] || lbmIsGround[cell]) continue;
             for (int qi = 0; qi < Q; ++qi) {
-                f[cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx2, inUy2, inUz2, usqr);
+                f[(size_t)cell * (size_t)Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx2, inUy2, inUz2, usqr);
             }
             lbmRho[cell] = 1.0f;
             lbmUx[cell] = inUx2; lbmUy[cell] = inUy2; lbmUz[cell] = inUz2;
@@ -2447,8 +2471,38 @@ void updateLBM(float deltaTime, int forceSteps) {
         if (deltaTime > 0.02f) steps = std::min(steps*2, 50);
     }
     if (steps <= 0) return;
+
+    // Интерактивный бюджет кадра (~28 мс): на крупной сетке (1M+ ячеек на CPU)
+    // 64 шага подряд занимали бы десятки секунд на кадр, вешая UI и вызывая
+    // 100% загрузку CPU / таймаут ОС. Первый шаг после initLBM() измеряет цену
+    // одного шага, далее число шагов за кадр подстраивается под бюджет (минимум 1).
+    static float s_emaMsPerStep = -1.0f;
+    static unsigned int s_pacedInitStamp = 0;
+    const unsigned int curStamp = ((unsigned int)lbmNx * 73856093u) ^
+                                  ((unsigned int)lbmNy * 19349663u) ^
+                                  ((unsigned int)lbmNz * 83492791u);
+    if (lbmCurrentStep == 0 || s_pacedInitStamp != curStamp) {
+        s_emaMsPerStep = -1.0f;
+        s_pacedInitStamp = curStamp;
+    }
+    if (steps > 1) {
+        if (s_emaMsPerStep <= 0.0f) {
+            steps = 1;
+        } else {
+            constexpr float kInteractiveLbmBudgetMs = 28.0f;
+            int maxByBudget = (int)(kInteractiveLbmBudgetMs / s_emaMsPerStep);
+            if (maxByBudget < 1) maxByBudget = 1;
+            if (steps > maxByBudget) steps = maxByBudget;
+        }
+    }
+
+    const int prevStep = lbmCurrentStep;
     stepLBMCPU(steps);
-    if (lbmCurrentStep % 30 == 0) computeLBMVorticityAndQ();
+    if (steps > 0 && std::isfinite(lbmTimeMs) && lbmTimeMs >= 0.0f) {
+        const float msPerStep = lbmTimeMs / (float)steps;
+        s_emaMsPerStep = (s_emaMsPerStep <= 0.0f) ? msPerStep : (0.7f * s_emaMsPerStep + 0.3f * msPerStep);
+    }
+    if ((lbmCurrentStep / 30) != (prevStep / 30)) computeLBMVorticityAndQ();
 }
 
 // v1.11.0: улучшенная трилинейная интерполяция — учитывает только жидкие ячейки

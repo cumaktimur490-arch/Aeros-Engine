@@ -414,7 +414,7 @@ static void trackParamChangesForJournal() {
         &aeroAutoRotateSpeed, &lbmParams.inletTurbulence, &lbmParams.groundHeight
     };
     static const char* kIN[] = {
-        "число частиц", "число линий тока", "разрешение воксельной сетки", "шагов LBM на кадр",
+        "число линий тока", "разрешение воксельной сетки", "шагов LBM на кадр",
         "сетка LBM X", "сетка LBM Y", "сетка LBM Z", "бэкенд вычислений"
     };
     static int* kIP[] = {
@@ -422,9 +422,9 @@ static void trackParamChangesForJournal() {
         &lbmNx, &lbmNy, &lbmNz, &useCUDA
     };
     static const char* kBN[] = {
-        "показ модели", "показ давления", "показ линий тока", "показ частиц", "LBM включён",
+        "показ модели", "показ давления", "показ линий тока", "LBM включён",
         "периодическая граница по X (LBM)", "конвективный выход (LBM)", "земля (LBM)", "vsync", "лимит FPS",
-        "FSR", "авто-качество", "энергосбережение", "отсечение по пирамиде", "динамические частицы",
+        "FSR", "авто-качество", "энергосбережение", "отсечение по пирамиде",
         "адаптивный шаг LBM", "автоповорот", "режим полёта", "режим тестов", "Lite", "Ultra-Lite"
     };
     static bool* kBP[] = {
@@ -1339,12 +1339,12 @@ int main(int argc, char** argv) {
             s_physSatWarned = false;
         }
 
-        // v1.35.1 — пока модель не загружена, физику не считаем: главное меню
-        // может быть открыто без геометрии («Продолжить без модели»), и пустой
-        // домен LBM/частиц давал бы нули, NaN и лишнюю нагрузку на кадр.
+        // v1.35.1 — пока модель не загружена (или открыто главное меню / окно свёрнуто),
+        // физику не считаем: пустой домен LBM давал бы нули, NaN и лишнюю нагрузку.
         const bool hasModel = !g_vertices.empty();
+        const bool simActive = hasModel && !aeroStartScreen && !physSimIsRunning();
 
-        if (hasModel && lbmParams.enabled && !physSimIsRunning()) {
+        if (simActive && lbmParams.enabled) {
             // v1.9.0 adaptive LBM stepping — только в прежнем покадровом режиме:
             // при фиксированном такте он менял бы частоту физики за спиной пользователя.
             if (!physClock.fixed && aeroAdaptiveLBM) {
@@ -1362,14 +1362,136 @@ int main(int argc, char** argv) {
 
 
         auto tForce0 = std::chrono::high_resolution_clock::now();
-        if (hasModel && !physSimIsRunning()) {
-            if (showPressure) updateVertexColors();
-            computeLiftDrag();
-            if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
-            updateLiftDragArrows();
+        if (simActive) {
+            // Пересчитываем силы и цвета вершин только при изменении модели,
+            // шага LBM, параметров потока/атмосферы или настроек визуализации.
+            // Иначе на крупном STL (50k–1M треугольников) каждый кадр при
+            // простое загружает все потоки OpenMP на 100% CPU.
+            struct ForceCache {
+                const float* vertPtr = nullptr;
+                int vertCount = -1;
+                int units = -1;
+                int lbmStep = -1;
+                bool lbmOn = false;
+                bool lbmInit = false;
+                float speed = -1.0f;
+                float az = 9999.0f;
+                float el = 9999.0f;
+                float rho = -1.0f;
+                float temp = -1.0f;
+                float sos = -1.0f;
+                bool realDens = false;
+                bool groundEn = false;
+                float groundH = 9999.0f;
+                bool autoRef = true;
+                float refArea = -1.0f;
+                bool machFx = false;
+                float wakeS = -1.0f;
+                float stro = -1.0f;
+                float wakeL = -1.0f;
+                bool pressureOn = false;
+                bool caeOverride = false;
+                int visMode = -1;
+                int colorMap = -1;
+                bool cpAuto = true;
+                float cpMin = 9999.0f;
+                float cpMax = 9999.0f;
+                bool showSep = false;
+                float schSens = -1.0f;
+                bool schCol = true;
+                glm::vec3 modCol = glm::vec3(-1.0f);
+                double lastWakeRefresh = -10.0;
+                float lastComputeMs = 0.0f;
+            };
+            static ForceCache fc;
+
+            const bool geomChanged = (fc.vertPtr != g_vertices.data()) ||
+                                     (fc.vertCount != modelVertexCount) ||
+                                     (fc.units != aeroModelUnits);
+            const bool lbmStepped = (fc.lbmOn != lbmParams.enabled) ||
+                                    (fc.lbmInit != lbmInitialized) ||
+                                    (lbmInitialized && fc.lbmStep != lbmCurrentStep);
+            const bool flowChanged = std::fabs(fc.speed - flowSpeed) > 1e-4f ||
+                                     std::fabs(fc.az - flowAzimuth) > 1e-3f ||
+                                     std::fabs(fc.el - flowElevation) > 1e-3f ||
+                                     std::fabs(fc.rho - airDensity) > 1e-5f ||
+                                     std::fabs(fc.temp - airTemperature) > 1e-3f ||
+                                     std::fabs(fc.sos - speedOfSound) > 1e-2f ||
+                                     (fc.realDens != useRealDensity) ||
+                                     (fc.groundEn != aeroGroundEffect) ||
+                                     std::fabs(fc.groundH - aeroGroundHeight) > 1e-4f ||
+                                     (fc.autoRef != aeroAutoRefArea) ||
+                                     (!aeroAutoRefArea && std::fabs(fc.refArea - aeroRefArea) > 1e-6f) ||
+                                     (fc.machFx != aeroMachEffects) ||
+                                     std::fabs(fc.wakeS - wakeStrength) > 1e-4f ||
+                                     std::fabs(fc.stro - strouhal) > 1e-4f ||
+                                     std::fabs(fc.wakeL - wakeLength) > 1e-4f;
+            const bool visChanged = (fc.pressureOn != showPressure) ||
+                                    (fc.caeOverride != caeColorOverride) ||
+                                    (fc.visMode != (int)aeroVisMode) ||
+                                    (fc.colorMap != aeroColorMap) ||
+                                    (fc.cpAuto != aeroCpAutoRange) ||
+                                    std::fabs(fc.cpMin - aeroCpMin) > 1e-4f ||
+                                    std::fabs(fc.cpMax - aeroCpMax) > 1e-4f ||
+                                    (fc.showSep != aeroShowSeparation) ||
+                                    std::fabs(fc.schSens - aeroSchlierenSensitivity) > 1e-4f ||
+                                    (fc.schCol != aeroSchlierenColor) ||
+                                    (fc.modCol != modelColor);
+
+            const bool wakeTick = (!lbmParams.enabled && wakeStrength > 0.001f && timeScale > 0.0f &&
+                                   fc.lastComputeMs < 15.0f && (currentFrame - fc.lastWakeRefresh) >= 0.5);
+            const bool needForces = geomChanged || lbmStepped || flowChanged || wakeTick;
+            const bool needColors = showPressure && (needForces || visChanged);
+
+            if (needColors || needForces) {
+                auto tf0 = std::chrono::high_resolution_clock::now();
+                if (needColors) updateVertexColors();
+                if (needForces) {
+                    computeLiftDrag();
+                    if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
+                    updateLiftDragArrows();
+                    fc.lastWakeRefresh = currentFrame;
+                }
+                auto tf1 = std::chrono::high_resolution_clock::now();
+                fc.lastComputeMs = std::chrono::duration<float, std::milli>(tf1 - tf0).count();
+            }
+            if (needForces || needColors || visChanged) {
+                fc.vertPtr = g_vertices.data();
+                fc.vertCount = modelVertexCount;
+                fc.units = aeroModelUnits;
+                fc.lbmOn = lbmParams.enabled;
+                fc.lbmInit = lbmInitialized;
+                fc.lbmStep = lbmInitialized ? lbmCurrentStep : -1;
+                fc.speed = flowSpeed;
+                fc.az = flowAzimuth;
+                fc.el = flowElevation;
+                fc.rho = airDensity;
+                fc.temp = airTemperature;
+                fc.sos = speedOfSound;
+                fc.realDens = useRealDensity;
+                fc.groundEn = aeroGroundEffect;
+                fc.groundH = aeroGroundHeight;
+                fc.autoRef = aeroAutoRefArea;
+                fc.refArea = aeroRefArea;
+                fc.machFx = aeroMachEffects;
+                fc.wakeS = wakeStrength;
+                fc.stro = strouhal;
+                fc.wakeL = wakeLength;
+                fc.pressureOn = showPressure;
+                fc.caeOverride = caeColorOverride;
+                fc.visMode = (int)aeroVisMode;
+                fc.colorMap = aeroColorMap;
+                fc.cpAuto = aeroCpAutoRange;
+                fc.cpMin = aeroCpMin;
+                fc.cpMax = aeroCpMax;
+                fc.showSep = aeroShowSeparation;
+                fc.schSens = aeroSchlierenSensitivity;
+                fc.schCol = aeroSchlierenColor;
+                fc.modCol = modelColor;
+            }
         }
         // v1.19.0 Flight dynamics — обновляем после расчета сил
-        if (hasModel && aeroFlightMode) {
+        if (simActive && aeroFlightMode) {
             // v1.29.0 — динамика полёта интегрируется на модельном времени такта,
             // а не на deltaTime кадра: при фиксированном такте это тот же шаг, что
             // у решателя и частиц, поэтому 6DOF не «ускоряется» на быстром мониторе.
@@ -1381,7 +1503,7 @@ int main(int argc, char** argv) {
         perfForcesMs = std::chrono::duration<float, std::milli>(tForce1-tForce0).count();
 
         // v1.19.0 Interesting features
-        if (hasModel) updateInterestingFeatures(deltaTime);
+        if (simActive) updateInterestingFeatures(deltaTime);
 
         // Streamlines need recompute on flow change or ground change
         bool needStreamlines = false;

@@ -2,6 +2,7 @@
 #include "interesting.h"
 #include "globals.h"
 #include "flow_field.h"
+#include "lbm.h"
 #include "forces.h"
 #include "voxel_grid.h"
 #include "atmosphere.h"
@@ -1041,8 +1042,10 @@ void initInterestingFeatures() {
     initStreaklines();
     initFlightDynamics();
     initLIC(256, 256);
-    extractVortexCores();
-    computeAeroacousticSources();
+    if (!g_vertices.empty()) {
+        if (aeroShowVortexTubes) extractVortexCores();
+        if (aeroShowAeroAcoustic) computeAeroacousticSources();
+    }
 }
 
 void shutdownInterestingFeatures() {
@@ -1061,13 +1064,38 @@ void updateInterestingFeatures(float dt) {
     if (aeroFlightMode) {
         // flight update needs forces — called from forces.cpp
     }
-    // Периодически обновляем тяжелые вычисления
+    // Периодически обновляем тяжелые вычисления только при изменении состояния
+    // (модели, шага LBM или параметров потока) — иначе на крупном STL 24^3×6
+    // оценок поля крутятся каждую секунду вхолостую.
     static float accum = 0;
+    static int s_lastStep = -1;
+    static int s_lastVerts = -1;
+    static float s_lastSpeed = -1.0f;
+    static float s_lastAz = 9999.0f;
+    static float s_lastEl = 9999.0f;
+    static int s_lastTubeCount = -1;
+    static float s_lastTubeRadius = -1.0f;
     accum += dt;
-    if (accum > 1.0f) {
+    if (accum > 1.0f && !g_vertices.empty()) {
         accum = 0;
-        if (aeroShowVortexTubes) extractVortexCores();
-        if (aeroShowAeroAcoustic) computeAeroacousticSources();
+        const bool dirty = (s_lastVerts != modelVertexCount) ||
+                           (lbmInitialized && s_lastStep != lbmCurrentStep) ||
+                           std::fabs(s_lastSpeed - flowSpeed) > 1e-3f ||
+                           std::fabs(s_lastAz - flowAzimuth) > 1e-2f ||
+                           std::fabs(s_lastEl - flowElevation) > 1e-2f ||
+                           s_lastTubeCount != aeroVortexTubeCount ||
+                           std::fabs(s_lastTubeRadius - aeroVortexTubeRadius) > 1e-5f;
+        if (dirty) {
+            if (aeroShowVortexTubes) extractVortexCores();
+            if (aeroShowAeroAcoustic) computeAeroacousticSources();
+            s_lastStep = lbmInitialized ? lbmCurrentStep : -1;
+            s_lastVerts = modelVertexCount;
+            s_lastSpeed = flowSpeed;
+            s_lastAz = flowAzimuth;
+            s_lastEl = flowElevation;
+            s_lastTubeCount = aeroVortexTubeCount;
+            s_lastTubeRadius = aeroVortexTubeRadius;
+        }
     }
     auto t1 = std::chrono::high_resolution_clock::now();
     g_perfInterestingMs = std::chrono::duration<float, std::milli>(t1-t0).count();
