@@ -1,9 +1,9 @@
 #pragma once
 #define AEROS_VERSION_MAJOR 1
 #define AEROS_VERSION_MINOR 39
-#define AEROS_VERSION_PATCH 1
-#define AEROS_VERSION_STRING "1.39.1"
-#define AEROS_VERSION_FULL   "Aeros Engine v1.39.1 GoGonam AoS. OpenGL+Vulkan+CUDA+Linux"
+#define AEROS_VERSION_PATCH 2
+#define AEROS_VERSION_STRING "1.39.2"
+#define AEROS_VERSION_FULL   "Aeros Engine v1.39.2 GoGonam AoS. OpenGL+Vulkan+CUDA+Linux"
 #define AEROS_APP_NAME       "Aeros Engine"
 #define AEROS_APP_PUBLISHER  "GoGonam AoS."
 #define AEROS_APP_URL        "https://github.com/cumaktimur490-arch/Aeros-Engine"

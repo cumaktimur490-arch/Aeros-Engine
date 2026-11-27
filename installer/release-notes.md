@@ -25,6 +25,14 @@
 
 ## Что нового в v__VERSION__
 
+### v1.39.2 — устранение вылетов и зависаний (STL, FG, Vulkan, OpenGL), перехват сбоев и новая иконка
+
+- **Ограничение бюджета памяти LBM и отзывчивость при загрузке STL (`lbm.cpp`, `main.cpp`):** в `initLBM()` добавлено ограничение разрешения по доступному бюджету памяти с очисткой при `std::bad_alloc` и 64-битной (`size_t`) индексацией; добавлена покадровая отсечка `28 мс` для шагов LBM, чтобы тяжёлые модели не вешали интерфейс; при переходе `lbmParams.enabled` из выключенного состояния решатель корректно инициализируется/сбрасывается.
+- **Исправление вылета при Frame Generation и пресете `Full` (`main.cpp`, `framegen.cpp`, `lite_config.cpp`):** устранён повторный вызов `ImGui::Render()` в цикле интерполяции (`IM_ASSERT(g.FrameScopeActive)` / `abort()` со 2-го кадра), `glfwPollEvents()` перенесён в конец кадра, размеры текстур FG гарантированно чётные `>= 2` и согласованы при `glCopyImageSubData`/`glBlitFramebuffer`; пресет `Full` больше не включает экспериментальные `FSR`/`FG` принудительно.
+- **Стабильность OpenGL / Vulkan (`main.cpp`, `forces.cpp`, `interesting.cpp`, `vulkan_renderer.cpp`):** устранены вызовы отрисовки при `VAO == 0` до загрузки модели, добавлен откат с `GLFW_SAMPLES = 4` на `0` при отказе драйвера, `uploadVertexColorsToGPU()` пересоздаёт VBO при смене размера и проверяет `modelVAO != 0`, тяжёлые обновления вихрей/аэроакустики кэшируются по изменению состояния; в Vulkan `minImageCount` зажимается в `[2, imageCount]` для `ImGui_ImplVulkan`.
+- **Перехватчик аварийных завершений (`debug_log.*`, `main.cpp`):** установлены `SetUnhandledExceptionFilter` (SEH на Windows: код исключения, адрес, модуль) и `std::set_terminate` с немедленным сбросом в `logs/aeros-debug.log` вместо молчаливого закрытия в `/SUBSYSTEM:WINDOWS`.
+- **Новая иконка приложения:** обновлены `aeros/src/icon.ico`, `aeros/src/icon.png`, `aeros/icon.png`, `iconapp.png`, `aeros/src/icon_data.h` (64×64) и `aeros/src/icon_data32.h` (32×32) на основе `AEROSENGINE.png`.
+
 ### v1.39.1 — исправление зависаний и падений при выборе модели и элементов интерфейса
 
 - **Защита рендеринга цветов при активном Vulkan (`forces.cpp`, `main.cpp`):** OpenGL-вызовы загрузки буфера цветов вершин в ветке LBM теперь выполняются только при активном OpenGL-бэкенде (`glBackendActive()`), устраняя `SIGSEGV` при выборе объекта с включённым LBM на Vulkan; добавлены проверка `modelVAO != 0 && modelVertexCount > 0`, точное число вершин сетки (`21 * 4`), учёт `caeColorOverride` и безусловная регистрация `glfwSetDropCallback` для обоих бэкендов.
