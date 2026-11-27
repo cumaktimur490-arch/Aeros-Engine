@@ -272,8 +272,8 @@ void applyPreset(LiteQualityPreset preset) {
             limitFPS = false;
             maxFPS = 60.0f;
             optTargetFPS = 60.0f;
-            fsrEnabled = true;
-            fgEnabled = true;
+            fsrEnabled = false;
+            fgEnabled = false;
             aeroShowVortexTubes = true;
             aeroVolumetricEnabled = true;
             aeroShowLIC = false;

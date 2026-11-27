@@ -17,7 +17,9 @@
 #include <ctime>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <vector>
 
@@ -640,4 +642,92 @@ std::string debugLogSaveReport() {
     }
     debugLogWrite(DBG_ERROR, "не удалось сохранить отладочный отчёт ни в одну папку");
     return std::string();
+}
+
+namespace {
+
+bool g_crashInteractive = false;
+
+#ifdef _WIN32
+const char* crashExceptionName(DWORD code) {
+    switch (code) {
+        case 0xC0000005u: return "EXCEPTION_ACCESS_VIOLATION";
+        case 0xC00000FDu: return "EXCEPTION_STACK_OVERFLOW";
+        case 0xC000001Du: return "EXCEPTION_ILLEGAL_INSTRUCTION";
+        case 0xC0000094u: return "EXCEPTION_INT_DIVIDE_BY_ZERO";
+        case 0xC000008Eu: return "EXCEPTION_FLT_DIVIDE_BY_ZERO";
+        case 0xC0000090u: return "EXCEPTION_FLT_INVALID_OPERATION";
+        case 0xE06D7363u: return "C++ EH exception";
+        default:          return "UNKNOWN_EXCEPTION";
+    }
+}
+
+LONG WINAPI aerosUnhandledExceptionFilter(EXCEPTION_POINTERS* ep) {
+    DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
+    const void* addr = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+    char modPath[MAX_PATH * 2] = {0};
+    HMODULE hMod = NULL;
+    if (addr && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCSTR)addr, &hMod)) {
+        GetModuleFileNameA(hMod, modPath, sizeof(modPath) - 1);
+    }
+    const char* modName = modPath[0] ? modPath : "?";
+    const char* slash = std::strrchr(modName, '\\');
+    if (slash) modName = slash + 1;
+
+    char msg[1024];
+    std::snprintf(msg, sizeof(msg),
+                  "АВАРИЙНОЕ ЗАВЕРШЕНИЕ (SEH 0x%08lX %s) по адресу %p в модуле %s",
+                  (unsigned long)code, crashExceptionName(code), addr, modName);
+
+    if (g_logFile) {
+        std::fprintf(g_logFile, "[FATAL] %s\n", msg);
+        std::fflush(g_logFile);
+    }
+    std::fprintf(stderr, "[FATAL] %s\n", msg);
+    if (g_crashInteractive) {
+        char box[1400];
+        std::snprintf(box, sizeof(box),
+                      "Aeros Engine аварийно завершился:\n%s\n\nЖурнал: %s",
+                      msg, g_logPath.empty() ? "(не открыт)" : g_logPath.c_str());
+        MessageBoxA(nullptr, box, "Aeros Engine — сбой", MB_ICONERROR);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
+void aerosTerminateHandler() {
+    const char* what = "неизвестное исключение C++";
+    std::exception_ptr ep = std::current_exception();
+    if (ep) {
+        try { std::rethrow_exception(ep); }
+        catch (const std::exception& e) { what = e.what(); }
+        catch (...) { what = "неизвестный тип исключения C++"; }
+    }
+    if (g_logFile) {
+        std::fprintf(g_logFile, "[FATAL] std::terminate: %s\n", what);
+        std::fflush(g_logFile);
+    }
+    std::fprintf(stderr, "[FATAL] std::terminate: %s\n", what);
+#ifdef _WIN32
+    if (g_crashInteractive) {
+        char box[1024];
+        std::snprintf(box, sizeof(box),
+                      "Aeros Engine завершился с ошибкой:\n%s\n\nЖурнал: %s",
+                      what, g_logPath.empty() ? "(не открыт)" : g_logPath.c_str());
+        MessageBoxA(nullptr, box, "Aeros Engine — сбой", MB_ICONERROR);
+    }
+#endif
+    std::_Exit(1);
+}
+
+} // namespace
+
+void debugLogInstallCrashHandler(bool interactive) {
+    g_crashInteractive = interactive;
+    std::set_terminate(aerosTerminateHandler);
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(aerosUnhandledExceptionFilter);
+#endif
 }

@@ -35,6 +35,7 @@ enum DebugLogLevel {
 void debugLogInit(const std::string& dirPath = std::string());
 void debugLogClose();
 bool debugLogReady();          // удалось ли открыть файл журнала
+void debugLogInstallCrashHandler(bool interactive);
 
 bool debugLogEnabled();        void debugLogSetEnabled(bool on);
 bool debugLogActionsEnabled(); void debugLogSetActions(bool on);

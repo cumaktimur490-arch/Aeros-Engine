@@ -373,6 +373,9 @@ bool initFrameGen(int displayW, int displayH) {
     return true;
 }
 
+static int fgTexW = 0;
+static int fgTexH = 0;
+
 void shutdownFrameGen() {
     if (fgRealFBO) { glDeleteFramebuffers(1, &fgRealFBO); fgRealFBO=0; }
     if (fgRealColorTex) { glDeleteTextures(1, &fgRealColorTex); fgRealColorTex=0; }
@@ -388,13 +391,17 @@ void shutdownFrameGen() {
     if (fgOpticalFlowProgram) { glDeleteProgram(fgOpticalFlowProgram); fgOpticalFlowProgram=0; }
     if (fgQuadVAO) { glDeleteVertexArrays(1, &fgQuadVAO); fgQuadVAO=0; }
     if (fgQuadVBO) { glDeleteBuffers(1, &fgQuadVBO); fgQuadVBO=0; }
+    fgTexW = 0;
+    fgTexH = 0;
     fgHasHistory = false;
 }
 
 void resizeFrameGen(int displayW, int displayH) {
     if (displayW<=0 || displayH<=0) return;
-    int w = displayW, h = displayH;
-    w = (w/2)*2; h = (h/2)*2;
+    int w = std::max(2, (displayW/2)*2);
+    int h = std::max(2, (displayH/2)*2);
+    fgTexW = w;
+    fgTexH = h;
 
     if (fgRealFBO==0) glGenFramebuffers(1, &fgRealFBO);
     if (fgRealColorTex==0) glGenTextures(1, &fgRealColorTex);
@@ -493,18 +500,22 @@ void updateFGHistory(const glm::mat4& view, const glm::mat4& proj, const glm::ve
     fgPrevView = fgCurrView;
     fgPrevProj = fgCurrProj;
     fgPrevCameraPos = fgCurrCameraPos;
-    if (fgRealColorTex && fgPrevColorTex && fgRealDepthTex && fgPrevDepthTex) {
+    const int cw = (fgTexW > 0) ? fgTexW : std::max(2, (display_w / 2) * 2);
+    const int ch = (fgTexH > 0) ? fgTexH : std::max(2, (display_h / 2) * 2);
+    if (cw > 0 && ch > 0 && fgRealColorTex && fgPrevColorTex && fgRealDepthTex && fgPrevDepthTex) {
         if (GLAD_GL_VERSION_4_3) {
             glCopyImageSubData(fgRealColorTex, GL_TEXTURE_2D, 0,0,0,0,
                                fgPrevColorTex, GL_TEXTURE_2D, 0,0,0,0,
-                               display_w, display_h, 1);
+                               cw, ch, 1);
             glCopyImageSubData(fgRealDepthTex, GL_TEXTURE_2D, 0,0,0,0,
                                fgPrevDepthTex, GL_TEXTURE_2D, 0,0,0,0,
-                               display_w, display_h, 1);
+                               cw, ch, 1);
         } else {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, fgRealFBO);
             glBindTexture(GL_TEXTURE_2D, fgPrevColorTex);
-            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0,0, 0,0, display_w, display_h);
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0,0, 0,0, cw, ch);
+            glBindTexture(GL_TEXTURE_2D, fgPrevDepthTex);
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0,0, 0,0, cw, ch);
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
         }
     }
@@ -514,12 +525,16 @@ void updateFGHistory(const glm::mat4& view, const glm::mat4& proj, const glm::ve
 
 void generateInterpolatedFrame(float alpha, int displayW, int displayH) {
     if (!fgHasHistory || !fgEnabled) return;
+    if (displayW <= 0 || displayH <= 0 || fgMotionFBO == 0 || fgInterpFBO == 0 ||
+        fgMotionProgram == 0 || fgInterpProgram == 0 || fgQuadVAO == 0) return;
+    const int rw = (fgTexW > 0) ? fgTexW : std::max(2, (displayW / 2) * 2);
+    const int rh = (fgTexH > 0) ? fgTexH : std::max(2, (displayH / 2) * 2);
     auto t0 = std::chrono::high_resolution_clock::now();
 
     {
         auto tm0 = std::chrono::high_resolution_clock::now();
         glBindFramebuffer(GL_FRAMEBUFFER, fgMotionFBO);
-        glViewport(0,0,displayW,displayH);
+        glViewport(0,0,rw,rh);
         glDisable(GL_DEPTH_TEST);
         glUseProgram(fgMotionProgram);
 
@@ -537,7 +552,7 @@ void generateInterpolatedFrame(float alpha, int displayW, int displayH) {
         glUniformMatrix4fv(glGetUniformLocation(fgMotionProgram, "uInvViewProjCurr"), 1, GL_FALSE, &invCurrVP[0][0]);
         glUniformMatrix4fv(glGetUniformLocation(fgMotionProgram, "uViewProjPrev"), 1, GL_FALSE, &prevVP[0][0]);
         glUniformMatrix4fv(glGetUniformLocation(fgMotionProgram, "uViewProjCurr"), 1, GL_FALSE, &currVP[0][0]);
-        glUniform2f(glGetUniformLocation(fgMotionProgram, "uTexelSize"), 1.0f/displayW, 1.0f/displayH);
+        glUniform2f(glGetUniformLocation(fgMotionProgram, "uTexelSize"), 1.0f/(float)rw, 1.0f/(float)rh);
         glUniform1f(glGetUniformLocation(fgMotionProgram, "uDeltaTime"), deltaTime);
         glUniform3f(glGetUniformLocation(fgMotionProgram, "uFlowCenter"), flowParams.centerX, flowParams.centerY, flowParams.centerZ);
         glUniform3f(glGetUniformLocation(fgMotionProgram, "uFlowRadii"), flowParams.radiusX, flowParams.radiusY, flowParams.radiusZ);
@@ -566,7 +581,7 @@ void generateInterpolatedFrame(float alpha, int displayW, int displayH) {
     {
         auto ti0 = std::chrono::high_resolution_clock::now();
         glBindFramebuffer(GL_FRAMEBUFFER, fgInterpFBO);
-        glViewport(0,0,displayW,displayH);
+        glViewport(0,0,rw,rh);
         glUseProgram(fgInterpProgram);
 
         glActiveTexture(GL_TEXTURE0);
@@ -587,7 +602,7 @@ void generateInterpolatedFrame(float alpha, int displayW, int displayH) {
 
         glUniform1f(glGetUniformLocation(fgInterpProgram, "uAlpha"), alpha);
         glUniform1f(glGetUniformLocation(fgInterpProgram, "uBlendStrength"), fgBlendStrength);
-        glUniform2f(glGetUniformLocation(fgInterpProgram, "uTexelSize"), 1.0f/displayW, 1.0f/displayH);
+        glUniform2f(glGetUniformLocation(fgInterpProgram, "uTexelSize"), 1.0f/(float)rw, 1.0f/(float)rh);
         glUniform1i(glGetUniformLocation(fgInterpProgram, "uUseOpticalFlow"), fgUseOpticalFlow ? 1 : 0);
         glUniform1i(glGetUniformLocation(fgInterpProgram, "uShowDebug"), fgShowDebug ? 1 : 0);
 
@@ -607,14 +622,16 @@ void generateInterpolatedFrame(float alpha, int displayW, int displayH) {
 }
 
 void presentInterpolatedFrame(int displayW, int displayH) {
-    if (!fgInterpTex) return;
+    if (!fgInterpTex || !fgInterpFBO || displayW <= 0 || displayH <= 0) return;
+    const int rw = (fgTexW > 0) ? fgTexW : std::max(2, (displayW / 2) * 2);
+    const int rh = (fgTexH > 0) ? fgTexH : std::max(2, (displayH / 2) * 2);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0,0,displayW,displayH);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fgInterpFBO);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBlitFramebuffer(0,0,displayW,displayH, 0,0,displayW,displayH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBlitFramebuffer(0,0,rw,rh, 0,0,displayW,displayH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
@@ -622,14 +639,16 @@ void presentInterpolatedFrame(int displayW, int displayH) {
 }
 
 void presentRealFrame(int displayW, int displayH) {
-    if (!fgRealColorTex) return;
+    if (!fgRealColorTex || !fgRealFBO || displayW <= 0 || displayH <= 0) return;
+    const int rw = (fgTexW > 0) ? fgTexW : std::max(2, (displayW / 2) * 2);
+    const int rh = (fgTexH > 0) ? fgTexH : std::max(2, (displayH / 2) * 2);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0,0,displayW,displayH);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fgRealFBO);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBlitFramebuffer(0,0,displayW,displayH, 0,0,displayW,displayH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBlitFramebuffer(0,0,rw,rh, 0,0,displayW,displayH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);

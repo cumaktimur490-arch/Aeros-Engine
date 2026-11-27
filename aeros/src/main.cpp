@@ -492,12 +492,17 @@ static void trackParamChangesForJournal() {
 // видимости — второй блок просто не компилировался.
 static void applyWindowIcon(GLFWwindow* window) {
     #include "icon_data.h"
-    GLFWimage iconImg;
-    iconImg.width = ICON_WIDTH;
-    iconImg.height = ICON_HEIGHT;
-    iconImg.pixels = (unsigned char*)ICON_DATA;
-    glfwSetWindowIcon(window, 1, &iconImg);
-    std::cout << "[Icon] Window icon set: AoS ENG. " << ICON_WIDTH << "x" << ICON_HEIGHT << std::endl;
+    #include "icon_data32.h"
+    GLFWimage iconImgs[2];
+    iconImgs[0].width = ICON_WIDTH;
+    iconImgs[0].height = ICON_HEIGHT;
+    iconImgs[0].pixels = (unsigned char*)ICON_DATA;
+    iconImgs[1].width = ICON32_WIDTH;
+    iconImgs[1].height = ICON32_HEIGHT;
+    iconImgs[1].pixels = (unsigned char*)ICON32_DATA;
+    glfwSetWindowIcon(window, 2, iconImgs);
+    std::cout << "[Icon] Window icon set: Aeros Engine " << ICON_WIDTH << "x" << ICON_HEIGHT
+              << " + " << ICON32_WIDTH << "x" << ICON32_HEIGHT << std::endl;
 }
 
 int main(int argc, char** argv) {
@@ -730,6 +735,7 @@ int main(int argc, char** argv) {
     debugLogAddSectionCallback(timelapseSummary);
     DBG_INFO("таймлапс физики: ёмкость %d кадров, снимок поля каждый %d-й кадр, фоновая запись %s",
              tlCapacity, tlFieldEvery, tlAutoRecord ? "включена" : "выключена");
+    debugLogInstallCrashHandler(!cliPresim && !cliSaveReport);
 
     // --save-report: собрать отчёт и выйти. Работает без окна и без графики —
     // именно так можно прислать диагностику, если программа вообще не запускается.
@@ -932,6 +938,11 @@ int main(int argc, char** argv) {
         std::snprintf(aeroDroppedFile, sizeof(aeroDroppedFile), "%s", paths[0]);
     };
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, AEROS_VERSION_FULL, nullptr, nullptr);
+    if (!window && !useVulkanWindow) {
+        DBG_WARN("glfwCreateWindow с MSAA=4 не удалась — пробуем без MSAA (GLFW_SAMPLES=0)");
+        glfwWindowHint(GLFW_SAMPLES, 0);
+        window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, AEROS_VERSION_FULL, nullptr, nullptr);
+    }
     if (!window) {
         DBG_ERROR("glfwCreateWindow(%u x %u) вернула NULL — драйвер не дал OpenGL 3.3 core",
                   SCR_WIDTH, SCR_HEIGHT);
@@ -1769,7 +1780,7 @@ int main(int argc, char** argv) {
 
             // === Scene render lambda to avoid duplication ===
             auto renderScene = [&]() {
-                if (showGroundPlane || aeroGroundEffect) {
+                if ((showGroundPlane || aeroGroundEffect) && groundVAO != 0 && groundIndexCount > 0) {
                     float groundY = g_voxMinY + aeroGroundHeight;
                     if (!std::isfinite(groundY)) groundY = minBB.y - maxDim*0.1f;
                     glm::mat4 groundModel = glm::translate(glm::mat4(1.0f), glm::vec3(center.x, groundY, center.z));
@@ -1816,20 +1827,22 @@ int main(int argc, char** argv) {
                     glDrawArrays(GL_TRIANGLES, 0, modelVertexCount);
                     glBindVertexArray(0);
                 }
-                if (showSlicePlane && aeroShowSlice) {
+                if (showSlicePlane && aeroShowSlice && !g_vertices.empty()) {
                     createSlicePlane(aeroSliceAxis, aeroSlicePos);
-                    glUseProgram(lineShaderProgram);
-                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-                    glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-                    glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
-                    glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.4f);
-                    glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.2f, 0.8f, 1.0f);
-                    glLineWidth(2.0f);
-                    glBindVertexArray(sliceVAO);
-                    glDrawArrays(GL_LINE_LOOP, 0, 4);
-                    glBindVertexArray(0);
-                    glLineWidth(1.0f);
+                    if (sliceVAO != 0) {
+                        glUseProgram(lineShaderProgram);
+                        glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+                        glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+                        glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+                        glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
+                        glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 0.4f);
+                        glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 0.2f, 0.8f, 1.0f);
+                        glLineWidth(2.0f);
+                        glBindVertexArray(sliceVAO);
+                        glDrawArrays(GL_LINE_LOOP, 0, 4);
+                        glBindVertexArray(0);
+                        glLineWidth(1.0f);
+                    }
                 }
                 glUseProgram(lineShaderProgram);
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
@@ -1837,13 +1850,13 @@ int main(int argc, char** argv) {
                 glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
                 glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), 1.0f);
                 glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 0);
-                if (showBoundingBox) {
+                if (showBoundingBox && bboxVAO != 0) {
                     glUniform3fv(glGetUniformLocation(lineShaderProgram, "lineColor"), 1, &bboxColor[0]);
                     glBindVertexArray(bboxVAO);
                     glDrawArrays(GL_LINES, 0, 24);
                     glBindVertexArray(0);
                 }
-                if (showAxes) {
+                if (showAxes && axesVAO != 0) {
                     glBindVertexArray(axesVAO);
                     glUniform3f(glGetUniformLocation(lineShaderProgram, "lineColor"), 1,0,0);
                     glDrawArrays(GL_LINES, 0, 2);
@@ -1853,7 +1866,7 @@ int main(int argc, char** argv) {
                     glDrawArrays(GL_LINES, 4, 2);
                     glBindVertexArray(0);
                 }
-                if (showStreamlines && streamlineVertexCount > 0) {
+                if (showStreamlines && streamlineVAO != 0 && streamlineVertexCount > 0) {
                     glUseProgram(lineShaderProgram);
                     glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
                     glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
@@ -1866,7 +1879,7 @@ int main(int argc, char** argv) {
                     glBindVertexArray(0);
                     glLineWidth(1.0f);
                 }
-                if (showObstacle) {
+                if (showObstacle && obstacleVAO != 0 && obstacleIndexCount > 0) {
                     glDepthMask(GL_FALSE);
                     glUseProgram(modelShaderProgram);
                     glm::mat4 om = glm::translate(glm::mat4(1.0f), center) *
@@ -1887,7 +1900,7 @@ int main(int argc, char** argv) {
                     glBindVertexArray(0);
                     glDepthMask(GL_TRUE);
                 }
-                if (showLiftDrag) {
+                if (showLiftDrag && liftDragVAO != 0) {
                     glUseProgram(lineShaderProgram);
                     glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
                     glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
@@ -1921,6 +1934,8 @@ int main(int argc, char** argv) {
 
             // Handle FSR+FG combination
             if (useFG && useFSR) {
+                const int fgW = std::max(2, (display_w / 2) * 2);
+                const int fgH = std::max(2, (display_h / 2) * 2);
                 // FSR low-res -> intermediate (EASU)
                 glDisable(GL_DEPTH_TEST);
                 glDisable(GL_BLEND);
@@ -1941,7 +1956,7 @@ int main(int argc, char** argv) {
 
                 // intermediate -> FG real FBO (RCAS or blit)
                 glBindFramebuffer(GL_FRAMEBUFFER, fgRealFBO);
-                glViewport(0,0,display_w,display_h);
+                glViewport(0,0,fgW,fgH);
                 if (fsrUseRCAS) {
                     glUseProgram(fsrRCASProgram);
                     glActiveTexture(GL_TEXTURE0);
@@ -1954,7 +1969,7 @@ int main(int argc, char** argv) {
                 } else {
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, fsrIntermediateFBO);
                     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fgRealFBO);
-                    glBlitFramebuffer(0,0,display_w,display_h, 0,0,display_w,display_h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                    glBlitFramebuffer(0,0,display_w,display_h, 0,0,fgW,fgH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
                 }
                 glBindVertexArray(0);
                 glEnable(GL_DEPTH_TEST);
@@ -1970,6 +1985,11 @@ int main(int argc, char** argv) {
 
             // v1.19.0 Frame Generation presentation
             if (useFG) {
+                // ImGui::Render() вызывается строго один раз за NewFrame() — повторный
+                // вызов срабатывал IM_ASSERT(g.FrameScopeActive) и падал через abort()
+                // на втором кадре при включённом Frame Generation.
+                ImGui::Render();
+                ImDrawData* drawData = ImGui::GetDrawData();
                 int mult = getFGMultiplier((int)fgMode);
                 // If we have history, generate interpolated frames
                 if (hasFGHistory() && mult > 1) {
@@ -1978,11 +1998,8 @@ int main(int argc, char** argv) {
                         generateInterpolatedFrame(alpha, display_w, display_h);
                         // Present interpolated
                         presentInterpolatedFrame(display_w, display_h);
-                        // UI for interpolated frame (optional, but we render UI to avoid flicker)
-                        ImGui::Render();
-                        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+                        if (drawData) ImGui_ImplOpenGL3_RenderDrawData(drawData);
                         glfwSwapBuffers(window);
-                        glfwPollEvents();
                         // Small pacing
                         if (optFramePacing) {
                             float targetMs = 1000.0f / (optTargetFPS * mult);
@@ -1992,9 +2009,7 @@ int main(int argc, char** argv) {
                 }
                 // Present real frame
                 presentRealFrame(display_w, display_h);
-                // UI on top of real
-                ImGui::Render();
-                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+                if (drawData) ImGui_ImplOpenGL3_RenderDrawData(drawData);
                 glfwSwapBuffers(window);
                 glfwPollEvents();
 

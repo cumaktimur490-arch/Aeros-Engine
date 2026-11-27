@@ -1,6 +1,6 @@
 #include <windows.h>
 
-// Application icon — AoS ENG.
+// Application icon — Aeros Engine.
 IDI_ICON1 ICON DISCARDABLE "icon.ico"
 
 // Version info

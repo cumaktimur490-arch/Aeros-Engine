@@ -810,6 +810,8 @@ bool VulkanRenderer::createSwapchain() {
     }
     swapchainImages.resize(imageCount);
     swapchainImageViews.resize(imageCount, nullptr);
+    // ImGui_ImplVulkan требует MinImageCount >= 2 и <= ImageCount (иначе IM_ASSERT)
+    minImageCount = std::max<uint32_t>(2, std::min<uint32_t>(caps.minImageCount, imageCount));
 
     for (uint32_t i = 0; i < imageCount; ++i) {
         VkImageViewCreateInfo vi{};
@@ -1460,7 +1462,7 @@ bool VulkanRenderer::recreateSwapchain() {
         renderFinishedSemaphores.push_back(sem);
     }
 
-    if (uiInitialized) ImGui_ImplVulkan_SetMinImageCount(minImageCount);
+    if (uiInitialized) ImGui_ImplVulkan_SetMinImageCount(std::max<uint32_t>(2, minImageCount));
     std::cout << "[Vulkan] Swapchain пересоздан: " << extentW << "x" << extentH
               << " (изображений " << swapchainImageViews.size() << ")" << std::endl;
     return true;
