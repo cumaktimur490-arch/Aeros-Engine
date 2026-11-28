@@ -237,22 +237,9 @@ glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm) {
             if (std::isfinite(vLBM.x) && std::isfinite(vLBM.y) && std::isfinite(vLBM.z)) {
                 float mag2 = glm::dot(vLBM, vLBM);
                 if (mag2 > 1e-14f) {
-                    if (aeroGroundEffect) {
-                        float groundY = g_voxMinY + aeroGroundHeight;
-                        if (std::isfinite(groundY) && p.y > groundY && p.y - groundY < maxDim*0.6f) {
-                            float h = p.y - groundY;
-                            float Hfar = maxDim * 0.6f;
-                            float Hclear = h;
-                            if (Hclear < 0.01f) Hclear = 0.01f;
-                            // Mass conservation: V2 = V1 * Hfar / Hclear, but limited
-                            float venturi = Hfar / Hclear;
-                            venturi = glm::clamp(venturi, 1.0f, 1.6f);
-                            // Only under car
-                            if (p.x >= minBB.x && p.x <= maxBB.x && p.z >= minBB.z && p.z <= maxBB.z) {
-                                vLBM *= venturi;
-                            }
-                        }
-                    }
+                    // В LBM граничное условие земли уже задано на сетке (lbmIsGround),
+                    // поэтому дополнительный эмпирический множитель venturi не нужен
+                    // и нарушал бы бездивергентность поля скорости.
                     return vLBM;
                 } else {
                     return glm::vec3(0.0f);
@@ -675,3 +662,172 @@ void aeroUpdateCpRange(const float* cpValues, int count) {
     g_cpLo = lo;
     g_cpHi = hi;
 }
+
+void buildCFDSliceMesh(int axis, float pos01, int res,
+                       std::vector<float>& positions,
+                       std::vector<float>& normals,
+                       std::vector<float>& colors) {
+    positions.clear();
+    normals.clear();
+    colors.clear();
+
+    updateFlowParams();
+    if (res < 8) res = 8;
+    if (res > 128) res = 128;
+    if (!std::isfinite(pos01)) pos01 = 0.5f;
+    pos01 = glm::clamp(pos01, 0.0f, 1.0f);
+    if (axis < 0 || axis > 2) axis = 1;
+
+    glm::vec3 bmin = minBB, bmax = maxBB;
+    if (!std::isfinite(bmin.x) || glm::length(bmax - bmin) < 1e-6f) {
+        bmin = glm::vec3(-1.0f);
+        bmax = glm::vec3(1.0f);
+    }
+    glm::vec3 ext = glm::max(bmax - bmin, glm::vec3(0.05f));
+
+    // Плоскость среза проходит через модель по [bmin, bmax], а по двум другим осям
+    // охватывает домен LBM (если он активен) либо аэродинамическую область со следом.
+    glm::vec3 dmin, dmax;
+    const bool useLBM = (lbmParams.enabled && lbmInitialized && lbmNx > 2 && lbmNy > 2 && lbmNz > 2);
+    if (useLBM) {
+        glm::vec3 pad(lbmCellSizeX * 0.5f, lbmCellSizeY * 0.5f, lbmCellSizeZ * 0.5f);
+        dmin = glm::vec3(lbmMinX, lbmMinY, lbmMinZ) + pad;
+        dmax = glm::vec3(lbmMaxX, lbmMaxY, lbmMaxZ) - pad;
+    } else {
+        dmin = bmin - ext * 0.9f;
+        dmax = bmax + ext * 1.6f;
+    }
+
+    glm::vec3 pSlice = bmin + (bmax - bmin) * pos01;
+    pSlice = glm::clamp(pSlice, dmin, dmax);
+
+    glm::vec3 planeNormal(0.0f);
+    planeNormal[axis] = 1.0f;
+
+    float uMin = 0.0f, uMax = 1.0f, vMin = 0.0f, vMax = 1.0f;
+    int uAxis = 0, vAxis = 2;
+    if (axis == 0) {
+        uAxis = 2; vAxis = 1;
+    } else if (axis == 1) {
+        uAxis = 0; vAxis = 2;
+    } else {
+        uAxis = 0; vAxis = 1;
+    }
+    uMin = dmin[uAxis]; uMax = dmax[uAxis];
+    vMin = dmin[vAxis]; vMax = dmax[vAxis];
+    if (!(uMax > uMin)) uMax = uMin + 1.0f;
+    if (!(vMax > vMin)) vMax = vMin + 1.0f;
+
+    const float vinf = std::max(1e-4f, glm::length(glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz)));
+    const float maxSpeed = std::max(0.05f, (std::isfinite(flowParams.maxSpeed) && flowParams.maxSpeed > 1e-3f)
+                                            ? flowParams.maxSpeed : vinf * 1.6f);
+    const float rho = std::max(1e-3f, airDensity);
+    const float qDyn = std::max(1e-6f, 0.5f * rho * vinf * vinf);
+
+    const int stride = res + 1;
+    std::vector<glm::vec3> gridPos((size_t)stride * stride);
+    std::vector<glm::vec3> gridCol((size_t)stride * stride);
+
+    #ifdef _OPENMP
+    #pragma omp parallel for schedule(static) if(res >= 24)
+    #endif
+    for (int iv = 0; iv <= res; ++iv) {
+        const float tv = (float)iv / (float)res;
+        const float vc = vMin + (vMax - vMin) * tv;
+        for (int iu = 0; iu <= res; ++iu) {
+            const float tu = (float)iu / (float)res;
+            const float uc = uMin + (uMax - uMin) * tu;
+            glm::vec3 wp = pSlice;
+            wp[uAxis] = uc;
+            wp[vAxis] = vc;
+
+            glm::vec3 col(0.16f, 0.17f, 0.20f);
+            bool insideSolid = false;
+            if (useLBM) {
+                insideSolid = isLBMSolidWorld(wp);
+            } else if (!g_distanceField.empty()) {
+                insideSolid = (sampleSDFCPU(wp) <= 0.0f);
+            }
+
+            if (!insideSolid) {
+                if (useLBM) {
+                    switch (aeroVisMode) {
+                        case AeroVisMode::Pressure: {
+                            float pPa = 0.0f;
+                            if (!getLBMPressureWorldChecked(wp, &pPa)) pPa = 0.0f;
+                            col = getRealisticPressureColor(pPa / qDyn);
+                            break;
+                        }
+                        case AeroVisMode::Vorticity:
+                            col = getVorticityColor(getLBMVorticityWorld(wp));
+                            break;
+                        case AeroVisMode::QCriterion:
+                            col = getQCriterionColor(getLBMQWorld(wp));
+                            break;
+                        case AeroVisMode::TurbulentKE:
+                            col = getTKEColor(getLBMTKEWorld(wp));
+                            break;
+                        case AeroVisMode::MachNumber:
+                            col = getMachColor(getLBMMachWorld(wp));
+                            break;
+                        case AeroVisMode::Helicity:
+                            col = getHelicityColor(getLBMHelicityWorld(wp));
+                            break;
+                        case AeroVisMode::TotalPressure:
+                            col = getTotalPressureColor(getLBMTotalPressureWorld(wp), qDyn);
+                            break;
+                        default: {
+                            float spd = getLBMVelocityMagWorld(wp);
+                            if (!std::isfinite(spd)) spd = vinf;
+                            col = getVelocityMagnitudeColor(spd, maxSpeed);
+                            break;
+                        }
+                    }
+                } else {
+                    glm::vec3 vel = computeVelocityFieldCPU(wp, flowParams);
+                    float spd = std::isfinite(vel.x) ? glm::length(vel) : vinf;
+                    if (aeroVisMode == AeroVisMode::Pressure) {
+                        float cp = 1.0f - (spd * spd) / (vinf * vinf);
+                        col = getRealisticPressureColor(cp);
+                    } else {
+                        col = getVelocityMagnitudeColor(spd, maxSpeed);
+                    }
+                }
+            }
+            if (!std::isfinite(col.x) || !std::isfinite(col.y) || !std::isfinite(col.z))
+                col = glm::vec3(0.2f, 0.5f, 0.8f);
+            col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
+
+            const size_t idx = (size_t)iv * stride + iu;
+            gridPos[idx] = wp;
+            gridCol[idx] = col;
+        }
+    }
+
+    const size_t triVerts = (size_t)res * res * 6;
+    positions.reserve(triVerts * 3);
+    normals.reserve(triVerts * 3);
+    colors.reserve(triVerts * 3);
+
+    auto pushV = [&](const glm::vec3& p, const glm::vec3& c) {
+        positions.push_back(p.x); positions.push_back(p.y); positions.push_back(p.z);
+        normals.push_back(planeNormal.x); normals.push_back(planeNormal.y); normals.push_back(planeNormal.z);
+        colors.push_back(c.x); colors.push_back(c.y); colors.push_back(c.z);
+    };
+
+    for (int iv = 0; iv < res; ++iv) {
+        for (int iu = 0; iu < res; ++iu) {
+            const size_t i00 = (size_t)iv * stride + iu;
+            const size_t i10 = i00 + 1;
+            const size_t i01 = i00 + stride;
+            const size_t i11 = i01 + 1;
+            pushV(gridPos[i00], gridCol[i00]);
+            pushV(gridPos[i10], gridCol[i10]);
+            pushV(gridPos[i11], gridCol[i11]);
+            pushV(gridPos[i00], gridCol[i00]);
+            pushV(gridPos[i11], gridCol[i11]);
+            pushV(gridPos[i01], gridCol[i01]);
+        }
+    }
+}
+

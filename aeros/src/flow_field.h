@@ -5,6 +5,7 @@
 // =====================================================
 
 #include <cmath>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -91,5 +92,12 @@ const char* aeroVelocitySourceName(AeroVelocitySource src);
 
 glm::vec3 computeVelocityFieldCPU(const glm::vec3& p, const FlowParams& prm);
 glm::vec3 colorForPoint(const glm::vec3& v, float sdfDist, const FlowParams& prm);
+
+// v1.40.0 — 2D CFD срез скалярного поля (общая генерация для OpenGL и Vulkan).
+// Заполняет треугольную сетку (3 float на вершину в positions/normals/colors).
+void buildCFDSliceMesh(int axis, float pos01, int res,
+                       std::vector<float>& positions,
+                       std::vector<float>& normals,
+                       std::vector<float>& colors);
 
 #endif // FLOW_FIELD_H

@@ -260,14 +260,13 @@ void applyPreset(LiteQualityPreset preset) {
             flowSpeed = 3.0f;
             break;
         case LiteQualityPreset::Full:
-            // Full — стандартные настройки
+            // Full — флагманские настройки (MRT + WALE + BFL + границы)
             numStreamlines = 24;
             streamlineSteps = 300;
             voxelResolution = 48;
-            lbmParams.enabled = true;
+            lbmApplyFlagshipPreset();
             lbmParams.stepsPerFrame = 3;
             lbmNx = 128; lbmNy = 64; lbmNz = 64;
-            lbmParams.useTurbulence = true;
             vsyncEnabled = false;
             limitFPS = false;
             maxFPS = 60.0f;

@@ -80,6 +80,7 @@ static std::vector<float> s_lbmSDF;       // v1.39.0 — SDF в ячейках L
 static float s_maxNuTRatio = 0.0f;
 static float s_lastEnstrophy = 0.0f;
 static float s_lastResidualU = 0.0f;
+static bool  s_didWarmup = false;
 
 // v1.39.0 — 3D тайловая классификация для кэш-блокированной обработки без ветвлений
 static constexpr int TILE_X = 32;
@@ -151,8 +152,8 @@ static const float invCs2 = 3.0f;
 static const float invCs2SqHalf = 4.5f;
 
 inline int idx3D(int x, int y, int z) { return (z*lbmNy + y)*lbmNx + x; }
-// v1.37.1 — порядок индексов: сначала направление, потом ячейка (SoA).
-inline int fIdx(int cell, int q, int total) { return cell*Q + q; }
+// v1.40.0 — Настоящая SoA-раскладка: сначала направление, потом ячейка.
+inline size_t fIdx(int cell, int q, int total) { return (size_t)q * (size_t)total + (size_t)cell; }
 
 // =====================================================
 // v1.11.0 Physics Fix — корректное равновесие без костылей
@@ -325,6 +326,8 @@ void lbmApplyFlagshipPreset() {
     lbmParams.spongeLayers = 8;
     lbmParams.spongeStrength = 0.65f;
     lbmParams.useCurvedBoundary = true;
+    lbmParams.rampSteps = 0;
+    lbmParams.autoWarmup = false;
 }
 
 float lbmMaxNuTRatio() { return s_maxNuTRatio; }
@@ -343,12 +346,47 @@ static inline void collideCellMRT(float* __restrict cellF, float rho,
         float fi = cellF[qi];
         fLoc[qi] = std::isfinite(fi) ? fi : equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
     }
+
+    // Разреженное аналитическое прямое преобразование kMRT_M * fLoc (эквивалентно
+    // полному умножению 19x19, но без нулевых членов — в ~6x быстрее).
+    const float s0 = fLoc[0];
+    const float a1 = fLoc[1] + fLoc[2],  d1 = fLoc[1] - fLoc[2];
+    const float a2 = fLoc[3] + fLoc[4],  d2 = fLoc[3] - fLoc[4];
+    const float a3 = fLoc[5] + fLoc[6],  d3 = fLoc[5] - fLoc[6];
+    const float b1 = fLoc[7]  + fLoc[8],  g1 = fLoc[7]  - fLoc[8];
+    const float b2 = fLoc[9]  + fLoc[10], g2 = fLoc[9]  - fLoc[10];
+    const float b3 = fLoc[11] + fLoc[12], g3 = fLoc[11] - fLoc[12];
+    const float b4 = fLoc[13] + fLoc[14], g4 = fLoc[13] - fLoc[14];
+    const float b5 = fLoc[15] + fLoc[16], g5 = fLoc[15] - fLoc[16];
+    const float b6 = fLoc[17] + fLoc[18], g6 = fLoc[17] - fLoc[18];
+
+    const float A = a1 + a2 + a3;
+    const float B = b1 + b2 + b3 + b4 + b5 + b6;
+    const float gx_d = g1 + g2 + g3 + g4;
+    const float gy_d = g1 - g2 + g5 + g6;
+    const float gz_d = g3 - g4 + g5 - g6;
+    const float Bxy = b1 + b2, Bxz = b3 + b4, Byz = b5 + b6;
+    const float PxxA = 2.0f*a1 - a2 - a3;
+    const float PxxB = Bxy + Bxz - 2.0f*Byz;
+    const float PwwA = a2 - a3;
+    const float PwwB = Bxy - Bxz;
+
     float m[19];
-    for (int r = 0; r < 19; ++r) {
-        float acc = 0.0f;
-        for (int qi = 0; qi < 19; ++qi) acc += kMRT_M[r][qi] * fLoc[qi];
-        m[r] = acc;
-    }
+    m[0]  = s0 + A + B;
+    m[1]  = -30.0f*s0 - 11.0f*A + 8.0f*B;
+    m[2]  =  12.0f*s0 - 4.0f*A + B;
+    m[3]  = d1 + gx_d;   m[4]  = -4.0f*d1 + gx_d;
+    m[5]  = d2 + gy_d;   m[6]  = -4.0f*d2 + gy_d;
+    m[7]  = d3 + gz_d;   m[8]  = -4.0f*d3 + gz_d;
+    m[9]  = PxxA + PxxB; m[10] = -2.0f*PxxA + PxxB;
+    m[11] = PwwA + PwwB; m[12] = -2.0f*PwwA + PwwB;
+    m[13] = b1 - b2;
+    m[14] = b5 - b6;
+    m[15] = b3 - b4;
+    m[16] = (g1 + g2) - (g3 + g4);
+    m[17] = -(g1 - g2) + (g5 + g6);
+    m[18] = (g3 - g4) - (g5 - g6);
+
     const float invRho = (rho > 1e-6f) ? (1.0f / rho) : 1.0f;
     const float jx = rho * ueX, jy = rho * ueY, jz = rho * ueZ;
     const float j2 = jx*jx + jy*jy + jz*jz;
@@ -401,19 +439,60 @@ static inline void collideCellMRT(float* __restrict cellF, float rho,
         }
     }
 
-    float mPost[19];
+    float e[19];
     for (int r = 0; r < 19; ++r) {
         float val = m[r] - s[r] * (m[r] - meq[r]);
         if (hasForce) val += (1.0f - 0.5f * s[r]) * fm[r];
-        mPost[r] = val;
+        e[r] = kMRT_invD[r] * val;
     }
 
+    // Разреженное аналитическое обратное преобразование M^T * (D^-1 * mPost)
+    const float evA = e[0] - 11.0f*e[1] - 4.0f*e[2];
+    const float evB = e[0] + 8.0f*e[1] + e[2];
+    const float pxx_m = e[9] - 2.0f*e[10];
+    const float pww_m = e[11] - 2.0f*e[12];
+    const float ex = evA + 2.0f*pxx_m;
+    const float ey = evA - pxx_m + pww_m;
+    const float ez = evA - pxx_m - pww_m;
+    const float ox = e[3] - 4.0f*e[4];
+    const float oy = e[5] - 4.0f*e[6];
+    const float oz = e[7] - 4.0f*e[8];
+
+    const float pxx_p = e[9] + e[10];
+    const float pww_p = e[11] + e[12];
+    const float eb_xy = evB + pxx_p + pww_p;
+    const float eb_xz = evB + pxx_p - pww_p;
+    const float eb_yz = evB - 2.0f*pxx_p;
+
+    const float e78 = eb_xy + e[13],   e910 = eb_xy - e[13];
+    const float e1112 = eb_xz + e[15], e1314 = eb_xz - e[15];
+    const float e1516 = eb_yz + e[14], e1718 = eb_yz - e[14];
+
+    const float uxp = e[3] + e[4], uyp = e[5] + e[6], uzp = e[7] + e[8];
+    const float o78   = uxp + uyp + e[16] - e[17];
+    const float o910  = uxp - uyp + e[16] + e[17];
+    const float o1112 = uxp + uzp - e[16] + e[18];
+    const float o1314 = uxp - uzp - e[16] - e[18];
+    const float o1516 = uyp + uzp + e[17] - e[18];
+    const float o1718 = uyp - uzp + e[17] + e[18];
+
+    float out[19];
+    out[0]  = e[0] - 30.0f*e[1] + 12.0f*e[2];
+    out[1]  = ex + ox;    out[2]  = ex - ox;
+    out[3]  = ey + oy;    out[4]  = ey - oy;
+    out[5]  = ez + oz;    out[6]  = ez - oz;
+    out[7]  = e78 + o78;  out[8]  = e78 - o78;
+    out[9]  = e910 + o910;out[10] = e910 - o910;
+    out[11] = e1112+o1112;out[12] = e1112-o1112;
+    out[13] = e1314+o1314;out[14] = e1314-o1314;
+    out[15] = e1516+o1516;out[16] = e1516-o1516;
+    out[17] = e1718+o1718;out[18] = e1718-o1718;
+
     for (int qi = 0; qi < 19; ++qi) {
-        float sum = 0.0f;
-        for (int r = 0; r < 19; ++r) sum += kMRT_M[r][qi] * kMRT_invD[r] * mPost[r];
-        if (!std::isfinite(sum)) sum = equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
-        if (sum < 0.0f) negPops++;
-        cellF[qi] = sum;
+        float val = out[qi];
+        if (!std::isfinite(val)) val = equilibriumKernel(qi, rho, ueX, ueY, ueZ, ueSqr);
+        if (val < 0.0f) negPops++;
+        cellF[qi] = val;
     }
 }
 
@@ -1130,6 +1209,10 @@ void initLBM() {
 
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
+    const float initScale = 1.0f;
+    const float initUx = inUx;
+    const float initUy = inUy;
+    const float initUz = inUz;
     std::cout << "[LBM] Inlet LB velocity: (" << inUx << "," << inUy << "," << inUz << ") total=" << total << std::endl;
 
     float* fPtr = f.data();
@@ -1142,7 +1225,7 @@ void initLBM() {
     for (int cell = 0; cell < total; ++cell) {
         float rho = 1.0f;
         float ux = 0, uy = 0, uz = 0;
-        if (!solidPtr[cell] && !groundPtr[cell]) { ux = inUx; uy = inUy; uz = inUz; }
+        if (!solidPtr[cell] && !groundPtr[cell]) { ux = initUx; uy = initUy; uz = initUz; }
         // v1.19.0: divergence-free турбулентность через curl векторного потенциала
         if (lbmParams.inletTurbulence > 0.001f && !solidPtr[cell] && !groundPtr[cell]) {
             float turb = lbmParams.inletTurbulence * 0.04f;
@@ -1179,11 +1262,9 @@ void initLBM() {
             ux *= scale; uy *= scale; uz *= scale;
             usqr = ux*ux + uy*uy + uz*uz;
         }
-        // v1.37.1 — SoA: популяции лежат по направлениям (f[q*N + cell]).
-        // Без этого перенос читал 19 разных ячеек на одну приёмную — то есть
-        // 19 промахов кэша на ячейку и по 76 байт на строку кэша впустую.
+        // v1.40.0 — Настоящая SoA-раскладка: популяции лежат по направлениям (f[q*N + cell]).
         for (int qi = 0; qi < Q; ++qi) {
-            fPtr[cell*Q + qi] = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
+            fPtr[(size_t)qi * (size_t)total + (size_t)cell] = computeEquilibriumFast(qi, rho, ux, uy, uz, usqr);
         }
     }
 
@@ -1266,6 +1347,18 @@ void initLBM() {
     lbmCurrentStep = 0;
     lbmConverged = false;
     lbmInitialized = true;
+    lbmAvgRho = 1.0f;
+    lbmAvgKineticEnergy = initUx*initUx + initUy*initUy + initUz*initUz;
+    lbmMaxVelocityLB = std::sqrt(lbmAvgKineticEnergy);
+    lbmMaxVelocityWorld = flowSpeed * initScale;
+    lbmTKE = 0.0f;
+    lbmConvergence = 0.0f;
+    lbmResidualRho = 0.0f;
+    lbmNegativePops = 0;
+    lbmBadPops = 0;
+    lbmRhoOutOfRange = 0;
+    lbmRhoNonFinite = 0;
+    lbmULimited = 0;
     // Решатель запустился — снимаем статус «сетка не влезла», если он остался
     // от предыдущей попытки с другим разрешением.
     g_voxelBuildError.clear();
@@ -1306,6 +1399,7 @@ void initLBM() {
     s_maxNuTRatio = 0.0f;
     s_lastEnstrophy = 0.0f;
     s_lastResidualU = 0.0f;
+    s_didWarmup = false;
     rebuildLBMTiles();
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -1336,6 +1430,341 @@ void initLBM() {
             thermalParams.enabled = false;
         }
     }
+
+    // v1.40.0 — Быстрый прогрев с 2x грубой сетки (Coarse-to-Fine) для внешнего обтекания:
+    // убирает холодный акустический удар на старте и сразу формирует след/давление.
+    if (lbmParams.autoWarmup && U0tmp > 1e-4f && !lbmParams.periodicX &&
+        !thermalParams.enabled && lbmNx >= 16 && lbmNy >= 16 && lbmNz >= 16) {
+        lbmWarmupCoarseToFine(100);
+    }
+}
+
+void lbmWarmupCoarseToFine(int coarseSteps) {
+    if (!lbmInitialized || coarseSteps <= 0) return;
+    if (lbmNx < 12 || lbmNy < 12 || lbmNz < 12) return;
+    const int total = lbmNx * lbmNy * lbmNz;
+    if ((int)lbmRho.size() != total || (int)f.size() != total * Q) return;
+
+    auto wt0 = std::chrono::high_resolution_clock::now();
+
+    const int cNx = std::max(8, lbmNx / 2);
+    const int cNy = std::max(8, lbmNy / 2);
+    const int cNz = std::max(8, lbmNz / 2);
+    const int cTotal = cNx * cNy * cNz;
+
+    float inUx, inUy, inUz;
+    computeInletVelocityLB(inUx, inUy, inUz);
+    float U0mag = std::sqrt(inUx*inUx + inUy*inUy + inUz*inUz);
+    if (!std::isfinite(U0mag) || U0mag < 1e-5f) return;
+
+    int flowAxis, flowSign;
+    glm::vec3 flowDir;
+    computeFlowAxis(flowAxis, flowSign, flowDir);
+
+    std::vector<char> cSolid(cTotal, 0);
+    const float sxScale = (float)lbmNx / (float)cNx;
+    const float syScale = (float)lbmNy / (float)cNy;
+    const float szScale = (float)lbmNz / (float)cNz;
+
+    for (int cz = 0; cz < cNz; ++cz) {
+        for (int cy = 0; cy < cNy; ++cy) {
+            for (int cx = 0; cx < cNx; ++cx) {
+                int fx0 = std::min(lbmNx - 1, (int)(cx * sxScale));
+                int fx1 = std::min(lbmNx - 1, (int)((cx + 1) * sxScale - 0.01f));
+                int fy0 = std::min(lbmNy - 1, (int)(cy * syScale));
+                int fy1 = std::min(lbmNy - 1, (int)((cy + 1) * syScale - 0.01f));
+                int fz0 = std::min(lbmNz - 1, (int)(cz * szScale));
+                int fz1 = std::min(lbmNz - 1, (int)((cz + 1) * szScale - 0.01f));
+                int solidCnt = 0;
+                int subCnt = 0;
+                for (int fz = fz0; fz <= fz1; ++fz)
+                    for (int fy = fy0; fy <= fy1; ++fy)
+                        for (int fx = fx0; fx <= fx1; ++fx) {
+                            int fc = (fz * lbmNy + fy) * lbmNx + fx;
+                            if (lbmIsSolid[fc] || lbmIsGround[fc]) solidCnt++;
+                            subCnt++;
+                        }
+                // Не перекрываем граничные плоскости входа/выхода
+                bool isInOut = (flowAxis == 0 && (cx == 0 || cx == cNx - 1)) ||
+                               (flowAxis == 1 && (cy == 0 || cy == cNy - 1)) ||
+                               (flowAxis == 2 && (cz == 0 || cz == cNz - 1));
+                if (!isInOut && subCnt > 0 && solidCnt * 2 >= subCnt) {
+                    cSolid[(cz * cNy + cy) * cNx + cx] = 1;
+                }
+            }
+        }
+    }
+
+    std::vector<float> cf((size_t)Q * cTotal, 0.0f);
+    std::vector<float> cfNext((size_t)Q * cTotal, 0.0f);
+    std::vector<float> cRho(cTotal, 1.0f);
+    std::vector<float> cUx(cTotal, 0.0f);
+    std::vector<float> cUy(cTotal, 0.0f);
+    std::vector<float> cUz(cTotal, 0.0f);
+
+    const float tauCoarse = std::max(0.56f, std::min(1.4f, 0.5f + 0.5f * (lbmParams.tau - 0.5f) + 0.04f));
+    const float invTau = 1.0f / tauCoarse;
+    const int rampN = std::max(1, coarseSteps / 4);
+
+    {
+        const float u0x = inUx * 0.25f, u0y = inUy * 0.25f, u0z = inUz * 0.25f;
+        const float usqr0 = u0x*u0x + u0y*u0y + u0z*u0z;
+        for (int cell = 0; cell < cTotal; ++cell) {
+            float ux = cSolid[cell] ? 0.0f : u0x;
+            float uy = cSolid[cell] ? 0.0f : u0y;
+            float uz = cSolid[cell] ? 0.0f : u0z;
+            float us = cSolid[cell] ? 0.0f : usqr0;
+            cUx[cell] = ux; cUy[cell] = uy; cUz[cell] = uz;
+            for (int qi = 0; qi < Q; ++qi)
+                cf[(size_t)qi * cTotal + cell] = equilibriumKernel(qi, 1.0f, ux, uy, uz, us);
+        }
+    }
+
+    static const int reflY[19] = { 0, 1,2, 4,3, 5,6, 9,10,7,8, 11,12,13,14, 17,18,15,16 };
+    static const int reflZ[19] = { 0, 1,2, 3,4, 6,5, 7,8,9,10, 13,14,11,12, 17,18,15,16 };
+    int cOffQ[19];
+    for (int qi = 0; qi < Q; ++qi)
+        cOffQ[qi] = -(c[qi][2]*cNy*cNx) - c[qi][1]*cNx - c[qi][0];
+
+    for (int s = 0; s < coarseSteps; ++s) {
+        float rf = (s < rampN) ? (0.25f + 0.75f * 0.5f * (1.0f - cosf(3.14159265f * (float)(s + 1) / (float)rampN))) : 1.0f;
+        float sInUx = inUx * rf, sInUy = inUy * rf, sInUz = inUz * rf;
+        float sInUsqr = sInUx*sInUx + sInUy*sInUy + sInUz*sInUz;
+
+        float* __restrict cfPtr = cf.data();
+        float* __restrict cfNextPtr = cfNext.data();
+
+        #ifdef _OPENMP
+        #pragma omp parallel for schedule(static)
+        #endif
+        for (int cell = 0; cell < cTotal; ++cell) {
+            if (cSolid[cell]) {
+                cRho[cell] = 1.0f; cUx[cell] = 0.0f; cUy[cell] = 0.0f; cUz[cell] = 0.0f;
+                continue;
+            }
+            float fLoc[19];
+            for (int qi = 0; qi < Q; ++qi) fLoc[qi] = cfPtr[(size_t)qi * cTotal + cell];
+            float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
+            for (int qi = 0; qi < Q; ++qi) {
+                float fi = fLoc[qi];
+                rho += fi;
+                ux += fi * (float)c[qi][0];
+                uy += fi * (float)c[qi][1];
+                uz += fi * (float)c[qi][2];
+            }
+            if (!std::isfinite(rho) || rho < 0.5f || rho > 1.5f) {
+                rho = 1.0f; ux = sInUx; uy = sInUy; uz = sInUz;
+            } else {
+                float invR = 1.0f / rho;
+                ux *= invR; uy *= invR; uz *= invR;
+            }
+            float usqr = ux*ux + uy*uy + uz*uz;
+            if (usqr > 0.09f) {
+                float sc = sqrtf(0.09f / usqr);
+                ux *= sc; uy *= sc; uz *= sc; usqr = 0.09f;
+            }
+            cRho[cell] = rho; cUx[cell] = ux; cUy[cell] = uy; cUz[cell] = uz;
+            float locInvTau = invTau;
+            const int cSponge = 4;
+            int cx = cell % cNx, cy = (cell / cNx) % cNy, cz = cell / (cNx * cNy);
+            int distOut = (flowAxis == 0) ? ((flowSign > 0) ? (cNx - 1 - cx) : cx)
+                        : (flowAxis == 1) ? ((flowSign > 0) ? (cNy - 1 - cy) : cy)
+                                          : ((flowSign > 0) ? (cNz - 1 - cz) : cz);
+            if (distOut >= 0 && distOut < cSponge) {
+                float xi = 1.0f - (float)distOut / (float)cSponge;
+                locInvTau = 1.0f / std::min(1.8f, tauCoarse + 0.6f * xi * xi);
+            }
+            for (int qi = 0; qi < Q; ++qi) {
+                float eq = equilibriumKernel(qi, rho, ux, uy, uz, usqr);
+                cfPtr[(size_t)qi * cTotal + cell] = fLoc[qi] - (fLoc[qi] - eq) * locInvTau;
+            }
+        }
+
+        #ifdef _OPENMP
+        #pragma omp parallel for schedule(static)
+        #endif
+        for (int cz = 0; cz < cNz; ++cz) {
+            for (int cy = 0; cy < cNy; ++cy) {
+                const int row = (cz * cNy + cy) * cNx;
+                for (int cx = 0; cx < cNx; ++cx) {
+                    const int dest = row + cx;
+                    if (cSolid[dest]) continue;
+                    bool interior = (cx > 0 && cx < cNx - 1 && cy > 0 && cy < cNy - 1 && cz > 0 && cz < cNz - 1);
+                    if (interior) {
+                        for (int qi = 0; qi < Q; ++qi) {
+                            const int src = dest + cOffQ[qi];
+                            cfNextPtr[(size_t)qi * cTotal + dest] = cSolid[src]
+                                ? cfPtr[(size_t)opp[qi] * cTotal + dest]
+                                : cfPtr[(size_t)qi * cTotal + src];
+                        }
+                    } else {
+                        for (int qi = 0; qi < Q; ++qi) {
+                            int sx = cx - c[qi][0], sy = cy - c[qi][1], sz = cz - c[qi][2];
+                            if (sx < 0 || sx >= cNx || sy < 0 || sy >= cNy || sz < 0 || sz >= cNz) {
+                                bool oobX = (sx < 0 || sx >= cNx);
+                                bool oobY = (sy < 0 || sy >= cNy);
+                                bool oobZ = (sz < 0 || sz >= cNz);
+                                if (!oobX && oobY && !oobZ) {
+                                    cfNextPtr[(size_t)qi * cTotal + dest] = cfPtr[(size_t)reflY[qi] * cTotal + dest];
+                                } else if (!oobX && !oobY && oobZ) {
+                                    cfNextPtr[(size_t)qi * cTotal + dest] = cfPtr[(size_t)reflZ[qi] * cTotal + dest];
+                                } else if (!oobX && oobY && oobZ) {
+                                    cfNextPtr[(size_t)qi * cTotal + dest] = cfPtr[(size_t)reflY[reflZ[qi]] * cTotal + dest];
+                                } else {
+                                    cfNextPtr[(size_t)qi * cTotal + dest] = cfPtr[(size_t)qi * cTotal + dest];
+                                }
+                            } else {
+                                int src = (sz * cNy + sy) * cNx + sx;
+                                cfNextPtr[(size_t)qi * cTotal + dest] = cSolid[src]
+                                    ? cfPtr[(size_t)opp[qi] * cTotal + dest]
+                                    : cfPtr[(size_t)qi * cTotal + src];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Граничные условия на грубой сетке (неэквилибриумный выход с якорем rho=1.0)
+        for (int cz = 0; cz < cNz; ++cz) {
+            for (int cy = 0; cy < cNy; ++cy) {
+                for (int cx = 0; cx < cNx; ++cx) {
+                    bool isIn = false, isOut = false;
+                    if (flowAxis == 0) { isIn = (flowSign > 0) ? (cx == 0) : (cx == cNx-1); isOut = (flowSign > 0) ? (cx == cNx-1) : (cx == 0); }
+                    else if (flowAxis == 1) { isIn = (flowSign > 0) ? (cy == 0) : (cy == cNy-1); isOut = (flowSign > 0) ? (cy == cNy-1) : (cy == 0); }
+                    else { isIn = (flowSign > 0) ? (cz == 0) : (cz == cNz-1); isOut = (flowSign > 0) ? (cz == cNz-1) : (cz == 0); }
+                    if (!isIn && !isOut) continue;
+                    int cell = (cz * cNy + cy) * cNx + cx;
+                    if (cSolid[cell]) continue;
+                    int nx = cx + (isIn ? (flowAxis == 0 ? flowSign : 0) : -(flowAxis == 0 ? flowSign : 0));
+                    int ny = cy + (isIn ? (flowAxis == 1 ? flowSign : 0) : -(flowAxis == 1 ? flowSign : 0));
+                    int nz = cz + (isIn ? (flowAxis == 2 ? flowSign : 0) : -(flowAxis == 2 ? flowSign : 0));
+                    int nb = (nz * cNy + ny) * cNx + nx;
+                    if (isIn) {
+                        float rhoNb = 1.0f;
+                        if (nb >= 0 && nb < cTotal && !cSolid[nb]) {
+                            float r = 0.0f;
+                            for (int qi = 0; qi < Q; ++qi) r += cfNextPtr[(size_t)qi * cTotal + nb];
+                            if (std::isfinite(r) && r > 0.9f && r < 1.1f) rhoNb = r;
+                        }
+                        for (int qi = 0; qi < Q; ++qi)
+                            cfNextPtr[(size_t)qi * cTotal + cell] = equilibriumKernel(qi, rhoNb, sInUx, sInUy, sInUz, sInUsqr);
+                    } else {
+                        if (nb >= 0 && nb < cTotal && !cSolid[nb]) {
+                            float rNb = 0.0f, uxNb = 0.0f, uyNb = 0.0f, uzNb = 0.0f;
+                            for (int qi = 0; qi < Q; ++qi) {
+                                float v = cfNextPtr[(size_t)qi * cTotal + nb];
+                                rNb += v; uxNb += v * (float)c[qi][0]; uyNb += v * (float)c[qi][1]; uzNb += v * (float)c[qi][2];
+                            }
+                            if (!std::isfinite(rNb) || rNb < 0.8f || rNb > 1.2f) { rNb = 1.0f; uxNb = sInUx; uyNb = sInUy; uzNb = sInUz; }
+                            else { float invR = 1.0f / rNb; uxNb *= invR; uyNb *= invR; uzNb *= invR; }
+                            float usNb = uxNb*uxNb + uyNb*uyNb + uzNb*uzNb;
+                            if (usNb > 0.08f) { float sc = sqrtf(0.08f / usNb); uxNb*=sc; uyNb*=sc; uzNb*=sc; usNb = 0.08f; }
+                            for (int qi = 0; qi < Q; ++qi) {
+                                if (c[qi][flowAxis] * flowSign >= 0) continue;
+                                cfNextPtr[(size_t)qi * cTotal + cell] = equilibriumKernel(qi, 1.0f, uxNb, uyNb, uzNb, usNb);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cf.swap(cfNext);
+    }
+
+    // Вычитаем средний дрейф массы из грубого поля плотности и ограничиваем акустические волны до физического предела O(Ma^2)
+    {
+        double sumR = 0.0;
+        int cntR = 0;
+        for (int cc = 0; cc < cTotal; ++cc) {
+            if (!cSolid[cc] && std::isfinite(cRho[cc])) { sumR += cRho[cc]; cntR++; }
+        }
+        float meanShift = (cntR > 0) ? (float)(sumR / (double)cntR - 1.0) : 0.0f;
+        const float maxDRho = std::min(0.012f, 1.5f * U0mag * U0mag * 3.0f);
+        for (int cc = 0; cc < cTotal; ++cc) {
+            if (!cSolid[cc]) {
+                cRho[cc] = 1.0f + glm::clamp(cRho[cc] - meanShift - 1.0f, -maxDRho, maxDRho);
+            }
+        }
+    }
+
+    // Трилинейная пролонгация (rho, ux, uy, uz) на основную сетку
+    float* __restrict fPtr = f.data();
+    const char* __restrict solidPtr = lbmIsSolid.data();
+    const char* __restrict groundPtr = lbmIsGround.data();
+    float velScale = flowSpeed / U0mag;
+    if (!std::isfinite(velScale) || velScale > 1000.0f) velScale = 20.0f;
+    if (velScale < 0.01f) velScale = 0.01f;
+    const float pFactor = cs2 * velScale * velScale * airDensity;
+
+    #ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+    #endif
+    for (int z = 0; z < lbmNz; ++z) {
+        float fz = ((float)z + 0.5f) / szScale - 0.5f;
+        int iz = glm::clamp((int)std::floor(fz), 0, cNz - 2);
+        float tz = glm::clamp(fz - (float)iz, 0.0f, 1.0f);
+        for (int y = 0; y < lbmNy; ++y) {
+            float fy = ((float)y + 0.5f) / syScale - 0.5f;
+            int iy = glm::clamp((int)std::floor(fy), 0, cNy - 2);
+            float ty = glm::clamp(fy - (float)iy, 0.0f, 1.0f);
+            for (int x = 0; x < lbmNx; ++x) {
+                const int cell = (z * lbmNy + y) * lbmNx + x;
+                if (solidPtr[cell] || groundPtr[cell]) {
+                    lbmRho[cell] = 1.0f;
+                    lbmUx[cell] = lbmUy[cell] = lbmUz[cell] = 0.0f;
+                    lbmUxWorld[cell] = lbmUyWorld[cell] = lbmUzWorld[cell] = 0.0f;
+                    lbmPressure[cell] = 0.0f;
+                    for (int qi = 0; qi < Q; ++qi)
+                        fPtr[(size_t)qi * total + cell] = equilibriumKernel(qi, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+                    continue;
+                }
+                float fx = ((float)x + 0.5f) / sxScale - 0.5f;
+                int ix = glm::clamp((int)std::floor(fx), 0, cNx - 2);
+                float tx = glm::clamp(fx - (float)ix, 0.0f, 1.0f);
+
+                float rhoAcc = 0.0f, uxAcc = 0.0f, uyAcc = 0.0f, uzAcc = 0.0f, wSum = 0.0f;
+                for (int dz = 0; dz <= 1; ++dz)
+                    for (int dy = 0; dy <= 1; ++dy)
+                        for (int dx = 0; dx <= 1; ++dx) {
+                            int cc = ((iz + dz) * cNy + (iy + dy)) * cNx + (ix + dx);
+                            if (cSolid[cc]) continue;
+                            float ww = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty) * (dz ? tz : 1.0f - tz);
+                            rhoAcc += cRho[cc] * ww;
+                            uxAcc += cUx[cc] * ww;
+                            uyAcc += cUy[cc] * ww;
+                            uzAcc += cUz[cc] * ww;
+                            wSum += ww;
+                        }
+                float rho = (wSum > 1e-5f) ? (rhoAcc / wSum) : 1.0f;
+                float ux  = (wSum > 1e-5f) ? (uxAcc / wSum)  : inUx;
+                float uy  = (wSum > 1e-5f) ? (uyAcc / wSum)  : inUy;
+                float uz  = (wSum > 1e-5f) ? (uzAcc / wSum)  : inUz;
+                if (!std::isfinite(rho) || rho < 0.7f || rho > 1.3f) rho = 1.0f;
+                float usqr = ux*ux + uy*uy + uz*uz;
+                const float uCap = std::min(0.06f, 2.25f * U0mag * U0mag);
+                if (!std::isfinite(usqr) || usqr > uCap) {
+                    float sc = (usqr > 1e-9f && std::isfinite(usqr)) ? sqrtf(uCap / usqr) : 0.0f;
+                    ux *= sc; uy *= sc; uz *= sc;
+                    usqr = ux*ux + uy*uy + uz*uz;
+                }
+                lbmRho[cell] = rho;
+                lbmUx[cell] = ux; lbmUy[cell] = uy; lbmUz[cell] = uz;
+                lbmUxWorld[cell] = ux * velScale;
+                lbmUyWorld[cell] = uy * velScale;
+                lbmUzWorld[cell] = uz * velScale;
+                lbmPressure[cell] = (rho - 1.0f) * pFactor;
+                for (int qi = 0; qi < Q; ++qi)
+                    fPtr[(size_t)qi * total + cell] = equilibriumKernel(qi, rho, ux, uy, uz, usqr);
+            }
+        }
+    }
+
+    s_didWarmup = true;
+    auto wt1 = std::chrono::high_resolution_clock::now();
+    float warmMs = std::chrono::duration<float, std::milli>(wt1 - wt0).count();
+    DBG_PHYS("LBM: прогрев %d шагов на грубой сетке %dx%dx%d завершён за %.1f мс",
+             coarseSteps, cNx, cNy, cNz, warmMs);
 }
 
 void resetLBM() {
@@ -1447,6 +1876,15 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
     bool hasDiverged = false;
 
     for (int s = 0; s < steps; ++s) {
+        float stepInUx = inUx, stepInUy = inUy, stepInUz = inUz;
+        if (!s_didWarmup && lbmParams.rampSteps > 0 && !lbmParams.periodicX &&
+            lbmCurrentStep < lbmParams.rampSteps) {
+            const float tRamp = (float)(lbmCurrentStep + 1) / (float)lbmParams.rampSteps;
+            const float rampFactor = 0.15f + 0.85f * 0.5f * (1.0f - cosf(3.14159265f * tRamp));
+            stepInUx *= rampFactor;
+            stepInUy *= rampFactor;
+            stepInUz *= rampFactor;
+        }
         float maxVelGlobal = 0.0f;
         float maxNuTLocal = 0.0f;
         double avgRhoAcc = 0.0;
@@ -1524,8 +1962,9 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                     const float Sdyz = 0.5f*(gyz2 + gzy2);
                                     const float Sd2 = Sdxx*Sdxx + Sdyy*Sdyy + Sdzz*Sdzz + 2.0f*(Sdxy*Sdxy + Sdxz*Sdxz + Sdyz*Sdyz);
                                     if (Sd2 > 1e-18f) {
-                                        const float num = std::pow(Sd2, 1.5f);
-                                        const float den = std::pow(S2, 2.5f) + std::pow(Sd2, 1.25f) + 1e-24f;
+                                        const float sqrtSd2 = std::sqrt(Sd2);
+                                        const float num = Sd2 * sqrtSd2;
+                                        const float den = (S2 * S2 * std::sqrt(S2)) + (Sd2 * std::sqrt(sqrtSd2)) + 1e-24f;
                                         nut = (CwCfg * CwCfg) * (num / den);
                                     }
                                 } else {
@@ -1615,8 +2054,9 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                     const float Sdyz = 0.5f*(gyz2 + gzy2);
                                     const float Sd2 = Sdxx*Sdxx + Sdyy*Sdyy + Sdzz*Sdzz + 2.0f*(Sdxy*Sdxy + Sdxz*Sdxz + Sdyz*Sdyz);
                                     if (Sd2 > 1e-18f) {
-                                        const float num = std::pow(Sd2, 1.5f);
-                                        const float den = std::pow(S2, 2.5f) + std::pow(Sd2, 1.25f) + 1e-24f;
+                                        const float sqrtSd2 = std::sqrt(Sd2);
+                                        const float num = Sd2 * sqrtSd2;
+                                        const float den = (S2 * S2 * std::sqrt(S2)) + (Sd2 * std::sqrt(sqrtSd2)) + 1e-24f;
                                         nut = (CwCfg * CwCfg) * (num / den);
                                     }
                                 } else {
@@ -1652,7 +2092,7 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
             }
         }
 
-        // 2) Столкновение — кэш-блокированный проход по тайлам
+        // 2) Столкновение — кэш-блокированный проход по тайлам (SoA: f[q*total + cell])
         const bool hasBuoyancy = (thermalParams.enabled && !thermalBuoyancyY.empty());
         const bool hasExtForce = (lbmParams.bodyForceX != 0.0f || lbmParams.bodyForceY != 0.0f || lbmParams.bodyForceZ != 0.0f || hasBuoyancy);
 
@@ -1686,23 +2126,33 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                         const int rowBase = (z*Ny + y)*Nx;
                         for (int x = tile.x0; x < tile.x1; ++x) {
                             const int cell = rowBase + x;
-                            float* __restrict cellF = fPtr + (size_t)cell * Q;
-
-                            float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
+                            float cellF[19];
                             for (int qi = 0; qi < Q; ++qi) {
-                                float fi = cellF[qi];
-                                if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
-                                if (fi < -1.0f || fi > 10.0f) { fi = w[qi]; badPops++; }
-                                cellF[qi] = fi;
-                                rho += fi;
-                                ux += fi * (float)c[qi][0];
-                                uy += fi * (float)c[qi][1];
-                                uz += fi * (float)c[qi][2];
+                                cellF[qi] = fPtr[(size_t)qi * totalSz + (size_t)cell];
                             }
-                            if (!std::isfinite(rho)) { rhoNonFin++; nanCount++; rho = 1.0f; }
-                            else if (rho < 0.5f || rho > 1.5f) { rhoOut++; nanCount++; rho = 1.0f; }
+
+                            float rho = cellF[0] + cellF[1] + cellF[2] + cellF[3] + cellF[4] + cellF[5] + cellF[6]
+                                      + cellF[7] + cellF[8] + cellF[9] + cellF[10] + cellF[11] + cellF[12]
+                                      + cellF[13] + cellF[14] + cellF[15] + cellF[16] + cellF[17] + cellF[18];
+                            if (!std::isfinite(rho) || rho < 0.5f || rho > 1.5f) {
+                                for (int qi = 0; qi < Q; ++qi) {
+                                    float fi = cellF[qi];
+                                    if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
+                                    if (fi < -1.0f || fi > 10.0f) { fi = w[qi]; badPops++; }
+                                    cellF[qi] = fi;
+                                }
+                                rho = 0.0f;
+                                for (int qi = 0; qi < Q; ++qi) rho += cellF[qi];
+                                if (!std::isfinite(rho)) { rhoNonFin++; nanCount++; rho = 1.0f; }
+                                else if (rho < 0.5f || rho > 1.5f) { rhoOut++; nanCount++; rho = 1.0f; }
+                            }
                             const float invRho = 1.0f / rho;
-                            ux *= invRho; uy *= invRho; uz *= invRho;
+                            float ux = ((cellF[1] + cellF[7] + cellF[9] + cellF[11] + cellF[13]) -
+                                        (cellF[2] + cellF[8] + cellF[10] + cellF[12] + cellF[14])) * invRho;
+                            float uy = ((cellF[3] + cellF[7] + cellF[10] + cellF[15] + cellF[17]) -
+                                        (cellF[4] + cellF[8] + cellF[9] + cellF[16] + cellF[18])) * invRho;
+                            float uz = ((cellF[5] + cellF[11] + cellF[14] + cellF[15] + cellF[18]) -
+                                        (cellF[6] + cellF[12] + cellF[13] + cellF[16] + cellF[17])) * invRho;
                             if (!std::isfinite(ux) || !std::isfinite(uy) || !std::isfinite(uz)) { ux = 0; uy = 0; uz = 0; nanCount++; }
 
                             float usqr = ux*ux + uy*uy + uz*uz;
@@ -1753,6 +2203,10 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                 collideCellBGKOrTRT(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, trt, sMinus, hasForce, Fx, Fy, Fz, negPops);
                             }
 
+                            for (int qi = 0; qi < Q; ++qi) {
+                                fPtr[(size_t)qi * totalSz + (size_t)cell] = cellF[qi];
+                            }
+
                             rhoPtr[cell] = rho;
                             if (hasForce) {
                                 const float halfInvRho = 0.5f / rho;
@@ -1796,10 +2250,10 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                 continue;
                             }
 
-                            float* __restrict cellF = fPtr + (size_t)cell * Q;
+                            float cellF[19];
                             float rho = 0.0f, ux = 0.0f, uy = 0.0f, uz = 0.0f;
                             for (int qi = 0; qi < Q; ++qi) {
-                                float fi = cellF[qi];
+                                float fi = fPtr[(size_t)qi * totalSz + (size_t)cell];
                                 if (!std::isfinite(fi)) { fi = w[qi]; nanCount++; badPops++; }
                                 if (fi < -1.0f || fi > 10.0f) { fi = w[qi]; badPops++; }
                                 cellF[qi] = fi;
@@ -1828,7 +2282,7 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
 
                             if (isInlet && !lbmParams.periodicX && !flagshipBC) {
                                 rho = 1.0f;
-                                ux = inUx; uy = inUy; uz = inUz;
+                                ux = stepInUx; uy = stepInUy; uz = stepInUz;
                             }
 
                             float usqr = ux*ux + uy*uy + uz*uz;
@@ -1890,6 +2344,10 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                 collideCellBGKOrTRT(cellF, rho, ueX, ueY, ueZ, ueSqr, invTau, trt, sMinus, hasForce, Fx, Fy, Fz, negPops);
                             }
 
+                            for (int qi = 0; qi < Q; ++qi) {
+                                fPtr[(size_t)qi * totalSz + (size_t)cell] = cellF[qi];
+                            }
+
                             rhoPtr[cell] = rho;
                             if (hasForce) {
                                 const float halfInvRho = 0.5f / rho;
@@ -1940,7 +2398,7 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
             break;
         }
 
-        // 3) Перенос (pull streaming) — кэш-блокированный проход по тайлам
+        // 3) Перенос (pull streaming, SoA) — непрерывное копирование по оси X во внутренних тайлах
         #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic, 4)
         #endif
@@ -1949,16 +2407,14 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
             if (tile.kind == TILE_ALL_SOLID) continue;
 
             if (tile.kind == TILE_FLUID_INTERIOR) {
-                for (int z = tile.z0; z < tile.z1; ++z) {
-                    for (int y = tile.y0; y < tile.y1; ++y) {
-                        const int rowBase = (z*Ny + y)*Nx;
-                        for (int x = tile.x0; x < tile.x1; ++x) {
-                            const int dest = rowBase + x;
-                            float* __restrict dstF = fNextPtr + (size_t)dest * Q;
-                            for (int qi = 0; qi < Q; ++qi) {
-                                const int src = dest + offQ[qi];
-                                dstF[qi] = fPtr[(size_t)src * Q + qi];
-                            }
+                const int len = tile.x1 - tile.x0;
+                for (int qi = 0; qi < Q; ++qi) {
+                    const size_t qBase = (size_t)qi * totalSz;
+                    const int off = offQ[qi];
+                    for (int z = tile.z0; z < tile.z1; ++z) {
+                        for (int y = tile.y0; y < tile.y1; ++y) {
+                            const size_t dstIdx = qBase + (size_t)(z*Ny + y)*Nx + tile.x0;
+                            std::memcpy(fNextPtr + dstIdx, fPtr + dstIdx + off, (size_t)len * sizeof(float));
                         }
                     }
                 }
@@ -1969,8 +2425,6 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                         for (int x = tile.x0; x < tile.x1; ++x) {
                             const int dest = rowBase + x;
                             if (solidPtr[dest] || groundPtr[dest]) continue;
-                            float* __restrict dstF = fNextPtr + (size_t)dest * Q;
-                            const size_t destBase = (size_t)dest * Q;
                             for (int qi = 0; qi < Q; ++qi) {
                                 int sx = x - c[qi][0];
                                 int sy = y - c[qi][1];
@@ -1983,22 +2437,23 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                     if (sz < 0) sz += Nz;
                                     else if (sz >= Nz) sz -= Nz;
                                 }
+                                float* __restrict dstCell = fNextPtr + (size_t)qi * totalSz + (size_t)dest;
                                 if (sx < 0 || sx >= Nx || sy < 0 || sy >= Ny || sz < 0 || sz >= Nz) {
                                     if (flagshipBC) {
                                         bool oobX = (sx < 0 || sx >= Nx);
                                         bool oobY = (sy < 0 || sy >= Ny);
                                         bool oobZ = (sz < 0 || sz >= Nz);
                                         if (!oobX && oobY && !oobZ) {
-                                            dstF[qi] = fPtr[destBase + reflY[qi]];
+                                            *dstCell = fPtr[(size_t)reflY[qi] * totalSz + (size_t)dest];
                                         } else if (!oobX && !oobY && oobZ) {
-                                            dstF[qi] = fPtr[destBase + reflZ[qi]];
+                                            *dstCell = fPtr[(size_t)reflZ[qi] * totalSz + (size_t)dest];
                                         } else if (!oobX && oobY && oobZ) {
-                                            dstF[qi] = fPtr[destBase + reflY[reflZ[qi]]];
+                                            *dstCell = fPtr[(size_t)reflY[reflZ[qi]] * totalSz + (size_t)dest];
                                         } else {
-                                            dstF[qi] = fPtr[destBase + qi];
+                                            *dstCell = fPtr[(size_t)qi * totalSz + (size_t)dest];
                                         }
                                     } else {
-                                        dstF[qi] = fPtr[destBase + qi];
+                                        *dstCell = fPtr[(size_t)qi * totalSz + (size_t)dest];
                                     }
                                     continue;
                                 }
@@ -2010,29 +2465,30 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                         float denom = df - ds;
                                         float q = (df > 0.0f && ds <= 0.0f && denom > 1e-4f)
                                                   ? glm::clamp(df / denom, 0.05f, 0.95f) : 0.5f;
+                                        const float fOppDest = fPtr[(size_t)opp[qi] * totalSz + (size_t)dest];
                                         if (q < 0.5f) {
                                             int fx2 = x + c[qi][0], fy2 = y + c[qi][1], fz2 = z + c[qi][2];
                                             if (fx2 >= 0 && fx2 < Nx && fy2 >= 0 && fy2 < Ny && fz2 >= 0 && fz2 < Nz) {
                                                 int f2 = (fz2*Ny + fy2)*Nx + fx2;
                                                 if (!solidPtr[f2] && !groundPtr[f2]) {
-                                                    dstF[qi] = 2.0f*q*fPtr[destBase + opp[qi]]
-                                                             + (1.0f - 2.0f*q)*fPtr[(size_t)f2 * Q + opp[qi]];
+                                                    *dstCell = 2.0f*q*fOppDest
+                                                             + (1.0f - 2.0f*q)*fPtr[(size_t)opp[qi] * totalSz + (size_t)f2];
                                                     continue;
                                                 }
                                             }
-                                            dstF[qi] = fPtr[destBase + opp[qi]];
+                                            *dstCell = fOppDest;
                                         } else {
                                             float inv2q = 0.5f / q;
-                                            dstF[qi] = inv2q * fPtr[destBase + opp[qi]]
-                                                     + (1.0f - inv2q) * fPtr[destBase + qi];
+                                            *dstCell = inv2q * fOppDest
+                                                     + (1.0f - inv2q) * fPtr[(size_t)qi * totalSz + (size_t)dest];
                                         }
                                     } else {
-                                        dstF[qi] = fPtr[destBase + opp[qi]];
+                                        *dstCell = fPtr[(size_t)opp[qi] * totalSz + (size_t)dest];
                                     }
                                 } else if (groundPtr[src]) {
-                                    dstF[qi] = fPtr[destBase + opp[qi]];
+                                    *dstCell = fPtr[(size_t)opp[qi] * totalSz + (size_t)dest];
                                 } else {
-                                    dstF[qi] = fPtr[(size_t)src * Q + qi];
+                                    *dstCell = fPtr[(size_t)qi * totalSz + (size_t)src];
                                 }
                             }
                         }
@@ -2041,19 +2497,20 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
             }
         }
 
-        // 4) Вход и выход
+        // 4) Вход и выход (SoA)
         if (!lbmParams.periodicX) {
             if (flagshipBC) {
                 auto applyNonEqInlet = [&](int cellInlet, int cellNb) {
                     if (cellNb < 0 || cellNb >= total || solidPtr[cellNb] || groundPtr[cellNb]) {
-                        float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                        float usqr = stepInUx*stepInUx + stepInUy*stepInUy + stepInUz*stepInUz;
                         for (int qi = 0; qi < Q; ++qi)
-                            fNextPtr[(size_t)cellInlet*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                            fNextPtr[(size_t)qi * totalSz + (size_t)cellInlet] =
+                                computeEquilibriumFast(qi, 1.0f, stepInUx, stepInUy, stepInUz, usqr);
                         return;
                     }
                     float rhoNb = 0.0f, uxNb = 0.0f, uyNb = 0.0f, uzNb = 0.0f;
                     for (int qi = 0; qi < Q; ++qi) {
-                        float v = fNextPtr[(size_t)cellNb*Q + qi];
+                        float v = fNextPtr[(size_t)qi * totalSz + (size_t)cellNb];
                         rhoNb += v;
                         uxNb += v * (float)c[qi][0];
                         uyNb += v * (float)c[qi][1];
@@ -2064,19 +2521,19 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                     uxNb *= invR; uyNb *= invR; uzNb *= invR;
                     float usNb = uxNb*uxNb + uyNb*uyNb + uzNb*uzNb;
                     if (usNb > 0.09f) { float sc = sqrtf(0.09f/usNb); uxNb*=sc; uyNb*=sc; uzNb*=sc; usNb = 0.09f; }
-                    float usIn = inUx*inUx + inUy*inUy + inUz*inUz;
+                    float usIn = stepInUx*stepInUx + stepInUy*stepInUy + stepInUz*stepInUz;
                     for (int qi = 0; qi < Q; ++qi) {
-                        float feqIn = equilibriumKernel(qi, rhoNb, inUx, inUy, inUz, usIn);
+                        float feqIn = equilibriumKernel(qi, rhoNb, stepInUx, stepInUy, stepInUz, usIn);
                         float feqNb = equilibriumKernel(qi, rhoNb, uxNb, uyNb, uzNb, usNb);
-                        float fneq  = fNextPtr[(size_t)cellNb*Q + qi] - feqNb;
-                        fNextPtr[(size_t)cellInlet*Q + qi] = feqIn + fneq;
+                        float fneq  = fNextPtr[(size_t)qi * totalSz + (size_t)cellNb] - feqNb;
+                        fNextPtr[(size_t)qi * totalSz + (size_t)cellInlet] = feqIn + fneq;
                     }
                 };
                 auto applyNonEqOutlet = [&](int cellOut, int cellNb) {
                     if (cellNb < 0 || cellNb >= total || solidPtr[cellNb] || groundPtr[cellNb]) return;
                     float rhoNb = 0.0f, uxNb = 0.0f, uyNb = 0.0f, uzNb = 0.0f;
                     for (int qi = 0; qi < Q; ++qi) {
-                        float v = fNextPtr[(size_t)cellNb*Q + qi];
+                        float v = fNextPtr[(size_t)qi * totalSz + (size_t)cellNb];
                         rhoNb += v;
                         uxNb += v * (float)c[qi][0];
                         uyNb += v * (float)c[qi][1];
@@ -2091,8 +2548,8 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                         if (c[qi][flowAxis] * flowSign >= 0) continue;
                         float feqOut = equilibriumKernel(qi, 1.0f, uxNb, uyNb, uzNb, usNb);
                         float feqNb  = equilibriumKernel(qi, rhoNb, uxNb, uyNb, uzNb, usNb);
-                        float fneq   = fNextPtr[(size_t)cellNb*Q + qi] - feqNb;
-                        fNextPtr[(size_t)cellOut*Q + qi] = feqOut + fneq;
+                        float fneq   = fNextPtr[(size_t)qi * totalSz + (size_t)cellNb] - feqNb;
+                        fNextPtr[(size_t)qi * totalSz + (size_t)cellOut] = feqOut + fneq;
                     }
                 };
 
@@ -2145,7 +2602,7 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
             } else {
                 if (flowAxis == 0) {
                     int ix = (flowSign > 0) ? 0 : Nx-1;
-                    float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                    float usqr = stepInUx*stepInUx + stepInUy*stepInUy + stepInUz*stepInUz;
                     #ifdef _OPENMP
                     #pragma omp parallel for
                     #endif
@@ -2154,11 +2611,11 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                             int cell = (z*Ny + y)*Nx + ix;
                             if (!solidPtr[cell] && !groundPtr[cell])
                                 for (int qi = 0; qi < Q; ++qi)
-                                    fNextPtr[(size_t)cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                                    fNextPtr[(size_t)qi * totalSz + (size_t)cell] = computeEquilibriumFast(qi, 1.0f, stepInUx, stepInUy, stepInUz, usqr);
                         }
                 } else if (flowAxis == 1) {
                     int iy = (flowSign > 0) ? 0 : Ny-1;
-                    float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                    float usqr = stepInUx*stepInUx + stepInUy*stepInUy + stepInUz*stepInUz;
                     #ifdef _OPENMP
                     #pragma omp parallel for
                     #endif
@@ -2167,11 +2624,11 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                             int cell = (z*Ny + iy)*Nx + x;
                             if (!solidPtr[cell] && !groundPtr[cell])
                                 for (int qi = 0; qi < Q; ++qi)
-                                    fNextPtr[(size_t)cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                                    fNextPtr[(size_t)qi * totalSz + (size_t)cell] = computeEquilibriumFast(qi, 1.0f, stepInUx, stepInUy, stepInUz, usqr);
                         }
                 } else {
                     int iz = (flowSign > 0) ? 0 : Nz-1;
-                    float usqr = inUx*inUx + inUy*inUy + inUz*inUz;
+                    float usqr = stepInUx*stepInUx + stepInUy*stepInUy + stepInUz*stepInUz;
                     #ifdef _OPENMP
                     #pragma omp parallel for
                     #endif
@@ -2180,7 +2637,7 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                             int cell = (iz*Ny + y)*Nx + x;
                             if (!solidPtr[cell] && !groundPtr[cell])
                                 for (int qi = 0; qi < Q; ++qi)
-                                    fNextPtr[(size_t)cell*Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx, inUy, inUz, usqr);
+                                    fNextPtr[(size_t)qi * totalSz + (size_t)cell] = computeEquilibriumFast(qi, 1.0f, stepInUx, stepInUy, stepInUz, usqr);
                         }
                 }
 
@@ -2202,10 +2659,11 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                 int cellIn2 = (z*Ny + y)*Nx + ix2;
                                 if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
                                 for (int qi = 0; qi < Q; ++qi) {
-                                    float fOut = fPtr[(size_t)cellOut*Q + qi];
-                                    float fIn = fPtr[(size_t)cellIn*Q + qi];
-                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[(size_t)cellIn2*Q + qi] : fIn;
-                                    fNextPtr[(size_t)cellOut*Q + qi] = fOut + convCoeff*(fIn - fOut) + 0.15f*convCoeff*(fIn - fIn2);
+                                    const size_t qBase = (size_t)qi * totalSz;
+                                    float fOut = fPtr[qBase + (size_t)cellOut];
+                                    float fIn = fPtr[qBase + (size_t)cellIn];
+                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[qBase + (size_t)cellIn2] : fIn;
+                                    fNextPtr[qBase + (size_t)cellOut] = fOut + convCoeff*(fIn - fOut) + 0.15f*convCoeff*(fIn - fIn2);
                                 }
                             }
                     } else if (flowAxis == 1) {
@@ -2222,10 +2680,11 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                 int cellIn2 = (z*Ny + iy2)*Nx + x;
                                 if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
                                 for (int qi = 0; qi < Q; ++qi) {
-                                    float fOut = fPtr[(size_t)cellOut*Q + qi];
-                                    float fIn = fPtr[(size_t)cellIn*Q + qi];
-                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[(size_t)cellIn2*Q + qi] : fIn;
-                                    fNextPtr[(size_t)cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                                    const size_t qBase = (size_t)qi * totalSz;
+                                    float fOut = fPtr[qBase + (size_t)cellOut];
+                                    float fIn = fPtr[qBase + (size_t)cellIn];
+                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[qBase + (size_t)cellIn2] : fIn;
+                                    fNextPtr[qBase + (size_t)cellOut] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
                                 }
                             }
                     } else {
@@ -2242,10 +2701,11 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                                 int cellIn2 = (iz2*Ny + y)*Nx + x;
                                 if (solidPtr[cellOut] || groundPtr[cellOut]) continue;
                                 for (int qi = 0; qi < Q; ++qi) {
-                                    float fOut = fPtr[(size_t)cellOut*Q + qi];
-                                    float fIn = fPtr[(size_t)cellIn*Q + qi];
-                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[(size_t)cellIn2*Q + qi] : fIn;
-                                    fNextPtr[(size_t)cellOut*Q + qi] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
+                                    const size_t qBase = (size_t)qi * totalSz;
+                                    float fOut = fPtr[qBase + (size_t)cellOut];
+                                    float fIn = fPtr[qBase + (size_t)cellIn];
+                                    float fIn2 = (cellIn2>=0 && cellIn2<total) ? fPtr[qBase + (size_t)cellIn2] : fIn;
+                                    fNextPtr[qBase + (size_t)cellOut] = fOut + convCoeff*(fIn-fOut) + 0.15f*convCoeff*(fIn-fIn2);
                                 }
                             }
                     }
@@ -2301,7 +2761,7 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
         for (int cell = 0; cell < total; ++cell) {
             if (lbmIsSolid[cell] || lbmIsGround[cell]) continue;
             for (int qi = 0; qi < Q; ++qi) {
-                f[(size_t)cell * (size_t)Q + qi] = computeEquilibriumFast(qi, 1.0f, inUx2, inUy2, inUz2, usqr);
+                f[(size_t)qi * totalSz + (size_t)cell] = computeEquilibriumFast(qi, 1.0f, inUx2, inUy2, inUz2, usqr);
             }
             lbmRho[cell] = 1.0f;
             lbmUx[cell] = inUx2; lbmUy[cell] = inUy2; lbmUz[cell] = inUz2;

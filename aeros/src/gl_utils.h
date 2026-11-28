@@ -8,6 +8,9 @@ void createObstacleSphere(int stacks, int slices);
 void createGroundPlane(float size);
 void createGrid(float size, int divisions);
 void createSlicePlane(int axis, float pos01);
+void renderCFDSliceGL(unsigned int modelShaderProgram,
+                      const float* modelMat4, const float* viewMat4, const float* projMat4,
+                      float alpha);
 void cleanupGLResources();
 
 #endif // GL_UTILS_H

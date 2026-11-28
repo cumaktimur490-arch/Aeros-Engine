@@ -20,6 +20,7 @@
 #include "voxel_grid.h"      // v1.36.0 — статус вокселизации (g_voxelBuildError)
 #include "lbm.h"
 #include "atmosphere.h"
+#include "flow_field.h"
 
 // =====================================================
 // Загрузка модели v1.8.0 — исправлено + улучшения
@@ -195,14 +196,13 @@ static bool applyLoadedGeometry(std::vector<float>& vertices, std::vector<float>
         std::cout << "[Model] Auto ref area: " << aeroRefArea << " m2" << std::endl;
     }
 
-    // Reynolds number на основе модели
+    // Reynolds number на основе модели (единая формула Сазерленда)
     {
         float L = maxDim;
         float V = flowSpeed;
-        float nu = 1.5e-5f; // кинематическая вязкость воздуха
+        float nu = 1.5e-5f;
         if (airDensity > 1e-6f) {
-            // mu/rho
-            float mu = 1.81e-5f;
+            float mu = airSutherlandViscosity(airTemperature);
             nu = mu / airDensity;
         }
         aeroReNumber = V * L / (nu + 1e-9f);

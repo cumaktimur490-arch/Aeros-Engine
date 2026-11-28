@@ -9,8 +9,10 @@
 #include "vulkan_scene.h"
 
 #include "globals.h"
+#include "flow_field.h"
 #include "flow_params.h"
 #include "forces.h"
+#include "lbm.h"
 #include "scene_geometry.h"
 #include "vulkan_renderer.h"
 
@@ -130,6 +132,59 @@ void buildVulkanScene(IRenderer* renderer, const VulkanSceneFrame& frame) {
                              1.0f, 1.0f, frame.model);
     }
     if (showSlicePlane && aeroShowSlice) {
+        struct VkSliceCacheKey {
+            int axis = -1;
+            float pos = -1.0f;
+            int visMode = -1;
+            int colorMap = -1;
+            int lbmStep = -1;
+            bool lbmOn = false;
+            bool lbmInit = false;
+            float speed = -1.0f;
+            float az = 9999.0f;
+            float el = 9999.0f;
+            int vertCount = -1;
+            bool groundEn = false;
+            float groundH = 9999.0f;
+        };
+        static VkSliceCacheKey vksc;
+        static std::vector<float> vkPos, vkNorm, vkCol;
+        const bool dirty = (vksc.axis != aeroSliceAxis) ||
+                           (std::fabs(vksc.pos - aeroSlicePos) > 1e-4f) ||
+                           (vksc.visMode != (int)aeroVisMode) ||
+                           (vksc.colorMap != aeroColorMap) ||
+                           (vksc.lbmOn != lbmParams.enabled) ||
+                           (vksc.lbmInit != lbmInitialized) ||
+                           (lbmInitialized && vksc.lbmStep != lbmCurrentStep) ||
+                           (std::fabs(vksc.speed - flowSpeed) > 1e-4f) ||
+                           (std::fabs(vksc.az - flowAzimuth) > 1e-3f) ||
+                           (std::fabs(vksc.el - flowElevation) > 1e-3f) ||
+                           (vksc.vertCount != modelVertexCount) ||
+                           (vksc.groundEn != aeroGroundEffect) ||
+                           (std::fabs(vksc.groundH - aeroGroundHeight) > 1e-4f) ||
+                           vkPos.empty();
+        if (dirty) {
+            buildCFDSliceMesh(aeroSliceAxis, aeroSlicePos, 56, vkPos, vkNorm, vkCol);
+            vksc.axis = aeroSliceAxis;
+            vksc.pos = aeroSlicePos;
+            vksc.visMode = (int)aeroVisMode;
+            vksc.colorMap = aeroColorMap;
+            vksc.lbmOn = lbmParams.enabled;
+            vksc.lbmInit = lbmInitialized;
+            vksc.lbmStep = lbmInitialized ? lbmCurrentStep : -1;
+            vksc.speed = flowSpeed;
+            vksc.az = flowAzimuth;
+            vksc.el = flowElevation;
+            vksc.vertCount = modelVertexCount;
+            vksc.groundEn = aeroGroundEffect;
+            vksc.groundH = aeroGroundHeight;
+        }
+        if (!vkPos.empty()) {
+            renderer->sceneSetLighting(false);
+            renderer->sceneTriangles(vkPos.data(), vkNorm.data(), vkCol.data(),
+                                     (int)(vkPos.size() / 3), frame.model, glm::vec3(1.0f), 0.72f);
+            renderer->sceneSetLighting(lightingEnabled);
+        }
         const std::vector<float> outline = scenegem::sliceOutlineLines(
             minBB, maxBB, aeroSliceAxis, aeroSlicePos, glm::vec3(0.2f, 0.8f, 1.0f));
         renderer->sceneLines(outline.data(), (int)(outline.size() / 6), glm::vec3(1.0f), 0.4f, 2.0f,

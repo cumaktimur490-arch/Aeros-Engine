@@ -538,7 +538,7 @@ void computeLiftDrag() {
         } else {
             float logRe = log10f(Re_x);
             if (logRe < 1.0f) logRe = 1.0f;
-            Cf = 0.455f / powf(logRe, 2.58f);
+            Cf = 0.455f / expf(2.58f * logf(logRe));
             if (Re_x < 1e9f) {
                 Cf -= 1700.0f / Re_x;
                 if (Cf < 0.0005f) Cf = 0.0005f;
@@ -612,11 +612,13 @@ void computeLiftDrag() {
         if (frontal > 1e-6f) aeroRefArea = frontal;
     }
 
-    // Базовое сопротивление — только если есть явная кормовая площадь и давление на ней не учтено полностью
-    // В нашем интегрировании давление на корме уже учтено, так что baseDrag = 0 для замкнутого тела
-    // Но для открытой кормы (как у авто) добавляем коррекцию: Cp_base ~ -0.12..-0.2
+    // Базовое сопротивление — только для аналитического поля (без LBM).
+    // В LBM давление на корме и в следе уже решено по 3D уравнениям Навье–Стокса,
+    // поэтому эмпирические поправки (baseDrag, ground effect, inducedDrag)
+    // не дублируем.
+    const bool usingLBM = (lbmParams.enabled && lbmInitialized);
     float baseDrag = 0.0f;
-    if (baseAreaCalc > 1e-6f) {
+    if (!usingLBM && baseAreaCalc > 1e-6f) {
         // Если Cp на корме уже отрицательный, он уже дает drag, не добавляем
         // Если же модель открытая и Cp ~0, добавляем эмпирическое
         float avgCpBase = baseForceCalc / (q * baseAreaCalc + 1e-9f);
@@ -650,7 +652,8 @@ void computeLiftDrag() {
         if (!std::isfinite(liftMagnitude)) liftMagnitude = 0;
         liftVector = liftDir * liftMagnitude;
         // Ground effect для подъемной: при близости к земле downforce увеличивается
-        if (aeroGroundEffect) {
+        // (в LBM грань земли моделируется напрямую, без эмпирического множителя).
+        if (!usingLBM && aeroGroundEffect) {
             float groundY = g_voxMinY + aeroGroundHeight;
             float h = center.y - groundY;
             if (h > 0.01f && h < maxDim*1.0f) {
@@ -683,8 +686,8 @@ void computeLiftDrag() {
     Cl = glm::clamp(Cl, -3.0f, 3.0f);
     float Cd_i = Cl*Cl / (3.14159265f * AR * eOswald + 1e-6f);
     float inducedDrag = Cd_i * q * refArea;
-    // Индуктивное только если есть подъемная
-    if (fabsf(Cl) > 0.05f) dragMagnitude += inducedDrag;
+    // Индуктивное только если есть подъемная (в LBM 3D-вихри уже в поле давления)
+    if (!usingLBM && fabsf(Cl) > 0.05f) dragMagnitude += inducedDrag;
 
     // Волновое сопротивление при M>0.7 (machInf посчитан выше — v1.26.0)
     if (aeroMachEffects && machInf > 0.7f) {

@@ -170,6 +170,7 @@ public:
                                 float alpha) {
         (void)verts; (void)norms; (void)colors; (void)count; (void)modelMatrix; (void)tint; (void)alpha;
     }
+    virtual void sceneSetLighting(bool lighting) { (void)lighting; }
     // Линии: 6 float на вершину (позиция + цвет), рисуются с матрицей modelMatrix.
     virtual void sceneLines(const float* verts, int count, glm::vec3 tint, float alpha,
                             float width, const glm::mat4& modelMatrix) {
@@ -242,6 +243,7 @@ public:
     void sceneTriangles(const float* verts, const float* norms, const float* colors,
                         int count, const glm::mat4& modelMatrix, glm::vec3 tint,
                         float alpha) override;
+    void sceneSetLighting(bool lighting) override { sceneLighting = lighting; }
     void sceneLines(const float* verts, int count, glm::vec3 tint, float alpha,
                     float width, const glm::mat4& modelMatrix) override;
     void flushScene() override;

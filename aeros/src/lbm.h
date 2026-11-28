@@ -66,6 +66,13 @@ struct LBMParams {
     float bodyForceZ = 0.0f;
     bool periodicX = false;
     bool periodicZ = false;
+
+    // v1.40.0 — Плавный разгон скорости на входе (убирает акустический удар при старте)
+    // и быстрый прогрев с грубой сетки (Coarse-to-Fine) при инициализации.
+    // По умолчанию 0/false для совместимости с короткими эталонными тестами;
+    // включаются флагманским пресетом (lbmApplyFlagshipPreset).
+    int  rampSteps  = 0;
+    bool autoWarmup = false;
 };
 
 extern LBMParams lbmParams;
@@ -163,6 +170,7 @@ void updateLBM(float deltaTime, int forceSteps = -1);
 
 // v1.39.0 — Флагманский пресет и диагностика
 void lbmApplyFlagshipPreset();
+void lbmWarmupCoarseToFine(int coarseSteps = 100);
 LBMCollisionMode lbmEffectiveCollisionMode();
 LBMTurbulenceModel lbmEffectiveTurbulenceModel();
 const char* lbmCollisionModeName(LBMCollisionMode m);

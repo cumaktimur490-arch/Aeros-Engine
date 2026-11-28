@@ -573,6 +573,7 @@ int main(int argc, char** argv) {
     bool  cliPresimFlagship = true;
     std::string cliPresimOut   = "logs";
     std::string cliPresimModel;
+    bool  cliPresetExplicit = false;
     for (int i=1; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--vulkan" || arg == "-vulkan" || arg == "--vk") {
@@ -674,16 +675,19 @@ int main(int argc, char** argv) {
             return 0;
         } else if (arg == "--lite") {
             g_isLiteMode = true;
+            cliPresetExplicit = true;
             applyLiteDefaults();
             display_w = 1024; display_h = 600;
             std::cout << "[Main] Lite mode forced via CLI" << std::endl;
         } else if (arg == "--ultra-lite" || arg == "--ultralite" || arg == "--potato") {
             g_isLiteMode = true;
             g_isUltraLiteMode = true;
+            cliPresetExplicit = true;
             applyUltraLiteDefaults();
             display_w = ULTRA_LITE_WINDOW_W; display_h = ULTRA_LITE_WINDOW_H;
             std::cout << "[Main] Ultra-Lite (Potato) mode forced via CLI" << std::endl;
         } else if (arg == "--preset" && i+1 < argc) {
+            cliPresetExplicit = true;
             std::string presetStr = argv[++i];
             if (presetStr == "potato" || presetStr == "ultra-lite" || presetStr == "ultra") {
                 g_isLiteMode = true; g_isUltraLiteMode = true;
@@ -832,9 +836,14 @@ int main(int argc, char** argv) {
     }
 
     // Try load settings
+    const bool hasIniSettings = aeroSaveSettings && std::ifstream("aeros_settings.ini").good();
     if (aeroSaveSettings) {
         loadSettings("aeros_settings.ini");
         std::cout << "[Settings] Loaded aeros_settings.ini if exists" << std::endl;
+    }
+    if (!hasIniSettings && !cliPresetExplicit && !isLiteMode()) {
+        lbmApplyFlagshipPreset();
+        std::cout << "[Main] First-run Flagship LBM preset enabled (MRT + WALE + BFL)" << std::endl;
     }
 
     // v1.34.0 — стартовый экран (главное меню) показывается только если так
@@ -1330,9 +1339,12 @@ int main(int argc, char** argv) {
         // зависел от железа. Теперь не зависит.
         // =====================================================
         const float fpsNow = (deltaTime > 1e-6f) ? 1.0f / deltaTime : 0.0f;
+        const float safeTimeScale = (std::isfinite(timeScale) && timeScale > 0.0f)
+            ? std::min(timeScale, 10.0f) : 1.0f;
+        const float scaledFrameDt = deltaTime * safeTimeScale;
         const float latticeDt = (lbmParams.enabled && lbmInitialized) ? lbmLatticeDtWorld() : 0.0f;
         int lbmStepsThisFrame = -1;   // -1 = «как раньше», по stepsPerFrame
-        const int physTicks = physClock.advance(deltaTime, latticeDt, fpsNow, &lbmStepsThisFrame);
+        const int physTicks = physClock.advance(scaledFrameDt, latticeDt, fpsNow, &lbmStepsThisFrame);
         const float simDtFrame = physClock.frameSimDt();   // модельных секунд за кадр
 
         // Если физика упирается в предел тактов, модельное время начинает отставать
@@ -1506,7 +1518,7 @@ int main(int argc, char** argv) {
             // v1.29.0 — динамика полёта интегрируется на модельном времени такта,
             // а не на deltaTime кадра: при фиксированном такте это тот же шаг, что
             // у решателя и частиц, поэтому 6DOF не «ускоряется» на быстром мониторе.
-            const float dtFlight = physClock.fixed ? simDtFrame : deltaTime;
+            const float dtFlight = physClock.fixed ? simDtFrame : scaledFrameDt;
             if (dtFlight > 0.0f)
                 updateFlightDynamics(dtFlight, liftVector, dragVector, momentVector, centerOfPressure);
         }
@@ -1514,9 +1526,11 @@ int main(int argc, char** argv) {
         perfForcesMs = std::chrono::duration<float, std::milli>(tForce1-tForce0).count();
 
         // v1.19.0 Interesting features
-        if (simActive) updateInterestingFeatures(deltaTime);
+        if (simActive) updateInterestingFeatures(scaledFrameDt);
 
-        // Streamlines need recompute on flow change or ground change
+        // Streamlines need recompute on flow change, ground change, or live LBM progression
+        static int prevStreamLbmStep = -1;
+        static double prevStreamRefreshTime = -10.0;
         bool needStreamlines = false;
         if (hasModel && showStreamlines) {
             if (fabs(prevSpeed-flowSpeed) > 1e-3f ||
@@ -1528,6 +1542,10 @@ int main(int argc, char** argv) {
                 fabs(prevAlt-altitude) > 10.0f ||
                 fabs(prevGroundH-aeroGroundHeight) > 1e-3f ||
                 prevGroundEn != aeroGroundEffect) {
+                needStreamlines = true;
+            } else if (simActive && lbmParams.enabled && lbmInitialized &&
+                       std::abs(lbmCurrentStep - prevStreamLbmStep) >= 15 &&
+                       (currentFrame - prevStreamRefreshTime) >= 0.25) {
                 needStreamlines = true;
             }
         }
@@ -1542,6 +1560,8 @@ int main(int argc, char** argv) {
             prevAlt = altitude;
             prevGroundH = aeroGroundHeight;
             prevGroundEn = aeroGroundEffect;
+            prevStreamLbmStep = lbmInitialized ? lbmCurrentStep : -1;
+            prevStreamRefreshTime = currentFrame;
             computeStreamlines();
             auto tSL1 = std::chrono::high_resolution_clock::now();
             perfStreamlinesMs = std::chrono::duration<float, std::milli>(tSL1-tSL0).count();
@@ -1828,6 +1848,11 @@ int main(int argc, char** argv) {
                     glBindVertexArray(0);
                 }
                 if (showSlicePlane && aeroShowSlice && !g_vertices.empty()) {
+                    renderCFDSliceGL(modelShaderProgram,
+                                     glm::value_ptr(model),
+                                     glm::value_ptr(view),
+                                     glm::value_ptr(projection),
+                                     0.72f);
                     createSlicePlane(aeroSliceAxis, aeroSlicePos);
                     if (sliceVAO != 0) {
                         glUseProgram(lineShaderProgram);

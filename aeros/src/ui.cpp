@@ -1893,7 +1893,16 @@ if (uiSelectedLeaf == 9 && ImGui::CollapsingHeader(_TR("Flow", "Поток"), Im
     ImGui::SliderFloat(_TR("Elevation", "Угол атаки"), &flowElevation, -90.0f, 90.0f);
     ImGui::SameLine(); ImGui::SetNextItemWidth(80);
     ImGui::InputFloat("##el", &flowElevation, 0, 0, "%.1f");
-    ImGui::SliderFloat(_TR("Time Scale", "Масштаб времени"), &timeScale, 0.01f, 3.0f, "%.2f");
+    ImGui::SliderFloat(_TR("Time Scale (slow-mo)", "Масштаб времени (слоу-мо)"), &timeScale, 0.01f, 3.0f, "%.2fx");
+    {
+        static const float kSlowPresets[] = { 0.05f, 0.10f, 0.25f, 0.50f, 1.0f, 2.0f };
+        for (int i = 0; i < 6; ++i) {
+            if (i > 0) ImGui::SameLine();
+            char lbl[32];
+            std::snprintf(lbl, sizeof(lbl), "%.2gx##tsFlow", kSlowPresets[i]);
+            if (ImGui::SmallButton(lbl)) timeScale = kSlowPresets[i];
+        }
+    }
     ImGui::SliderFloat(_TR("Strouhal", "Струхаль"), &strouhal, 0.05f, 0.5f, "%.3f");
     ImGui::SliderFloat(_TR("Wake Strength", "Сила следа"), &wakeStrength, 0.0f, 2.0f);
     ImGui::SliderFloat(_TR("Wake Length", "Длина следа"), &wakeLength, 2.0f, 30.0f);
@@ -2433,6 +2442,25 @@ if (uiSelectedLeaf == 21 && ImGui::CollapsingHeader(_TR("Physics rate & fixed ti
     }
 
     ImGui::Separator();
+    ImGui::Text("%s", _TR("Visualization speed (slow-motion)", "Скорость визуализации (слоу-мо)"));
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderFloat(_TR("Time Scale##clock", "Масштаб времени##clock"), &timeScale, 0.01f, 3.0f, "%.2fx")) {
+        debugLogAction("такт физики", "масштаб времени %.2fx", timeScale);
+    }
+    {
+        static const float kClockSlow[] = { 0.05f, 0.10f, 0.25f, 0.50f, 1.0f, 2.0f };
+        for (int i = 0; i < 6; ++i) {
+            if (i > 0) ImGui::SameLine();
+            char lbl[32];
+            std::snprintf(lbl, sizeof(lbl), "%.2gx##tsClk", kClockSlow[i]);
+            if (ImGui::SmallButton(lbl)) {
+                timeScale = kClockSlow[i];
+                debugLogAction("такт физики", "слоу-мо %.2gx", timeScale);
+            }
+        }
+    }
+
+    ImGui::Separator();
     ImGui::Text("%s", _TR("Live measurement", "Живые измерения"));
     if (ImGui::BeginTable("##physClockTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         const float lat = (lbmParams.enabled && lbmInitialized) ? lbmLatticeDtWorld() : 0.0f;
@@ -2801,20 +2829,66 @@ if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra
             const PhysBehaviorReport& rep = physSimReport();
             if (rep.valid) {
                 ImGui::Separator();
-                ImGui::Text("%s: %s", _TR("Flow Regime", "Режим течения"), rep.regimeName.c_str());
+                ImVec4 regimeCol(0.3f, 0.9f, 1.0f, 1.0f);
+                if (rep.regime == PhysFlowRegime::SteadyLaminar) regimeCol = ImVec4(0.3f, 1.0f, 0.5f, 1.0f);
+                else if (rep.regime == PhysFlowRegime::UnstableDiverged) regimeCol = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+                else if (rep.regime == PhysFlowRegime::TransitionalDeveloping ||
+                         rep.regime == PhysFlowRegime::TurbulentUnsteady) regimeCol = ImVec4(1.0f, 0.8f, 0.25f, 1.0f);
+
+                ImGui::TextColored(regimeCol, "%s: %s",
+                                   _TR("Behavior Summary — Flow Regime", "Сводка поведения — режим течения"),
+                                   rep.regimeName.c_str());
                 ImGui::TextWrapped("%s", rep.regimeReason.c_str());
-                ImGui::Text("Cd = %.4f +/- %.4f | Cl = %.4f +/- %.4f | L/D = %.2f",
-                            rep.cdMean, rep.cdStd, rep.clMean, rep.clStd, rep.ldMean);
-                if (rep.hasDominantShedding) {
-                    ImGui::Text("Shedding: f = %.2f Hz | St = %.3f | Prominence = %.1fx",
-                                rep.dominantFreqHz, rep.strouhalNumber, rep.spectralProminence);
+
+                if (ImGui::BeginTable("##physSummaryKPI", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                    auto row = [](const char* k, const char* fmt, ...) {
+                        char buf[128];
+                        va_list ap;
+                        va_start(ap, fmt);
+                        std::vsnprintf(buf, sizeof(buf), fmt, ap);
+                        va_end(ap);
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(k);
+                        ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(buf);
+                    };
+                    row(_TR("Solver & Grid", "Решатель и сетка"), "%s | %s | %dx%dx%d (%.1f MLUPS)",
+                        rep.collisionName.c_str(), rep.turbulenceName.c_str(),
+                        rep.gridNx, rep.gridNy, rep.gridNz, rep.achievedMLUPS);
+                    row("Cd (mean +/- std)", "%.4f +/- %.4f", rep.cdMean, rep.cdStd);
+                    row("Cl (mean +/- std)", "%.4f +/- %.4f", rep.clMean, rep.clStd);
+                    row("L / D", "%.3f", rep.ldMean);
+                    if (rep.hasDominantShedding) {
+                        row(_TR("Vortex Shedding", "Срыв вихрей"), "f = %.2f Hz | St = %.3f (%.1fx)",
+                            rep.dominantFreqHz, rep.strouhalNumber, rep.spectralProminence);
+                    }
+                    row(_TR("Mass Drift / Max Ma_LB", "Дрейф массы / Max Ma_LB"), "%.2e / %.3f",
+                        rep.massDriftRel, rep.maxMachLB);
+                    row(_TR("Peak nu_t/nu0", "Пик nu_t/nu0"), "%.2f", rep.peakNuTRatio);
+                    ImGui::EndTable();
                 }
-                ImGui::Text("Mass drift = %.2e | Max Mach_LB = %.3f | Peak nu_t/nu0 = %.2f",
-                            rep.massDriftRel, rep.maxMachLB, rep.peakNuTRatio);
-                ImGui::Text("Wake deficit 1L/2L/4L: %.1f%% / %.1f%% / %.1f%%",
-                            rep.finalWakeDeficit1L * 100.0f,
-                            rep.finalWakeDeficit2L * 100.0f,
-                            rep.finalWakeDeficit4L * 100.0f);
+
+                ImGui::Text("%s:", _TR("Wake velocity deficit", "Дефицит скорости в следе"));
+                ImGui::ProgressBar(glm::clamp(rep.finalWakeDeficit1L, 0.0f, 1.0f), ImVec2(-1, 0),
+                                   "1L");
+                ImGui::ProgressBar(glm::clamp(rep.finalWakeDeficit2L, 0.0f, 1.0f), ImVec2(-1, 0),
+                                   "2L");
+                ImGui::ProgressBar(glm::clamp(rep.finalWakeDeficit4L, 0.0f, 1.0f), ImVec2(-1, 0),
+                                   "4L");
+
+                const auto& samples = physSimSamples();
+                if (samples.size() >= 2) {
+                    std::vector<float> cdPlot, clPlot;
+                    cdPlot.reserve(samples.size());
+                    clPlot.reserve(samples.size());
+                    for (const auto& sm : samples) {
+                        cdPlot.push_back(sm.cd);
+                        clPlot.push_back(sm.cl);
+                    }
+                    ImGui::PlotLines("Cd(t)", cdPlot.data(), (int)cdPlot.size(), 0, nullptr,
+                                     FLT_MAX, FLT_MAX, ImVec2(-1.0f, 64.0f));
+                    ImGui::PlotLines("Cl(t)", clPlot.data(), (int)clPlot.size(), 0, nullptr,
+                                     FLT_MAX, FLT_MAX, ImVec2(-1.0f, 64.0f));
+                }
 
                 if (ImGui::TreeNode(_TR("Chronological Behavior Events", "Хронология событий поведения"))) {
                     for (const auto& ev : rep.events) {

@@ -219,13 +219,7 @@ void computeStreamlines() {
         if (!std::isfinite(speedPrev)) speedPrev = flowSpeed;
         glm::vec3 c_prev;
         if (aeroColorStreamlinesByVelocity) {
-            if (lbmParams.enabled && lbmInitialized) {
-                float velMag = getLBMVelocityMagWorld(prev);
-                if (!std::isfinite(velMag)) velMag = speedPrev;
-                c_prev = getVelocityMagnitudeColor(velMag, maxSpeed);
-            } else {
-                c_prev = getVelocityMagnitudeColor(speedPrev, maxSpeed);
-            }
+            c_prev = getVelocityMagnitudeColor(speedPrev, maxSpeed);
         } else {
             float d_prev = sampleSDFCPU(prev);
             c_prev = colorForPoint(v_prev, d_prev, flowParams);
@@ -320,31 +314,26 @@ void computeStreamlines() {
                 pNext.z < flowParams.minZ - bigMargin || pNext.z > flowParams.maxZ + bigMargin)
                 break;
 
-            // Терминация по вихрю: если в сильном вихре и скорость низкая — вихревая ловушка
-            if (lbmParams.enabled && lbmInitialized) {
+            // Терминация по вихрю: проверяем только на поздних шагах, чтобы не тратить
+            // два лишних трилинейных поиска по сетке на каждом шаге.
+            if (lbmParams.enabled && lbmInitialized && s > (int)(streamlineSteps * 0.7f)) {
                 float vort = getLBMVorticityWorld(pNext);
-                float qCrit = getLBMQWorld(pNext);
-                if (vort > 50.0f && speed < flowSpeed*0.3f && qCrit > 0) {
-                    // В вихревом ядре — можно продолжить но с ограничением
-                    if (s > streamlineSteps*0.7f) break;
+                if (vort > 50.0f && speed < flowSpeed*0.3f) {
+                    float qCrit = getLBMQWorld(pNext);
+                    if (qCrit > 0) break;
                 }
             }
 
-            float speedNext = glm::length(safeVelocity(pNext, flowParams));
+            glm::vec3 vNext = safeVelocity(pNext, flowParams);
+            float speedNext = glm::length(vNext);
             if (!std::isfinite(speedNext)) speedNext = speed;
 
             glm::vec3 c_p;
             if (aeroColorStreamlinesByVelocity) {
-                if (lbmParams.enabled && lbmInitialized) {
-                    float velMag = getLBMVelocityMagWorld(pNext);
-                    if (!std::isfinite(velMag)) velMag = speedNext;
-                    c_p = getVelocityMagnitudeColor(velMag, maxSpeed);
-                } else {
-                    c_p = getVelocityMagnitudeColor(speedNext, maxSpeed);
-                }
+                c_p = getVelocityMagnitudeColor(speedNext, maxSpeed);
             } else {
                 float d_p = sampleSDFCPU(pNext);
-                c_p = colorForPoint(v, d_p, flowParams);
+                c_p = colorForPoint(vNext, d_p, flowParams);
             }
             if (!std::isfinite(c_p.x)) c_p = glm::vec3(0.5f);
 

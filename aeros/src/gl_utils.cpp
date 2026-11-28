@@ -15,6 +15,8 @@
 
 #include "globals.h"
 #include "gl_utils.h"
+#include "flow_field.h"
+#include "lbm.h"
 
 // =====================================================
 // Компиляция шейдерной программы с проверкой ошибок — v1.9.0 улучшено
@@ -284,6 +286,109 @@ void createSlicePlane(int axis, float pos01) {
     glBindVertexArray(0);
 }
 
+static unsigned int s_sliceMeshVAO = 0;
+static unsigned int s_sliceMeshPosVBO = 0;
+static unsigned int s_sliceMeshNormVBO = 0;
+static unsigned int s_sliceMeshColVBO = 0;
+static int s_sliceMeshVertCount = 0;
+
+void renderCFDSliceGL(unsigned int modelShaderProgram,
+                      const float* modelMat4, const float* viewMat4, const float* projMat4,
+                      float alpha) {
+    if (modelShaderProgram == 0 || !modelMat4 || !viewMat4 || !projMat4) return;
+
+    struct SliceCacheKey {
+        int axis = -1;
+        float pos = -1.0f;
+        int visMode = -1;
+        int colorMap = -1;
+        int lbmStep = -1;
+        bool lbmOn = false;
+        bool lbmInit = false;
+        float speed = -1.0f;
+        float az = 9999.0f;
+        float el = 9999.0f;
+        int vertCount = -1;
+        bool groundEn = false;
+        float groundH = 9999.0f;
+    };
+    static SliceCacheKey sc;
+    static std::vector<float> s_pos, s_norm, s_col;
+
+    const bool dirty = (sc.axis != aeroSliceAxis) ||
+                       (std::fabs(sc.pos - aeroSlicePos) > 1e-4f) ||
+                       (sc.visMode != (int)aeroVisMode) ||
+                       (sc.colorMap != aeroColorMap) ||
+                       (sc.lbmOn != lbmParams.enabled) ||
+                       (sc.lbmInit != lbmInitialized) ||
+                       (lbmInitialized && sc.lbmStep != lbmCurrentStep) ||
+                       (std::fabs(sc.speed - flowSpeed) > 1e-4f) ||
+                       (std::fabs(sc.az - flowAzimuth) > 1e-3f) ||
+                       (std::fabs(sc.el - flowElevation) > 1e-3f) ||
+                       (sc.vertCount != modelVertexCount) ||
+                       (sc.groundEn != aeroGroundEffect) ||
+                       (std::fabs(sc.groundH - aeroGroundHeight) > 1e-4f) ||
+                       s_pos.empty();
+
+    if (dirty) {
+        buildCFDSliceMesh(aeroSliceAxis, aeroSlicePos, 56, s_pos, s_norm, s_col);
+        s_sliceMeshVertCount = (int)(s_pos.size() / 3);
+        sc.axis = aeroSliceAxis;
+        sc.pos = aeroSlicePos;
+        sc.visMode = (int)aeroVisMode;
+        sc.colorMap = aeroColorMap;
+        sc.lbmOn = lbmParams.enabled;
+        sc.lbmInit = lbmInitialized;
+        sc.lbmStep = lbmInitialized ? lbmCurrentStep : -1;
+        sc.speed = flowSpeed;
+        sc.az = flowAzimuth;
+        sc.el = flowElevation;
+        sc.vertCount = modelVertexCount;
+        sc.groundEn = aeroGroundEffect;
+        sc.groundH = aeroGroundHeight;
+
+        if (s_sliceMeshVertCount > 0) {
+            if (s_sliceMeshVAO == 0) glGenVertexArrays(1, &s_sliceMeshVAO);
+            if (s_sliceMeshPosVBO == 0) glGenBuffers(1, &s_sliceMeshPosVBO);
+            if (s_sliceMeshNormVBO == 0) glGenBuffers(1, &s_sliceMeshNormVBO);
+            if (s_sliceMeshColVBO == 0) glGenBuffers(1, &s_sliceMeshColVBO);
+
+            glBindVertexArray(s_sliceMeshVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, s_sliceMeshPosVBO);
+            glBufferData(GL_ARRAY_BUFFER, s_pos.size() * sizeof(float), s_pos.data(), GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+
+            glBindBuffer(GL_ARRAY_BUFFER, s_sliceMeshNormVBO);
+            glBufferData(GL_ARRAY_BUFFER, s_norm.size() * sizeof(float), s_norm.data(), GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(1);
+
+            glBindBuffer(GL_ARRAY_BUFFER, s_sliceMeshColVBO);
+            glBufferData(GL_ARRAY_BUFFER, s_col.size() * sizeof(float), s_col.data(), GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(2);
+            glBindVertexArray(0);
+        }
+    }
+
+    if (s_sliceMeshVAO != 0 && s_sliceMeshVertCount > 0) {
+        glDepthMask(GL_FALSE);
+        glUseProgram(modelShaderProgram);
+        glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "model"), 1, GL_FALSE, modelMat4);
+        glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "view"), 1, GL_FALSE, viewMat4);
+        glUniformMatrix4fv(glGetUniformLocation(modelShaderProgram, "projection"), 1, GL_FALSE, projMat4);
+        glUniform1i(glGetUniformLocation(modelShaderProgram, "useLighting"), 0);
+        glUniform1i(glGetUniformLocation(modelShaderProgram, "useVertexColor"), 1);
+        glUniform1i(glGetUniformLocation(modelShaderProgram, "useRealisticLighting"), 0);
+        glUniform1f(glGetUniformLocation(modelShaderProgram, "alpha"), alpha);
+        glBindVertexArray(s_sliceMeshVAO);
+        glDrawArrays(GL_TRIANGLES, 0, s_sliceMeshVertCount);
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+    }
+}
+
 void cleanupGLResources() {
     // v1.9.0: check if context is current before deleting
     auto safeDeleteVAO = [](unsigned int& vao) {
@@ -307,6 +412,11 @@ void cleanupGLResources() {
     safeDeleteVAO(obstacleVAO); safeDeleteBuf(obstacleVBO); safeDeleteBuf(obstacleEBO);
     safeDeleteVAO(groundVAO); safeDeleteBuf(groundVBO); safeDeleteBuf(groundEBO);
     safeDeleteVAO(sliceVAO); safeDeleteBuf(sliceVBO);
+    safeDeleteVAO(s_sliceMeshVAO);
+    safeDeleteBuf(s_sliceMeshPosVBO);
+    safeDeleteBuf(s_sliceMeshNormVBO);
+    safeDeleteBuf(s_sliceMeshColVBO);
+    s_sliceMeshVertCount = 0;
     safeDeleteVAO(gridVAO); safeDeleteBuf(gridVBO);
     safeDeleteVAO(streamlineVAO); safeDeleteBuf(streamlineVBO);
     safeDeleteVAO(liftDragVAO); safeDeleteBuf(liftDragVBO);
