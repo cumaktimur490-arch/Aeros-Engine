@@ -561,7 +561,6 @@ static const UiLeaf kUiLeaves[] = {
     { 2, 21, "Такт физики (Гц)",            "Physics rate (Hz)" },
     { 3, 13, "Давление и силы",             "Pressure & forces" },
     { 3, 17, "Вычисления и экспорт",        "Compute & export" },
-    { 3, 11, "Частицы",                     "Particles" },
     { 3, 12, "Линии тока",                  "Streamlines" },
     { 3,  6, "Эффекты и визуализация",      "Effects & visualization" },
     { 4, 19, "Самописец физики",            "Physics recorder" },
@@ -1045,7 +1044,7 @@ ImGui::Separator();
         debugLogAction("кнопка", "линии тока: %s", showStreamlines ? "да" : "нет");
     }
     ImGui::SameLine();
-    if (ImGui::Button(_TR("Particles (F4)", "Частицы (F4)"))) {
+    if (ImGui::Button(_TR("Slice (F4)", "Срез (F4)"))) {
         showSlicePlane = !showSlicePlane; aeroShowSlice = showSlicePlane;
         debugLogAction("кнопка", "срез CFD: %s", showSlicePlane ? "да" : "нет");
     }
@@ -1558,15 +1557,6 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         aeroMachEffects = true;
         updateVertexColors();
     }
-    ImGui::SameLine();
-    if (ImGui::Button(_TR("Volumetric Smoke", "Объемный дым"))) {
-        aeroVisMode = AeroVisMode::VolumetricSmoke;
-        aeroVolumetricEnabled = true;
-        aeroSmokeDensity = 1.0f;
-        aeroSmokeOpacity = 0.7f;
-        aeroSmokeInjectors = 5;
-        showSlicePlane = true;
-    }
     if (ImGui::Button(_TR("Vortex Tubes", "Вихревые трубки"))) {
         aeroShowVortexTubes = true;
         aeroVortexTubeCount = 20;
@@ -1617,20 +1607,6 @@ if (uiSelectedLeaf == 6 && ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — 
         ImGui::Text("  %s: knife edge blocks 50%% light, gradient shifts image", _TR("Optics", "Оптика"));
     }
     ImGui::Separator();
-    ImGui::Text("%s:", _TR("Volumetric Smoke Tunnel", "Объемная дымовая труба"));
-    ImGui::Checkbox(_TR("Volumetric Smoke", "Объемный дым"), &aeroVolumetricEnabled);
-    if (aeroVolumetricEnabled) {
-        ImGui::SliderFloat(_TR("Smoke Density", "Плотность дыма"), &aeroSmokeDensity, 0.1f, 3.0f);
-        ImGui::SliderFloat(_TR("Smoke Opacity", "Прозрачность"), &aeroSmokeOpacity, 0.1f, 1.0f);
-        ImGui::SliderFloat(_TR("Buoyancy", "Плавучесть"), &aeroSmokeBuoyancy, 0.0f, 0.5f);
-        ImGui::SliderFloat(_TR("Dissipation", "Диссипация"), &aeroSmokeDissipation, 0.8f, 0.999f, "%.3f");
-        ImGui::SliderFloat(_TR("Turbulence", "Турбулентность"), &aeroSmokeTurbulence, 0.0f, 1.0f);
-        ImGui::SliderInt(_TR("Injectors", "Инжекторы"), &aeroSmokeInjectors, 1, 10);
-        ImGui::Checkbox(_TR("Volumetric Light", "Объемный свет"), &aeroSmokeVolumetricLight);
-        ImGui::Text("  Perf: %.2f ms | Particles: %zu", perfVolumetricMs, g_smokeParticles.size());
-        if (ImGui::Button(_TR("Reset Smoke", "Сбросить дым"))) initSmokeTunnel();
-    }
-    ImGui::Separator();
     ImGui::Text("%s:", _TR("Shock Waves — Supersonic (θ-β-M)", "Скачки — Сверхзвук (θ-β-M)"));
     if (lbmParams.enabled) {
         ImGui::BeginDisabled(true);
@@ -1659,7 +1635,7 @@ if (uiSelectedLeaf == 6 && ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — 
         ImGui::SliderFloat(_TR("Opacity", "Прозрачность"), &aeroVortexTubeOpacity, 0.1f, 1.0f);
         ImGui::SliderInt(_TR("Count", "Количество"), &aeroVortexTubeCount, 1, 50);
         ImGui::SliderFloat(_TR("Helicity Scale", "Масштаб спиральности"), &aeroVortexHelicityScale, 0.1f, 3.0f);
-        ImGui::Text("  Cores: %zu | Perf: %.2f ms | Q>5, |ω|>√10", g_vortexCores.size(), perfVortexMs);
+        ImGui::Text("  Cores: %zu | Perf: %.2f ms | Q_norm>0.25", g_vortexCores.size(), perfVortexMs);
         if (ImGui::Button(_TR("Extract Vortex Cores", "Найти вихри"))) extractVortexCores();
     }
     ImGui::Separator();
@@ -1735,11 +1711,11 @@ if (uiSelectedLeaf == 7 && ImGui::CollapsingHeader(_TR("Lite — Weak Devices i3
     ImGui::BulletText("O1 (not O3) — smaller binary, less heat");
     ImGui::BulletText("No CUDA — CPU only");
     ImGui::BulletText("No Vulkan by default — HD 4000 only supports Vulkan 1.0");
-    ImGui::BulletText("Particles 1500 (was 15000), Streamlines 8x80 (was 24x300)");
+    ImGui::BulletText("Streamlines 8x80 (was 24x300)");
     ImGui::BulletText("Voxel 24 (was 48) — 8x less memory, LBM OFF, 32 res");
     ImGui::BulletText("Target 30 FPS, VSync ON, power saving, small window 1024x600");
     ImGui::BulletText("Auto-detect weak hardware, battery saver, dynamic quality scaling");
-    ImGui::BulletText("Ultra-Lite: Atom/Celeron 2GB — 500 particles 4x40 voxel16 20 FPS 800x450 1 thread");
+    ImGui::BulletText("Ultra-Lite: Atom/Celeron 2GB — 4x40 streamlines, voxel16, 20 FPS, 800x450, 1 thread");
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Lite Settings", "Настройки Lite"));
     ImGui::SliderInt(_TR("Streamlines", "Линии тока"), &numStreamlines, 2, 32);
@@ -2044,9 +2020,6 @@ if (uiSelectedLeaf == 22 && ImGui::CollapsingHeader(_TR("Settings & profiles v1.
                                   "сбрасывается отдельно: меню «Вид» или узел «Компоновка»."));
     ImGui::TextDisabled("%s", _TR("File: aeros_settings.ini, profiles in profiles\\*.ini",
                                   "Файл: aeros_settings.ini, профили в profiles\\*.ini"));
-}
-
-if (uiSelectedLeaf == 11 && ImGui::CollapsingHeader(_TR("Particles v1.19.0", "Частицы v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
 }
 
 if (uiSelectedLeaf == 12 && ImGui::CollapsingHeader(_TR("Streamlines v1.19.0", "Линии тока v1.19.0"), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2739,9 +2712,9 @@ if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra
         ImGui::Text("SDF: [%.2f, %.2f] %d/%d finite | Mem %.1f MB", minD, maxD, finiteCount, (int)g_distanceField.size(),
             (float)(g_distanceField.size() * 4) / (1024.0f * 1024.0f));
     }
-    ImGui::Text("Particles: %d/%d | Streamlines: %d verts | VAOs: M%d P%d S%d B%d G%d",
-        0, 0, streamlineVertexCount,
-        modelVAO!=0, 0!=0, streamlineVAO!=0, bboxVAO!=0, groundVAO!=0);
+    ImGui::Text("Streamlines: %d verts | VAOs: M%d S%d B%d G%d",
+        streamlineVertexCount,
+        modelVAO!=0, streamlineVAO!=0, bboxVAO!=0, groundVAO!=0);
 }
 
     // ============================================================
@@ -2809,8 +2782,16 @@ if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra
                                    "Этап 2: Постинспекция и хроника физического поведения"));
 
             static int s_uiSnapIdx = 0;
+            static int s_lastSnapCount = -1;
             static bool s_uiPlaying = false;
             static double s_lastPlayT = 0.0;
+            if (snapN != s_lastSnapCount) {
+                s_lastSnapCount = snapN;
+                int active = physSimActiveSnapshotIndex();
+                if (active >= 0 && active < snapN) s_uiSnapIdx = active;
+                else s_uiSnapIdx = std::max(0, snapN - 1);
+                s_uiPlaying = false;
+            }
             if (s_uiSnapIdx >= snapN) s_uiSnapIdx = snapN - 1;
             if (s_uiSnapIdx < 0) s_uiSnapIdx = 0;
 
@@ -2832,6 +2813,12 @@ if (uiSelectedLeaf == 18 && ImGui::CollapsingHeader(_TR("Test Mode v1.19.0 Ultra
                 if (ImGui::Button(_TR("Next", "Вперёд"))) {
                     s_uiSnapIdx = std::min(snapN - 1, s_uiSnapIdx + 1);
                     applyNow = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(_TR("Resume Live Flow", "Живой расчёт"))) {
+                    s_uiPlaying = false;
+                    physSimClear();
+                    initLBM();
                 }
                 if (s_uiPlaying && snapN > 1) {
                     double nowT = ImGui::GetTime();

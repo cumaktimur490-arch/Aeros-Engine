@@ -238,7 +238,7 @@ static void computeForcesPureCPU(glm::vec3& outDragVec, glm::vec3& outLiftVec,
                 Cf = glm::clamp(Cf * 1.12f, 0.0002f, 0.015f);
                 float fricFac = 1.0f - std::fabs(flowDotN);
                 if (flowDotN > 0.0f) fricFac *= 0.55f;
-                glm::vec3 vForce = -flowDir * (Cf * q * area * fricFac);
+                glm::vec3 vForce = flowDir * (Cf * q * area * fricFac);
 
                 glm::vec3 fTot = pForce + vForce;
                 lForce += fTot;

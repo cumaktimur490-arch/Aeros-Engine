@@ -273,8 +273,8 @@ void applyPreset(LiteQualityPreset preset) {
             optTargetFPS = 60.0f;
             fsrEnabled = false;
             fgEnabled = false;
-            aeroShowVortexTubes = true;
-            aeroVolumetricEnabled = true;
+            aeroShowVortexTubes = false;
+            aeroVolumetricEnabled = false;
             aeroShowLIC = false;
             aeroShowAeroAcoustic = false;
             flowSpeed = 5.0f;

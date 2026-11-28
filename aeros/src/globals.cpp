@@ -266,7 +266,7 @@ float perfInterpMs = 0.0f;
 float fgEffectiveFPS = 0.0f;
 
 // v1.18.0 Interesting Features
-bool aeroShowVortexTubes = true;
+bool aeroShowVortexTubes = false;
 bool aeroShowShockWaves = true;
 bool aeroShowLIC = false;
 bool aeroVolumetricEnabled = false;

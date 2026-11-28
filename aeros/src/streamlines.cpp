@@ -226,46 +226,48 @@ void computeStreamlines() {
         }
         if (!std::isfinite(c_prev.x)) c_prev = glm::vec3(0.3f,0.8f,1.0f);
 
-        float dt = streamlineStepSize;
-        if (!std::isfinite(dt) || dt < 1e-6f) dt = 0.08f;
+        const float vRef = std::max(flowSpeed, 1e-3f);
+        const float tChar = maxDim / vRef;
+        float baseCfg = streamlineStepSize;
+        if (!std::isfinite(baseCfg) || baseCfg < 1e-6f) baseCfg = 0.08f;
+        float dt = baseCfg * tChar;
 
         int stagnationCounter = 0;
         for (int s = 0; s < streamlineSteps; s++) {
             glm::vec3 v = safeVelocity(p, flowParams);
             if (!std::isfinite(v.x)) break;
             float speed = glm::length(v);
-            if (speed < 1e-5f) {
+            if (speed < 1e-4f * vRef) {
                 stagnationCounter++;
                 if (stagnationCounter > 5) break; // застой
             } else stagnationCounter = 0;
             if (!std::isfinite(speed)) break;
 
-            // Адаптивный шаг по физике: dt ∝ 1/speed, уменьшаем вблизи тела и в зонах высокой завихренности
-            float baseStep = streamlineStepSize;
+            // Адаптивный шаг по физике (нормирован на maxDim): уменьшаем вблизи тела и в вихрях
+            float baseStep = baseCfg * maxDim;
             float distToCenter = glm::length(p - center);
             if (distToCenter < maxDim*1.2f) baseStep *= 0.35f;
             if (distToCenter < maxDim*0.6f) baseStep *= 0.45f;
-            if (lbmParams.enabled) {
-                float vort = 0.0f;
-                if (lbmInitialized) vort = getLBMVorticityWorld(p);
-                if (vort > 10.0f) baseStep *= 0.5f; // в вихре мельче
-                if (vort > 30.0f) baseStep *= 0.5f;
+            if (lbmParams.enabled && lbmInitialized) {
+                float vortNorm = getLBMVorticityWorld(p) * tChar;
+                if (vortNorm > 0.5f) baseStep *= 0.5f; // в вихре мельче
+                if (vortNorm > 2.0f) baseStep *= 0.5f;
             }
-            // По кривизне: если скорость меняется быстро, уменьшаем шаг
-            float accel = glm::length(v - v_prev) / (dt + 1e-6f);
-            if (accel > flowSpeed*2.0f) baseStep *= 0.6f;
+            // По кривизне: нормированное ускорение a * maxDim / V^2
+            float accel = glm::length(v - v_prev) / (dt + 1e-9f);
+            if (accel * tChar / vRef > 1.5f) baseStep *= 0.6f;
 
-            float curDt = baseStep / (speed + 0.15f*flowSpeed);
-            if (curDt > 0.12f) curDt = 0.12f;
-            if (curDt < 0.0008f) curDt = 0.0008f;
+            float curDt = baseStep / (speed + 0.15f * vRef);
+            const float minDt = 1e-4f * tChar;
+            const float maxDt = 0.25f * tChar;
+            if (curDt > maxDt) curDt = maxDt;
+            if (curDt < minDt) curDt = minDt;
 
-            // RK45 с контролем ошибки. Допуск задаётся в долях пройденного
-            // пути, а не абсолютным числом метров: иначе на крупной модели
-            // шаг всегда «точный», а на мелкой — всегда неточный.
+            // RK45 с контролем ошибки (допуск пропорционален шагу и maxDim)
             auto [pNext, err] = rk45Step(p, curDt, flowParams);
             {
                 float stepLen = glm::length(pNext - p);
-                float tol = std::max(0.002f, 0.02f * stepLen);
+                float tol = std::max(1e-5f * maxDim, 0.02f * stepLen);
                 int adaptIter = 0;
                 while (err > tol && adaptIter < 4) {
                     curDt *= 0.5f;
@@ -317,8 +319,8 @@ void computeStreamlines() {
             // Терминация по вихрю: проверяем только на поздних шагах, чтобы не тратить
             // два лишних трилинейных поиска по сетке на каждом шаге.
             if (lbmParams.enabled && lbmInitialized && s > (int)(streamlineSteps * 0.7f)) {
-                float vort = getLBMVorticityWorld(pNext);
-                if (vort > 50.0f && speed < flowSpeed*0.3f) {
+                float vortNorm = getLBMVorticityWorld(pNext) * tChar;
+                if (vortNorm > 3.0f && speed < flowSpeed*0.3f) {
                     float qCrit = getLBMQWorld(pNext);
                     if (qCrit > 0) break;
                 }

@@ -299,126 +299,12 @@ ExpansionFanData computePrandtlMeyerFan(float mach1, float deflectionDeg) {
 // Volumetric Smoke Tunnel — эйлерова сетка + лагранжевы частицы
 // =====================================================
 void initSmokeTunnel() {
-    g_smokeMinX = minBB.x - maxDim*0.5f;
-    g_smokeMaxX = maxBB.x + maxDim*3.0f;
-    g_smokeMinY = minBB.y - maxDim*0.3f;
-    g_smokeMaxY = maxBB.y + maxDim*1.0f;
-    g_smokeMinZ = minBB.z - maxDim*0.8f;
-    g_smokeMaxZ = maxBB.z + maxDim*0.8f;
-
-    g_smokeNx = 48; g_smokeNy = 32; g_smokeNz = 32;
-    g_smokeDensityField.assign(g_smokeNx*g_smokeNy*g_smokeNz, 0.0f);
     g_smokeParticles.clear();
-    g_smokeParticles.reserve(20000);
-
-    // Инжекторы — перед моделью
-    std::uniform_real_distribution<float> distY(g_smokeMinY, g_smokeMaxY);
-    std::uniform_real_distribution<float> distZ(g_smokeMinZ, g_smokeMaxZ);
-    glm::vec3 flowDir = glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
-    float fl = glm::length(flowDir);
-    if (fl < 1e-6f) flowDir = glm::vec3(1,0,0); else flowDir /= fl;
-    glm::vec3 injectorBase = center - flowDir * maxDim * 1.2f;
-
-    for (int inj=0; inj<aeroSmokeInjectors; ++inj) {
-        for (int i=0; i<200; ++i) {
-            SmokeParticle p;
-            float yOff = (inj - aeroSmokeInjectors/2) * 0.15f * maxDim + (distY(rng)-center.y)*0.1f;
-            float zOff = (rng()%100/100.0f - 0.5f) * maxDim*0.3f;
-            p.pos = injectorBase + glm::vec3(0, yOff, zOff);
-            p.vel = flowDir * flowSpeed;
-            p.density = 1.0f;
-            p.temperature = airTemperature;
-            p.age = 0;
-            p.lifetime = 8.0f + rng()%100/100.0f*4.0f;
-            g_smokeParticles.push_back(p);
-        }
-    }
-    std::cout << "[Interesting] Smoke tunnel init " << g_smokeNx << "x" << g_smokeNy << "x" << g_smokeNz
-              << " particles=" << g_smokeParticles.size() << std::endl;
+    g_smokeDensityField.clear();
 }
 
-void updateSmokeTunnel(float dt) {
-    if (g_smokeParticles.empty()) initSmokeTunnel();
-    auto t0 = std::chrono::high_resolution_clock::now();
-
-    float diss = aeroSmokeDissipation;
-    if (diss < 0.8f) diss = 0.8f;
-    if (diss > 0.999f) diss = 0.999f;
-    float turb = aeroSmokeTurbulence;
-
-    // Обновление частиц
-    #ifdef _OPENMP
-    #pragma omp parallel for
-    #endif
-    for (int i=0; i<(int)g_smokeParticles.size(); ++i) {
-        auto& p = g_smokeParticles[i];
-        glm::vec3 vFluid = computeVelocityFieldCPU(p.pos, flowParams);
-        // Добавляем турбулентность
-        if (turb > 0.001f) {
-            float t = flowParams.time + p.age*0.5f;
-            float nx = sinf(p.pos.y*2.3f + t*1.1f) * cosf(p.pos.z*1.7f + t*0.9f);
-            float ny = sinf(p.pos.z*2.1f + t*1.2f) * cosf(p.pos.x*1.9f + t*0.8f);
-            float nz = sinf(p.pos.x*2.0f + t*1.0f) * cosf(p.pos.y*1.8f + t*1.1f);
-            vFluid += glm::vec3(nx,ny,nz) * turb * flowSpeed * 0.3f;
-        }
-        // Плавучесть
-        if (aeroSmokeBuoyancy > 0.001f) {
-            vFluid.y += aeroSmokeBuoyancy * (p.temperature - airTemperature) / airTemperature;
-        }
-
-        p.vel = glm::mix(p.vel, vFluid, 0.15f); // инерция
-        p.pos += p.vel * dt;
-        p.age += dt;
-        p.density *= diss;
-
-        // Респавн если вышел или умер
-        if (p.age > p.lifetime || p.pos.x > g_smokeMaxX || p.density < 0.01f ||
-            p.pos.y < g_smokeMinY || p.pos.y > g_smokeMaxY ||
-            p.pos.z < g_smokeMinZ || p.pos.z > g_smokeMaxZ) {
-            glm::vec3 flowDir = glm::vec3(flowParams.vx, flowParams.vy, flowParams.vz);
-            float fl = glm::length(flowDir);
-            if (fl < 1e-6f) flowDir = glm::vec3(1,0,0); else flowDir /= fl;
-            glm::vec3 injectorBase = center - flowDir * maxDim * 1.2f;
-            float yOff = (i % aeroSmokeInjectors - aeroSmokeInjectors/2) * 0.15f * maxDim;
-            float zOff = (rng()%100/100.0f - 0.5f) * maxDim*0.3f;
-            p.pos = injectorBase + glm::vec3(0, yOff, zOff) + glm::vec3((rng()%100/100.0f-0.5f)*0.1f,0,0);
-            p.vel = flowDir * flowSpeed;
-            p.density = 0.8f + rng()%100/100.0f*0.4f;
-            p.age = 0;
-        }
-    }
-
-    // Обновление эйлеровой сетки плотности (для volumetric ray marching)
-    std::fill(g_smokeDensityField.begin(), g_smokeDensityField.end(), 0.0f);
-    float csx = (g_smokeMaxX - g_smokeMinX)/g_smokeNx;
-    float csy = (g_smokeMaxY - g_smokeMinY)/g_smokeNy;
-    float csz = (g_smokeMaxZ - g_smokeMinZ)/g_smokeNz;
-    for (auto& p : g_smokeParticles) {
-        int ix = (int)std::floor((p.pos.x - g_smokeMinX)/csx);
-        int iy = (int)std::floor((p.pos.y - g_smokeMinY)/csy);
-        int iz = (int)std::floor((p.pos.z - g_smokeMinZ)/csz);
-        if (ix<0||ix>=g_smokeNx||iy<0||iy>=g_smokeNy||iz<0||iz>=g_smokeNz) continue;
-        int idx = (iz*g_smokeNy+iy)*g_smokeNx+ix;
-        g_smokeDensityField[idx] += p.density * 0.1f;
-    }
-    // Сглаживание
-    for (int iter=0; iter<2; ++iter) {
-        std::vector<float> tmp = g_smokeDensityField;
-        #ifdef _OPENMP
-        #pragma omp parallel for
-        #endif
-        for (int z=1; z<g_smokeNz-1; ++z)
-            for (int y=1; y<g_smokeNy-1; ++y)
-                for (int x=1; x<g_smokeNx-1; ++x) {
-                    int idx = (z*g_smokeNy+y)*g_smokeNx+x;
-                    float sum = tmp[idx]*0.5f;
-                    sum += (tmp[idx-1]+tmp[idx+1]+tmp[idx-g_smokeNx]+tmp[idx+g_smokeNx]+tmp[idx-g_smokeNx*g_smokeNy]+tmp[idx+g_smokeNx*g_smokeNy])*0.5f/6.0f;
-                    g_smokeDensityField[idx] = sum;
-                }
-    }
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    perfVolumetricMs = std::chrono::duration<float, std::milli>(t1-t0).count();
+void updateSmokeTunnel(float) {
+    g_smokeParticles.clear();
 }
 
 void shutdownSmokeTunnel() {
@@ -479,6 +365,10 @@ void extractVortexCores() {
     float minZ = center.z - maxDim*0.8f, maxZ = center.z + maxDim*0.8f;
 
     std::vector<glm::vec3> candidates;
+    const float Lref = std::max(1e-4f, maxDim);
+    const float omega0 = std::max(1e-3f, flowSpeed / Lref);
+    const float qThresh = 0.25f * omega0 * omega0;
+    const float vort2Thresh = 0.64f * omega0 * omega0;
 
     #ifdef _OPENMP
     #pragma omp parallel
@@ -492,9 +382,9 @@ void extractVortexCores() {
                     float y = minY + (maxY-minY)*j/(res-1);
                     float z = minZ + (maxZ-minZ)*k/(res-1);
                     glm::vec3 pos(x,y,z);
-                    if (sampleSDFCPU(pos) < 0.05f) continue; // внутри
+                    if (sampleSDFCPU(pos) < 0.05f * Lref) continue; // внутри
                     // Вычисляем Q и вихрь
-                    float eps = maxDim*0.02f;
+                    float eps = Lref * 0.02f;
                     glm::vec3 vx = computeVelocityFieldCPU(pos + glm::vec3(eps,0,0) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(eps,0,0), flowParams);
                     glm::vec3 vy = computeVelocityFieldCPU(pos + glm::vec3(0,eps,0) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(0,eps,0), flowParams);
                     glm::vec3 vz = computeVelocityFieldCPU(pos + glm::vec3(0,0,eps) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(0,0,eps), flowParams);
@@ -509,7 +399,7 @@ void extractVortexCores() {
                     float vort2 = vortx*vortx + vorty*vorty + vortz*vortz;
                     float Q = 0.5f*(0.5f*vort2 - S2);
 
-                    if (Q > 5.0f && vort2 > 10.0f) {
+                    if (Q > qThresh && vort2 > vort2Thresh) {
                         local.push_back(pos);
                     }
                 }
@@ -524,8 +414,8 @@ void extractVortexCores() {
                 float y = minY + (maxY-minY)*j/(res-1);
                 float z = minZ + (maxZ-minZ)*k/(res-1);
                 glm::vec3 pos(x,y,z);
-                if (sampleSDFCPU(pos) < 0.05f) continue;
-                float eps = maxDim*0.02f;
+                if (sampleSDFCPU(pos) < 0.05f * Lref) continue;
+                float eps = Lref * 0.02f;
                 glm::vec3 vx = computeVelocityFieldCPU(pos + glm::vec3(eps,0,0) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(eps,0,0), flowParams);
                 glm::vec3 vy = computeVelocityFieldCPU(pos + glm::vec3(0,eps,0) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(0,eps,0), flowParams);
                 glm::vec3 vz = computeVelocityFieldCPU(pos + glm::vec3(0,0,eps) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(0,0,eps), flowParams);
@@ -537,7 +427,7 @@ void extractVortexCores() {
                 float vortx = dwdy - dvdz, vorty = dudz - dwdx, vortz = dvdx - dudy;
                 float vort2 = vortx*vortx + vorty*vorty + vortz*vortz;
                 float Q = 0.5f*(0.5f*vort2 - S2);
-                if (Q > 5.0f && vort2 > 10.0f) candidates.push_back(pos);
+                if (Q > qThresh && vort2 > vort2Thresh) candidates.push_back(pos);
             }
     #endif
 
@@ -586,7 +476,7 @@ void extractVortexCores() {
         core.helicity = helicity;
         core.qCrit = Q;
         core.radius = aeroVortexTubeRadius * (1.0f + vortMag*0.02f);
-        core.linePoints = traceVortexLine(cluster, 80, maxDim*0.04f);
+        core.linePoints = traceVortexLine(cluster, 80, Lref*0.02f);
         if (core.linePoints.size() > 5) g_vortexCores.push_back(core);
     }
 
@@ -597,24 +487,40 @@ void extractVortexCores() {
 std::vector<glm::vec3> traceVortexLine(const glm::vec3& seed, int maxSteps, float stepSize) {
     std::vector<glm::vec3> line;
     line.reserve(maxSteps);
+    const float Lref = std::max(1e-4f, maxDim);
+    const float eps = Lref * 0.02f;
+    auto sampleVortDir = [&](const glm::vec3& p, glm::vec3& outDir) -> bool {
+        if (!std::isfinite(p.x) || sampleSDFCPU(p) < 0.02f * Lref) return false;
+        glm::vec3 vx = computeVelocityFieldCPU(p + glm::vec3(eps,0,0), flowParams) - computeVelocityFieldCPU(p - glm::vec3(eps,0,0), flowParams);
+        glm::vec3 vy = computeVelocityFieldCPU(p + glm::vec3(0,eps,0), flowParams) - computeVelocityFieldCPU(p - glm::vec3(0,eps,0), flowParams);
+        glm::vec3 vz = computeVelocityFieldCPU(p + glm::vec3(0,0,eps), flowParams) - computeVelocityFieldCPU(p - glm::vec3(0,0,eps), flowParams);
+        vx /= (2.0f * eps); vy /= (2.0f * eps); vz /= (2.0f * eps);
+        glm::vec3 vort(vy.z - vz.y, vz.x - vx.z, vx.y - vy.x);
+        float vm = glm::length(vort);
+        if (!std::isfinite(vm) || vm < 1e-6f) return false;
+        outDir = vort / vm;
+        return true;
+    };
+
     glm::vec3 pos = seed;
+    glm::vec3 prevDir(0.0f);
+    bool hasPrevDir = false;
     line.push_back(pos);
     for (int i=0; i<maxSteps; ++i) {
-        if (sampleSDFCPU(pos) < 0.02f) break;
-        float eps = maxDim*0.02f;
-        glm::vec3 vx = computeVelocityFieldCPU(pos + glm::vec3(eps,0,0) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(eps,0,0), flowParams);
-        glm::vec3 vy = computeVelocityFieldCPU(pos + glm::vec3(0,eps,0) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(0,eps,0), flowParams);
-        glm::vec3 vz = computeVelocityFieldCPU(pos + glm::vec3(0,0,eps) , flowParams) - computeVelocityFieldCPU(pos - glm::vec3(0,0,eps), flowParams);
-        vx /= (2*eps); vy /= (2*eps); vz /= (2*eps);
-        float dwdy = vy.z, dvdz = vz.y, dudz = vz.x, dwdx = vx.z, dvdx = vx.y, dudy = vy.x;
-        glm::vec3 vort(dwdy - dvdz, dudz - dwdx, dvdx - dudy);
-        float vm = glm::length(vort);
-        if (vm < 1e-6f) break;
-        vort /= vm;
-        // Идем вдоль вихря
-        pos += vort * stepSize;
-        // Проверка выхода
-        if (glm::length(pos - center) > maxDim*4.0f) break;
+        glm::vec3 d1;
+        if (!sampleVortDir(pos, d1)) break;
+        if (hasPrevDir && glm::dot(d1, prevDir) < 0.25f) break;
+
+        glm::vec3 mid = pos + d1 * (0.5f * stepSize);
+        glm::vec3 d2;
+        if (!sampleVortDir(mid, d2)) d2 = d1;
+        if (glm::dot(d2, d1) < 0.25f) break;
+
+        pos += d2 * stepSize;
+        if (!std::isfinite(pos.x) || glm::length(pos - center) > Lref * 4.0f) break;
+        if (sampleSDFCPU(pos) < 0.02f * Lref) break;
+        prevDir = d2;
+        hasPrevDir = true;
         line.push_back(pos);
     }
     return line;

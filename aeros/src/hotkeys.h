@@ -54,7 +54,7 @@ inline Item item(int i) {
         {"F1",          "показать / скрыть модель",                 "show / hide model"},
         {"F2",          "карта давления",                           "pressure map"},
         {"F3",          "линии тока",                               "streamlines"},
-        {"F4",          "частицы",                                  "particles"},
+        {"F4",          "срез поля CFD",                            "CFD field slice"},
         {"F12",         "скрыть / показать панели",                 "hide / show panels"},
         {"F9",          "диагностический журнал",                   "diagnostic journal"},
         {"Ctrl+M",      "3D-вид на всё окно",                       "maximize 3D view"},

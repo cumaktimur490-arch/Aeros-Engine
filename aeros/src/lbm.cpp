@@ -478,7 +478,7 @@ static inline void collideCellMRT(float* __restrict cellF, float rho,
         0.0f, sQ, 0.0f, sQ, 0.0f, sQ,
         invTau, 1.40f, invTau, 1.40f,
         invTau, invTau, invTau,
-        1.98f, 1.98f, 1.98f
+        1.40f, 1.40f, 1.40f
     };
 
     float fm[19];
@@ -1163,7 +1163,7 @@ void initLBM() {
         lbmIsGround.assign(total, 0);
         lbmWallDist.assign(total, 255);
         s_nuT.assign(total, 0.0f);
-        s_lbmSDF.assign(total, 5.0f);
+        s_lbmSDF.assign(total, 1e6f);
         f.assign((size_t)total * (size_t)Q, 0.0f);
         fNext.assign((size_t)total * (size_t)Q, 0.0f);
     } catch (const std::bad_alloc& e) {
@@ -1271,10 +1271,10 @@ void initLBM() {
 
     float inUx, inUy, inUz;
     computeInletVelocityLB(inUx, inUy, inUz);
-    const float initScale = 1.0f;
-    const float initUx = inUx;
-    const float initUy = inUy;
-    const float initUz = inUz;
+    const float initScale = (!lbmParams.autoWarmup && lbmParams.rampSteps > 0 && !lbmParams.periodicX) ? 0.15f : 1.0f;
+    const float initUx = inUx * initScale;
+    const float initUy = inUy * initScale;
+    const float initUz = inUz * initScale;
     std::cout << "[LBM] Inlet LB velocity: (" << inUx << "," << inUy << "," << inUz << ") total=" << total << std::endl;
 
     float* fPtr = f.data();
@@ -2583,7 +2583,7 @@ static void stepLBMCPUImpl(int steps, bool updateWorldFields, LBMFieldState* st)
                                         float df = sdfPtr[dest];
                                         float ds = sdfPtr[src];
                                         float denom = df - ds;
-                                        float q = (df > 0.0f && ds <= 0.0f && denom > 1e-4f)
+                                        float q = (df > 0.0f && df < 1e5f && ds <= 0.0f && denom > 1e-8f)
                                                   ? glm::clamp(df / denom, 0.05f, 0.95f) : 0.5f;
                                         const float fOppDest = fPtr[(size_t)opp[qi] * totalSz + (size_t)dest];
                                         if (q < 0.5f) {
@@ -2642,8 +2642,9 @@ static void stepLBMCPUImpl(int steps, bool updateWorldFields, LBMFieldState* st)
                     float usNb = uxNb*uxNb + uyNb*uyNb + uzNb*uzNb;
                     if (usNb > 0.09f) { float sc = sqrtf(0.09f/usNb); uxNb*=sc; uyNb*=sc; uzNb*=sc; usNb = 0.09f; }
                     float usIn = stepInUx*stepInUx + stepInUy*stepInUy + stepInUz*stepInUz;
+                    const float rhoIn = 0.65f * rhoNb + 0.35f * 1.0f;
                     for (int qi = 0; qi < Q; ++qi) {
-                        float feqIn = equilibriumKernel(qi, rhoNb, stepInUx, stepInUy, stepInUz, usIn);
+                        float feqIn = equilibriumKernel(qi, rhoIn, stepInUx, stepInUy, stepInUz, usIn);
                         float feqNb = equilibriumKernel(qi, rhoNb, uxNb, uyNb, uzNb, usNb);
                         float fneq  = fNextPtr[(size_t)qi * totalSz + (size_t)cellNb] - feqNb;
                         fNextPtr[(size_t)qi * totalSz + (size_t)cellInlet] = feqIn + fneq;

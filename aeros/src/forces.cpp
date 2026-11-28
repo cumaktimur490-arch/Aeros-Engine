@@ -542,7 +542,7 @@ void computeLiftDrag() {
         float frictionFactor = 1.0f - dotFlowNormal;   // трение больше там, где нормаль поперёк потока
         if (flowDotN > 0) frictionFactor *= 0.55f;     // подветренная сторона — отрыв
         float skinFriction = Cf * q * area * frictionFactor;
-        glm::vec3 viscousForce = -flowDir * skinFriction;
+        glm::vec3 viscousForce = flowDir * skinFriction;
         glm::vec3 force = pressureForce + viscousForce;
 
         a.force += force;

@@ -1365,9 +1365,10 @@ int main(int argc, char** argv) {
         // v1.35.1 — пока модель не загружена (или открыто главное меню / окно свёрнуто),
         // физику не считаем: пустой домен LBM давал бы нули, NaN и лишнюю нагрузку.
         const bool hasModel = !g_vertices.empty();
+        const bool inspectFrozen = (physSimStage() == PhysSimStage::InspectReady);
         const bool simActive = hasModel && !aeroStartScreen && !physSimIsRunning();
 
-        if (simActive && lbmParams.enabled) {
+        if (simActive && !inspectFrozen && lbmParams.enabled) {
             // v1.9.0 adaptive LBM stepping — только в прежнем покадровом режиме:
             // при фиксированном такте он менял бы частоту физики за спиной пользователя.
             if (!physClock.fixed && aeroAdaptiveLBM) {
@@ -1470,8 +1471,10 @@ int main(int argc, char** argv) {
                 auto tf0 = std::chrono::high_resolution_clock::now();
                 if (needColors) updateVertexColors();
                 if (needForces) {
-                    computeLiftDrag();
-                    if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
+                    if (!inspectFrozen) {
+                        computeLiftDrag();
+                        if (lbmParams.enabled && lbmInitialized) computeLBMForcesFromLBM();
+                    }
                     updateLiftDragArrows();
                     fc.lastWakeRefresh = currentFrame;
                 }
