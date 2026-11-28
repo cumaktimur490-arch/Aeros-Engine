@@ -106,7 +106,8 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          BIN=$(find build -maxdepth 2 -type f -name "aeros-engine" -print -quit)
+          BIN=$(find build -maxdepth 2 -type f -name "aeros-engine*" -executable ! -name "*.desktop" -print -quit)
+          echo "Binary: $BIN"
           test -n "$BIN"
           "$BIN" --help > /dev/null
           "$BIN" --save-report
