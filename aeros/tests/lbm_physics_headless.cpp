@@ -28,6 +28,8 @@
 #endif
 #include <cstring>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 #include <vector>
 
 static int g_failed = 0;
@@ -613,6 +615,46 @@ int main() {
         check(relR < 1e-12 && relU < 1e-12, nm);
     }
 #endif
+
+    // --- Живая реакция updateLBM() и асинхронный рабочий поток (v1.41.0) ---
+    {
+        shutdownLBM();
+        makeSphereCase(0.25f);
+        lbmParams.enabled = true;
+        lbmParams.useGround = false;
+        aeroGroundEffect = false;
+        flowAzimuth = 0.0f;
+        flowElevation = 0.0f;
+        flowSpeed = 20.0f;
+        aeroAsyncLBM = true;
+        initLBM();
+
+        for (int f = 0; f < 50 && lbmCurrentStep == 0; ++f) {
+            updateLBM(0.016f, 2);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        updateLBM(0.016f, 0);
+        check(lbmIsAsyncWorkerRunning(), "асинхронный поток LBM запущен через updateLBM");
+        check(lbmCurrentStep > 0, "асинхронный поток LBM продвинул шаги");
+
+        // Меняем направление потока на 90 град — updateLBM обязан переинициализировать домен
+        flowAzimuth = 90.0f;
+        updateLBM(0.016f, 2);
+        check(lbmCurrentStep == 0, "смена flowAzimuth вызвала переинициализацию в updateLBM()");
+
+        // Разгоняем >80 шагов в синхронном режиме для проверки lbmControlVolumeForceWorld
+        aeroAsyncLBM = false;
+        flowAzimuth = 0.0f;
+        updateLBM(0.016f, 2);
+        stepLBMCPU(90);
+        glm::vec3 cvN(0.0f);
+        bool cvOk = lbmControlVolumeForceWorld(&cvN);
+        check(cvOk, "lbmControlVolumeForceWorld возвращает силу после >= 80 шагов");
+        check(std::isfinite(cvN.x) && cvN.x > 0.0f, "сопротивление по контрольному объёму вдоль +X положительно и конечно");
+
+        shutdownLBM();
+        check(!lbmIsAsyncWorkerRunning(), "shutdownLBM останавливает асинхронный поток");
+    }
 
     std::printf("\n=== %s (проверок: %d, ошибок: %d) ===\n", g_failed == 0 ? "ФИЗИКА В ПОРЯДКЕ" : "ЕСТЬ ПРОВАЛЫ", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

@@ -1100,3 +1100,92 @@ void updateInterestingFeatures(float dt) {
     auto t1 = std::chrono::high_resolution_clock::now();
     g_perfInterestingMs = std::chrono::duration<float, std::milli>(t1-t0).count();
 }
+
+void buildInterestingRenderBuffers(std::vector<float>& smokePos,
+                                   std::vector<float>& smokeCol,
+                                   std::vector<float>& vortexLineVerts,
+                                   std::vector<float>& streakLineVerts,
+                                   std::vector<float>& acousticPos,
+                                   std::vector<float>& acousticCol) {
+    smokePos.clear();
+    smokeCol.clear();
+    vortexLineVerts.clear();
+    streakLineVerts.clear();
+    acousticPos.clear();
+    acousticCol.clear();
+
+    if (aeroVolumetricEnabled && !g_smokeParticles.empty()) {
+        const float op = glm::clamp(aeroSmokeOpacity, 0.05f, 1.0f);
+        smokePos.reserve(g_smokeParticles.size() * 3);
+        smokeCol.reserve(g_smokeParticles.size() * 3);
+        for (const auto& p : g_smokeParticles) {
+            if (!std::isfinite(p.pos.x) || !std::isfinite(p.pos.y) || !std::isfinite(p.pos.z)) continue;
+            float fade = glm::clamp(p.density * op, 0.0f, 1.0f);
+            if (fade < 0.01f) continue;
+            smokePos.push_back(p.pos.x);
+            smokePos.push_back(p.pos.y);
+            smokePos.push_back(p.pos.z);
+            smokeCol.push_back(0.75f * fade + 0.15f);
+            smokeCol.push_back(0.85f * fade + 0.15f);
+            smokeCol.push_back(0.95f * fade + 0.05f);
+        }
+    }
+
+    if (aeroShowVortexTubes && !g_vortexCores.empty()) {
+        for (const auto& vc : g_vortexCores) {
+            if (vc.linePoints.size() < 2) continue;
+            glm::vec3 col = getVortexTubeColor(vc.helicity, vc.strength);
+            for (size_t i = 0; i + 1 < vc.linePoints.size(); ++i) {
+                const glm::vec3& a = vc.linePoints[i];
+                const glm::vec3& b = vc.linePoints[i + 1];
+                if (!std::isfinite(a.x) || !std::isfinite(b.x)) continue;
+                vortexLineVerts.push_back(a.x); vortexLineVerts.push_back(a.y); vortexLineVerts.push_back(a.z);
+                vortexLineVerts.push_back(col.r); vortexLineVerts.push_back(col.g); vortexLineVerts.push_back(col.b);
+                vortexLineVerts.push_back(b.x); vortexLineVerts.push_back(b.y); vortexLineVerts.push_back(b.z);
+                vortexLineVerts.push_back(col.r); vortexLineVerts.push_back(col.g); vortexLineVerts.push_back(col.b);
+            }
+        }
+    }
+
+    if (aeroShowStreaklines && !g_streaklines.empty()) {
+        static const glm::vec3 palette[6] = {
+            glm::vec3(0.2f, 0.9f, 1.0f),
+            glm::vec3(1.0f, 0.75f, 0.2f),
+            glm::vec3(0.4f, 1.0f, 0.5f),
+            glm::vec3(1.0f, 0.35f, 0.75f),
+            glm::vec3(0.6f, 0.7f, 1.0f),
+            glm::vec3(1.0f, 0.5f, 0.25f)
+        };
+        for (size_t inj = 0; inj < g_streaklines.size(); ++inj) {
+            const auto& line = g_streaklines[inj];
+            if (line.size() < 2) continue;
+            const glm::vec3 baseCol = palette[inj % 6];
+            for (size_t i = 0; i + 1 < line.size(); ++i) {
+                const glm::vec3& a = line[i].pos;
+                const glm::vec3& b = line[i + 1].pos;
+                if (!std::isfinite(a.x) || !std::isfinite(b.x)) continue;
+                float ageFade = glm::clamp(1.0f - line[i].age * 0.1f, 0.2f, 1.0f);
+                glm::vec3 col = baseCol * ageFade;
+                streakLineVerts.push_back(a.x); streakLineVerts.push_back(a.y); streakLineVerts.push_back(a.z);
+                streakLineVerts.push_back(col.r); streakLineVerts.push_back(col.g); streakLineVerts.push_back(col.b);
+                streakLineVerts.push_back(b.x); streakLineVerts.push_back(b.y); streakLineVerts.push_back(b.z);
+                streakLineVerts.push_back(col.r); streakLineVerts.push_back(col.g); streakLineVerts.push_back(col.b);
+            }
+        }
+    }
+
+    if (aeroShowAeroAcoustic && !g_acousticSources.empty()) {
+        acousticPos.reserve(g_acousticSources.size() * 3);
+        acousticCol.reserve(g_acousticSources.size() * 3);
+        for (const auto& s : g_acousticSources) {
+            if (!std::isfinite(s.position.x)) continue;
+            glm::vec3 col = getAcousticColor(s.intensity);
+            acousticPos.push_back(s.position.x);
+            acousticPos.push_back(s.position.y);
+            acousticPos.push_back(s.position.z);
+            acousticCol.push_back(col.r);
+            acousticCol.push_back(col.g);
+            acousticCol.push_back(col.b);
+        }
+    }
+}

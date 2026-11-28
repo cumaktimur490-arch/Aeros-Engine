@@ -220,6 +220,7 @@ extern float aeroAutoRotateSpeed;
 extern float aeroTrailLength;
 extern bool aeroSurfaceStreamlines;
 extern bool aeroAdaptiveLBM;
+extern bool aeroAsyncLBM;
 extern bool aeroShowHelicity;
 extern float aeroHelicityScale;
 extern bool aeroShowMach;

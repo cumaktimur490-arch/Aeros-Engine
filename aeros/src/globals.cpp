@@ -168,6 +168,7 @@ float aeroAutoRotateSpeed = 10.0f;
 float aeroTrailLength = 0.5f;
 bool aeroSurfaceStreamlines = false;
 bool aeroAdaptiveLBM = true;
+bool aeroAsyncLBM = true;
 bool aeroShowHelicity = false;
 float aeroHelicityScale = 1.0f;
 bool aeroShowMach = false;

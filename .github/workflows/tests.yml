@@ -102,6 +102,17 @@ jobs:
           find build -maxdepth 2 -type f \( -name "aeros-engine*" -o -name "main-*" \) -print
           test -n "$(find build -maxdepth 2 -type f \( -name 'aeros-engine*' -o -name 'main-*' \) -print -quit)"
 
+      - name: Smoke-тест реального бинаря (Linux, --presim / --save-report)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          BIN=$(find build -maxdepth 2 -type f -name "aeros-engine" -print -quit)
+          test -n "$BIN"
+          "$BIN" --help > /dev/null
+          "$BIN" --save-report
+          "$BIN" --presim --presim-steps 40 --presim-out /tmp/aeros-ci-smoke
+          ls -lh /tmp/aeros-ci-smoke
+
   # ===================================================
   # v1.36.0 — те же наборы под AddressSanitizer + UBSan.
   #

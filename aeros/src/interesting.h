@@ -156,3 +156,9 @@ extern float g_perfInterestingMs;
 void initInterestingFeatures();
 void shutdownInterestingFeatures();
 void updateInterestingFeatures(float dt);
+void buildInterestingRenderBuffers(std::vector<float>& smokePos,
+                                   std::vector<float>& smokeCol,
+                                   std::vector<float>& vortexLineVerts,
+                                   std::vector<float>& streakLineVerts,
+                                   std::vector<float>& acousticPos,
+                                   std::vector<float>& acousticCol);

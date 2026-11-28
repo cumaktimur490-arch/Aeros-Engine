@@ -1702,7 +1702,7 @@ int main(int argc, char** argv) {
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         float aspect = (display_h > 0) ? (float)display_w/(float)display_h : 1.0f;
         glm::mat4 projection = glm::perspective(glm::radians(fov), aspect, 0.05f, maxDim*50.0f);
-        glm::mat4 model = glm::mat4(1.0f);
+        glm::mat4 model = aeroFlightMode ? getFlightModelMatrix() : glm::mat4(1.0f);
         glm::mat4 vp = projection * view;
 
         // v1.19.0 Optimizations — Frustum culling
@@ -1952,6 +1952,13 @@ int main(int argc, char** argv) {
                         glBindVertexArray(0);
                     }
                     glLineWidth(1.0f);
+                }
+                {
+                    glm::mat4 worldIdentity(1.0f);
+                    renderInterestingGL(particleShaderProgram, lineShaderProgram,
+                                        glm::value_ptr(worldIdentity),
+                                        glm::value_ptr(view),
+                                        glm::value_ptr(projection));
                 }
             };
 

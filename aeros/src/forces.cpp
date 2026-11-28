@@ -120,7 +120,6 @@ void updateVertexColors() {
         float rho = airDensity;
         float qInf = 0.5f * rho * vinf * vinf;
         if (qInf < 1e-6f) qInf = 1.0f;
-        float machInf = vinf / (speedOfSound + 1e-6f);
         float* vPtr = g_vertices.data();
         float* colPtr = g_vertexColors.data();
 
@@ -148,16 +147,7 @@ void updateVertexColors() {
             } else {
                 cp = 1.0f - (speed*speed)/(vinf*vinf);   // Бернулли по локальной скорости
             }
-
-            // Сжимаемость — Karman-Tsien для Cp, точнее чем PG
-            if (aeroMachEffects && machInf > 0.3f && machInf < 0.85f) {
-                float beta = sqrtf(1.0f - machInf*machInf);
-                if (beta < 0.2f) beta = 0.2f;
-                // Karman-Tsien: Cp_comp = Cp_incomp / (beta + (M²/(1+beta))*Cp_incomp/2)
-                float denom = beta + (machInf*machInf/(1.0f+beta)) * cp * 0.5f;
-                if (fabsf(denom) > 1e-6f) cp = cp / denom;
-                else cp /= beta;
-            }
+            // D3Q19 LBM несжимаем — поправки Прандтля–Глауэрта / Кармана–Тсина применяются только в аналитическом режиме.
 
             // ИСПРАВЛЕНО: cp больше не обрезается до [-4; 2] ни для статистики,
             // ни для цвета. s_cpPerVertex читают aeroUpdateCpRange (авто-масштаб
@@ -463,8 +453,9 @@ void computeLiftDrag() {
                      pressSum(0.0f), frontal(0.0f), baseArea(0.0f), baseForce(0.0f),
                      cpBad(0) {}
     };
+    const bool usingLBMGuess = (lbmParams.enabled && lbmInitialized);
     const float machInf = vinf / (speedOfSound + 1e-6f);
-    const bool  doCompressibility = (aeroMachEffects && machInf > 0.3f && machInf < 0.85f);
+    const bool  doCompressibility = (!usingLBMGuess && aeroMachEffects && machInf > 0.3f && machInf < 0.85f);
     const float betaPG = doCompressibility ? std::max(0.2f, sqrtf(1.0f - machInf*machInf)) : 1.0f;
 
     auto computeTri = [&](int ti, TriAccum& a) {
@@ -689,13 +680,32 @@ void computeLiftDrag() {
     // Индуктивное только если есть подъемная (в LBM 3D-вихри уже в поле давления)
     if (!usingLBM && fabsf(Cl) > 0.05f) dragMagnitude += inducedDrag;
 
-    // Волновое сопротивление при M>0.7 (machInf посчитан выше — v1.26.0)
-    if (aeroMachEffects && machInf > 0.7f) {
+    // Волновое сопротивление при M>0.7 — только для аналитического сжимаемого режима
+    if (!usingLBM && aeroMachEffects && machInf > 0.7f) {
         float Cd_wave = 0.0f;
         if (machInf < 0.9f) Cd_wave = 20.0f * powf(machInf - 0.7f, 4.0f); // резкий рост
         else Cd_wave = 0.1f + 0.2f*(machInf-0.9f);
         Cd_wave = glm::clamp(Cd_wave, 0.0f, 0.5f);
         dragMagnitude += Cd_wave * q * refArea;
+    }
+
+    // В режиме LBM (после прогрева >=80 шагов, без земли) приоритет у баланса импульса
+    // по контрольному объёму: он учитывает давление, вязкое трение и след напрямую из LBM.
+    if (usingLBM) {
+        glm::vec3 cvForceN(0.0f);
+        if (lbmControlVolumeForceWorld(&cvForceN)) {
+            const float cvDrag = glm::dot(cvForceN, flowDir);
+            if (std::isfinite(cvDrag) && cvDrag > 1e-6f) {
+                dragMagnitude = cvDrag;
+                if (liftDirLen >= 1e-6f && std::isfinite(liftDirLen)) {
+                    const float cvLift = glm::dot(cvForceN, liftDir);
+                    if (std::isfinite(cvLift)) {
+                        liftMagnitude = cvLift;
+                        liftVector = liftDir * liftMagnitude;
+                    }
+                }
+            }
+        }
     }
 
     // v1.26.0: dragVector пересчитывается ПОСЛЕ базового, индуктивного и волнового

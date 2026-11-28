@@ -208,6 +208,12 @@ float getLBMStrainWorld(const glm::vec3& worldPos);
 void computeLBMVorticityAndQ();
 void computeLBMForcesFromLBM();
 
+// Асинхронный фоновый поток LBM для интерактивного режима (zero-blocking UI)
+void lbmStopAsyncWorker();
+bool lbmIsAsyncWorkerRunning();
+// Сила на тело в Ньютонах по закону сохранения импульса в контрольном объёме (если применима)
+bool lbmControlVolumeForceWorld(glm::vec3* outForceN);
+
 // v1.35.0 — сила на тело методом обмена импульсом (momentum exchange).
 // До этой версии сила считалась только интегрированием давления по поверхности
 // треугольников (forces.cpp), то есть БЕЗ трения: на Re ~ 100 трение даёт до

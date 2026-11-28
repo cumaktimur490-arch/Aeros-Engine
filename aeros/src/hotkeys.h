@@ -35,7 +35,7 @@ static const char* const g_groupEn[GroupCount] = {
 
 // ---- сама таблица (порядок = порядок в справке) ----
 inline int count() {
-    return 21;
+    return 23;
 }
 
 inline Item item(int i) {
@@ -47,6 +47,8 @@ inline Item item(int i) {
         {"E",           "вверх",                                   "up"},
         {"Shift",       "медленное движение камеры",                "slow camera movement"},
         {"Ctrl (камера)","ускорение камеры ×5",                     "camera speed ×5"},
+        {"[ / ]",       "уменьшить / увеличить скорость камеры",   "decrease / increase camera speed"},
+        {"Shift+Колесо","плавная настройка скорости камеры",        "fine camera speed (scroll)"},
         {"Ctrl+R",      "сбросить камеру",                          "reset camera"},
         // Вид
         {"F1",          "показать / скрыть модель",                 "show / hide model"},
@@ -74,9 +76,9 @@ inline Item item(int i) {
 
 // Группа, к которой относится элемент i (индексы фиксированы таблицей выше).
 inline int group(int i) {
-    if (i <= 6) return GroupCamera;
-    if (i <= 14) return GroupView;
-    if (i <= 17) return GroupPhysics;
+    if (i <= 8) return GroupCamera;
+    if (i <= 16) return GroupView;
+    if (i <= 19) return GroupPhysics;
     return GroupFile;
 }
 

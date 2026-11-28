@@ -5,6 +5,16 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.41.0] - 2026-11-22
+
+### Исправлено и улучшено — камера, фоновый LBM, живой отклик, рендер эффектов и единый баланс сил
+
+- **Камера и управление (`input.cpp`, `ui.cpp`, `hotkeys.h`):** скорость перемещения масштабируется по габариту модели вместо жёсткого `10.0f * dt`, добавлен логарифмический слайдер `0.02x..10x`, быстрые кнопки `0.1x..5x`, клавиши `[` / `]` и `Shift + Колесо` для настройки на лету.
+- **Асинхронный LBM и живая переинициализация (`lbm.{h,cpp}`, `globals.{h,cpp}`, `settings_table.inc`, `phys_sim.cpp`):** добавлен изолированный фоновый рабочий поток LBM с передачей снимков через двойную буферизацию и `O(1) swap`, адаптивной подстройкой чанка (~40 мс) и автоматической реакцией `updateLBM()` на смену скорости, углов потока и параметров земли.
+- **3D-рендер эффектов `interesting.cpp` (`interesting.{h,cpp}`, `gl_utils.{h,cpp}`, `vulkan_scene.cpp`, `main.cpp`):** добавлен `buildInterestingRenderBuffers()` и отрисовка `g_smokeParticles`, `g_vortexCores`, `g_streaklines`, `g_acousticSources` в OpenGL и Vulkan, а также подключение `getFlightModelMatrix()` при активном `aeroFlightMode`.
+- **Единые силы LBM и разделение сжимаемости (`lbm.{h,cpp}`, `forces.cpp`, `ui.cpp`):** `computeLiftDrag()` в режиме LBM использует `lbmControlVolumeForceWorld()` после прогрева; поправки сжимаемости, волновое сопротивление и сверхзвуковые скачки отключены при активном несжимаемом D3Q19 LBM.
+- **CI smoke-тест бинаря (`.github/workflows/tests.yml`):** добавлен запуск собранного Linux-бинаря с `--save-report` и `--presim`.
+
 ## [1.40.0] - 2026-11-28
 
 ### Улучшено — производительность CPU LBM (2.45×), физическая согласованность, 2D CFD-срезы и интерфейс

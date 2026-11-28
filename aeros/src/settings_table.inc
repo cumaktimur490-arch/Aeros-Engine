@@ -104,6 +104,7 @@ SET_X("lbmThermal", (double)(thermalParams.enabled ? 1 : 0), (thermalParams.enab
 SET_X("lbmRayleigh", (double)thermalParams.rayleigh, (thermalParams.rayleigh) = (float)v, 0.0, 1.0e7, 1.0e5)
 SET_X("lbmPrandtl", (double)thermalParams.prandtl, (thermalParams.prandtl) = (float)v, 0.1, 5.0, 0.71)
 SET_B("aeroAdaptiveLBM", aeroAdaptiveLBM, 0, 1, 1.0)
+SET_B("aeroAsyncLBM", aeroAsyncLBM, 0, 1, 1.0)
 SET_I("voxelResolution", voxelResolution, 8, 512, 48.0)
 SET_I("aeroModelUnits", aeroModelUnits, 0, 2, 0.0)
 SET_B("aeroGroundEffect", aeroGroundEffect, 0, 1, 0.0)

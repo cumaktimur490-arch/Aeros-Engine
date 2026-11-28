@@ -41,7 +41,7 @@ timelapse:
 lbm:
 	g++ $(CXXFLAGS) lbm_physics_headless.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp $(SRC)/flow_field.cpp \
 	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
-	    -o /tmp/aeros-test-lbm
+	    -o /tmp/aeros-test-lbm -pthread
 	/tmp/aeros-test-lbm
 
 physclock:
@@ -107,7 +107,7 @@ hotkeys:
 validate:
 	g++ $(CXXFLAGS) validation_headless.cpp $(SRC)/lbm.cpp $(SRC)/thermal_lbm.cpp $(SRC)/flow_field.cpp \
 	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
-	    -o /tmp/aeros-test-validate
+	    -o /tmp/aeros-test-validate -pthread
 	/tmp/aeros-test-validate
 
 # Открытие ссылок и диалоги без shell (v1.36.0): проверяется, что спецсимволы
@@ -118,7 +118,7 @@ validate:
 thermal:
 	g++ $(CXXFLAGS) thermal_headless.cpp $(SRC)/thermal_lbm.cpp $(SRC)/lbm.cpp $(SRC)/flow_field.cpp \
 	    $(SRC)/voxel_grid.cpp $(SRC)/atmosphere.cpp $(COMMON) \
-	    -o /tmp/aeros-test-thermal
+	    -o /tmp/aeros-test-thermal -pthread
 	/tmp/aeros-test-thermal
 
 # Стенд производительности (не проверка, поэтому не в run-suites.sh).

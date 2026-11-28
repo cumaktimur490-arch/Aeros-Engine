@@ -17,6 +17,7 @@
 #include "gl_utils.h"
 #include "flow_field.h"
 #include "lbm.h"
+#include "interesting.h"
 
 // =====================================================
 // Компиляция шейдерной программы с проверкой ошибок — v1.9.0 улучшено
@@ -389,6 +390,82 @@ void renderCFDSliceGL(unsigned int modelShaderProgram,
     }
 }
 
+static unsigned int s_smokeVAO = 0, s_smokePosVBO = 0, s_smokeColVBO = 0;
+static unsigned int s_acoustVAO = 0, s_acoustPosVBO = 0, s_acoustColVBO = 0;
+static unsigned int s_intLineVAO = 0, s_intLineVBO = 0;
+
+void renderInterestingGL(unsigned int particleShaderProgram,
+                         unsigned int lineShaderProgram,
+                         const float* modelMat4, const float* viewMat4, const float* projMat4) {
+    if (!modelMat4 || !viewMat4 || !projMat4) return;
+    if (!aeroVolumetricEnabled && !aeroShowVortexTubes && !aeroShowStreaklines && !aeroShowAeroAcoustic)
+        return;
+
+    static std::vector<float> s_smokePos, s_smokeCol;
+    static std::vector<float> s_vortexVerts, s_streakVerts;
+    static std::vector<float> s_acoustPos, s_acoustCol;
+    buildInterestingRenderBuffers(s_smokePos, s_smokeCol, s_vortexVerts, s_streakVerts, s_acoustPos, s_acoustCol);
+
+    if (lineShaderProgram != 0) {
+        auto drawLines = [&](const std::vector<float>& verts, float width, float alpha) {
+            if (verts.empty()) return;
+            if (s_intLineVAO == 0) glGenVertexArrays(1, &s_intLineVAO);
+            if (s_intLineVBO == 0) glGenBuffers(1, &s_intLineVBO);
+            glBindVertexArray(s_intLineVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, s_intLineVBO);
+            glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+            glUseProgram(lineShaderProgram);
+            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "model"), 1, GL_FALSE, modelMat4);
+            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "view"), 1, GL_FALSE, viewMat4);
+            glUniformMatrix4fv(glGetUniformLocation(lineShaderProgram, "projection"), 1, GL_FALSE, projMat4);
+            glUniform1i(glGetUniformLocation(lineShaderProgram, "useVertexColor"), 1);
+            glUniform1f(glGetUniformLocation(lineShaderProgram, "alpha"), alpha);
+            glLineWidth(width);
+            glDrawArrays(GL_LINES, 0, (GLsizei)(verts.size() / 6));
+            glLineWidth(1.0f);
+            glBindVertexArray(0);
+        };
+        drawLines(s_vortexVerts, 2.5f, glm::clamp(aeroVortexTubeOpacity, 0.1f, 1.0f));
+        drawLines(s_streakVerts, 2.0f, glm::clamp(aeroStreakOpacity, 0.1f, 1.0f));
+    }
+
+    if (particleShaderProgram != 0) {
+        auto drawPoints = [&](unsigned int& vao, unsigned int& pbo, unsigned int& cbo,
+                              const std::vector<float>& pos, const std::vector<float>& col,
+                              float pointSize) {
+            if (pos.empty() || col.size() != pos.size()) return;
+            if (vao == 0) glGenVertexArrays(1, &vao);
+            if (pbo == 0) glGenBuffers(1, &pbo);
+            if (cbo == 0) glGenBuffers(1, &cbo);
+            glBindVertexArray(vao);
+            glBindBuffer(GL_ARRAY_BUFFER, pbo);
+            glBufferData(GL_ARRAY_BUFFER, pos.size() * sizeof(float), pos.data(), GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, cbo);
+            glBufferData(GL_ARRAY_BUFFER, col.size() * sizeof(float), col.data(), GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(1);
+            glEnable(GL_PROGRAM_POINT_SIZE);
+            glDepthMask(GL_FALSE);
+            glUseProgram(particleShaderProgram);
+            glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "model"), 1, GL_FALSE, modelMat4);
+            glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "view"), 1, GL_FALSE, viewMat4);
+            glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, projMat4);
+            glUniform1f(glGetUniformLocation(particleShaderProgram, "pointSize"), pointSize);
+            glDrawArrays(GL_POINTS, 0, (GLsizei)(pos.size() / 3));
+            glDepthMask(GL_TRUE);
+            glBindVertexArray(0);
+        };
+        drawPoints(s_smokeVAO, s_smokePosVBO, s_smokeColVBO, s_smokePos, s_smokeCol, 6.0f);
+        drawPoints(s_acoustVAO, s_acoustPosVBO, s_acoustColVBO, s_acoustPos, s_acoustCol, 9.0f);
+    }
+}
+
 void cleanupGLResources() {
     // v1.9.0: check if context is current before deleting
     auto safeDeleteVAO = [](unsigned int& vao) {
@@ -417,6 +494,9 @@ void cleanupGLResources() {
     safeDeleteBuf(s_sliceMeshNormVBO);
     safeDeleteBuf(s_sliceMeshColVBO);
     s_sliceMeshVertCount = 0;
+    safeDeleteVAO(s_smokeVAO); safeDeleteBuf(s_smokePosVBO); safeDeleteBuf(s_smokeColVBO);
+    safeDeleteVAO(s_acoustVAO); safeDeleteBuf(s_acoustPosVBO); safeDeleteBuf(s_acoustColVBO);
+    safeDeleteVAO(s_intLineVAO); safeDeleteBuf(s_intLineVBO);
     safeDeleteVAO(gridVAO); safeDeleteBuf(gridVBO);
     safeDeleteVAO(streamlineVAO); safeDeleteBuf(streamlineVBO);
     safeDeleteVAO(liftDragVAO); safeDeleteBuf(liftDragVBO);

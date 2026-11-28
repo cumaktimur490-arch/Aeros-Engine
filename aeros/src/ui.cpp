@@ -1394,11 +1394,15 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
     ImGui::Checkbox(_TR("Show Vortices (Q)", "Показывать вихри (Q)"), &aeroShowVortices);
     ImGui::Checkbox(_TR("Show Boundary Layer", "Показывать погранслой"), &aeroShowBoundaryLayer);
     ImGui::Checkbox(_TR("Realistic PBR Lighting", "Реалистичное PBR освещение"), &aeroUseRealisticLighting);
-    ImGui::Checkbox(_TR("Ground Effect (cars, photo 2/5)", "Эффект земли (авто, фото 2/5)"), &aeroGroundEffect);
-    if (aeroGroundEffect) {
-        ImGui::SliderFloat(_TR("Ground Height", "Высота земли"), &aeroGroundHeight, -2.0f, 2.0f, "%.2f");
+    if (ImGui::Checkbox(_TR("Ground Effect (cars, photo 2/5)", "Эффект земли (авто, фото 2/5)"), &aeroGroundEffect)) {
         lbmParams.useGround = aeroGroundEffect;
         lbmParams.groundHeight = aeroGroundHeight;
+    }
+    if (aeroGroundEffect) {
+        if (ImGui::SliderFloat(_TR("Ground Height", "Высота земли"), &aeroGroundHeight, -2.0f, 2.0f, "%.2f")) {
+            lbmParams.groundHeight = aeroGroundHeight;
+        }
+        lbmParams.useGround = true;
     }
     ImGui::Checkbox(_TR("Show Ground Plane", "Показывать землю"), &showGroundPlane);
     if (showGroundPlane) {
@@ -1412,9 +1416,19 @@ if (uiSelectedLeaf == 5 && ImGui::CollapsingHeader(_TR("Realistic Aero v1.19.0 �
         ImGui::Combo(_TR("Slice Axis", "Ось среза"), &aeroSliceAxis, axisNames, 3);
         ImGui::SliderFloat(_TR("Slice Pos", "Позиция среза"), &aeroSlicePos, 0.0f, 1.0f);
     }
-    ImGui::Checkbox(_TR("Mach Effects (compressibility)", "Эффекты Маха (сжимаемость)"), &aeroMachEffects);
-    if (aeroMachEffects) {
-        ImGui::SliderFloat(_TR("Mach Threshold", "Порог Маха"), &aeroMachThreshold, 0.1f, 1.0f);
+    if (lbmParams.enabled) {
+        ImGui::BeginDisabled(true);
+        bool machOff = false;
+        ImGui::Checkbox(_TR("Mach Effects (analytical compressible only)",
+                            "Эффекты Маха (только аналитический режим)"), &machOff);
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("  %s", _TR("D3Q19 LBM is incompressible; disable LBM for compressible/supersonic",
+                                        "D3Q19 LBM несжимаем; для сжимаемости отключите LBM"));
+    } else {
+        ImGui::Checkbox(_TR("Mach Effects (compressibility)", "Эффекты Маха (сжимаемость)"), &aeroMachEffects);
+        if (aeroMachEffects) {
+            ImGui::SliderFloat(_TR("Mach Threshold", "Порог Маха"), &aeroMachThreshold, 0.1f, 1.0f);
+        }
     }
     ImGui::Separator();
     ImGui::Text("%s:", _TR("v1.9.0 New Features", "Новые фичи v1.9.0"));
@@ -1618,8 +1632,16 @@ if (uiSelectedLeaf == 6 && ImGui::CollapsingHeader(_TR("Interesting v1.19.0 — 
     }
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Shock Waves — Supersonic (θ-β-M)", "Скачки — Сверхзвук (θ-β-M)"));
-    ImGui::Checkbox(_TR("Show Shock Waves", "Показывать скачки"), &aeroShowShockWaves);
-    if (aeroShowShockWaves) {
+    if (lbmParams.enabled) {
+        ImGui::BeginDisabled(true);
+        bool shockOff = false;
+        ImGui::Checkbox(_TR("Show Shock Waves (analytical supersonic only)",
+                            "Показывать скачки (только аналитический сверхзвук)"), &shockOff);
+        ImGui::EndDisabled();
+    } else {
+        ImGui::Checkbox(_TR("Show Shock Waves", "Показывать скачки"), &aeroShowShockWaves);
+    }
+    if (!lbmParams.enabled && aeroShowShockWaves) {
         ImGui::SliderFloat(_TR("Shock Opacity", "Прозрачность скачка"), &aeroShockOpacity, 0.1f, 1.0f);
         ImGui::Checkbox(_TR("Mach Cone", "Конус Маха"), &aeroShowMachCone);
         ImGui::Checkbox(_TR("Expansion Fans", "Волны разрежения"), &aeroShowExpansionFans);
@@ -2158,7 +2180,19 @@ if (uiSelectedLeaf == 15 && ImGui::CollapsingHeader(_TR("Display v1.19.0", "От
     ImGui::Checkbox("VSync", &vsyncEnabled);
     ImGui::Checkbox(_TR("Limit FPS", "Ограничить FPS"), &limitFPS);
     if (limitFPS) ImGui::SliderFloat(_TR("Max FPS", "Макс. FPS"), &maxFPS, 10.0f, 240.0f);
-    ImGui::SliderFloat(_TR("Camera Speed", "Скорость камеры"), &cameraSpeedMultiplier, 0.1f, 5.0f);
+    ImGui::SliderFloat(_TR("Camera Speed", "Скорость камеры"), &cameraSpeedMultiplier,
+                       0.02f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+    {
+        const float effSpeed = 1.8f * ((std::isfinite(maxDim) && maxDim > 0.05f) ? std::min(maxDim, 50.0f) : 1.0f) * cameraSpeedMultiplier;
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%.2f %s) [ / ]", effSpeed, _TR("m/s", "м/с"));
+        const float presets[] = {0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f};
+        const char* pLabels[] = {"0.1x", "0.25x", "0.5x", "1x", "2x", "5x"};
+        for (int pi = 0; pi < 6; ++pi) {
+            if (pi > 0) ImGui::SameLine();
+            if (ImGui::SmallButton(pLabels[pi])) cameraSpeedMultiplier = presets[pi];
+        }
+    }
     ImGui::SliderFloat(_TR("Mouse Sens", "Чувств. мыши"), &mouseSensitivity, 0.05f, 1.0f);
     ImGui::ColorEdit3(_TR("Background", "Фон"), &bgColor[0]);
     ImGui::ColorEdit3(_TR("Model Color", "Цвет модели"), &modelColor[0]);
@@ -2229,6 +2263,11 @@ if (uiSelectedLeaf == 16 && ImGui::CollapsingHeader(_TR("LBM - Lattice Boltzmann
     ImGui::Checkbox(_TR("Smagorinsky LES Turbulence", "Турбулентность Smagorinsky LES"), &lbmParams.useTurbulence);
     if (lbmParams.useTurbulence) ImGui::SliderFloat(_TR("Smagorinsky C", "Константа Smagorinsky"), &lbmParams.smagorinskyC, 0.01f, 0.3f, "%.3f");
     ImGui::Checkbox(_TR("Adaptive Stepping", "Адаптивные шаги"), &aeroAdaptiveLBM);
+    ImGui::Checkbox(_TR("Async Background LBM (keep UI smooth)", "Фоновый поток LBM (плавный интерфейс)"), &aeroAsyncLBM);
+    if (lbmParams.enabled && aeroAsyncLBM) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%s]", lbmIsAsyncWorkerRunning() ? _TR("Async", "Фоновый") : _TR("Sync", "Синхр."));
+    }
     ImGui::Separator();
     ImGui::Text("%s:", _TR("Flagship Physics Operators (v1.39.0 C++17)", "Флагманские операторы физики (v1.39.0 C++17)"));
     {

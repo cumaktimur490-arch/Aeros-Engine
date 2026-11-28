@@ -97,10 +97,18 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
 }
 
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
-    (void)window; (void)xoffset;
+    (void)xoffset;
     if (!std::isfinite((float)yoffset)) return;
     // Clamp scroll
     if (fabs(yoffset) > 10.0) yoffset = (yoffset > 0 ? 10.0 : -10.0);
+    if (window && !aeroStartScreen && !aeroUiWantsKeyboard &&
+        (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+         glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS)) {
+        float m = std::isfinite(cameraSpeedMultiplier) ? cameraSpeedMultiplier : 1.0f;
+        m *= powf(1.25f, (float)yoffset);
+        cameraSpeedMultiplier = glm::clamp(m, 0.02f, 20.0f);
+        return;
+    }
     fov -= (float)yoffset * 2.0f;
     if (fov < 1.0f)  fov = 1.0f;
     if (fov > 90.0f) fov = 90.0f;
@@ -143,13 +151,29 @@ void processInput(GLFWwindow* window) {
     // одну клавиатуру.
     if (aeroStartScreen || aeroUiWantsKeyboard) return;
 
-    float cameraSpeed = 10.0f * deltaTime * cameraSpeedMultiplier;
-    if (!std::isfinite(cameraSpeed) || cameraSpeed < 0) cameraSpeed = 0.1f;
+    const float sceneScale = (std::isfinite(maxDim) && maxDim > 0.05f)
+        ? std::min(maxDim, 50.0f) : 1.0f;
+    const float safeMult = std::isfinite(cameraSpeedMultiplier)
+        ? glm::clamp(cameraSpeedMultiplier, 0.02f, 20.0f) : 1.0f;
+    float cameraSpeed = 1.8f * sceneScale * deltaTime * safeMult;
+    if (!std::isfinite(cameraSpeed) || cameraSpeed < 0.0f) cameraSpeed = 0.05f;
     if (cameraSpeed > 100.0f) cameraSpeed = 100.0f;
     bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-    bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+    bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
     if (ctrl) cameraSpeed *= 5.0f;
     if (shift) cameraSpeed *= 0.2f;
+
+    static bool lbrWasPressed = false, rbrWasPressed = false;
+    bool lbrPressed = glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS;
+    bool rbrPressed = glfwGetKey(window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS;
+    if (lbrPressed && !lbrWasPressed) {
+        cameraSpeedMultiplier = glm::clamp(safeMult * 0.8f, 0.02f, 20.0f);
+    }
+    if (rbrPressed && !rbrWasPressed) {
+        cameraSpeedMultiplier = glm::clamp(safeMult * 1.25f, 0.02f, 20.0f);
+    }
+    lbrWasPressed = lbrPressed;
+    rbrWasPressed = rbrPressed;
 
     glm::vec3 right = glm::cross(cameraFront, cameraUp);
     float rLen = glm::length(right);

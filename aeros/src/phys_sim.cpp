@@ -452,6 +452,7 @@ static void recordOneSample(int stepRel, float dtStepPhys, std::vector<PhysSimSa
 
 // Этап 1: ядро предсимуляции (вызывается из blocking или worker thread)
 static bool executeStage1(const PhysSimConfig& cfg) {
+    lbmStopAsyncWorker();
     s_stepsDone = 0;
     s_stepsTarget = std::max(1, cfg.targetSteps);
     s_elapsedSec = 0.0;

@@ -16,6 +16,10 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -59,6 +63,61 @@ float lbmCellSizeX = 0.1f, lbmCellSizeY = 0.1f, lbmCellSizeZ = 0.1f;
 static float sBodyMin[3] = {0,0,0}, sBodyMax[3] = {-1,-1,-1};
 static int   sBodyN[3] = {0,0,0};
 static bool  sHasBody = false;
+
+// Снапшот параметров потока и земли на момент initLBM() для живой реакции updateLBM()
+static float sInitFlowSpeed = -1.0f;
+static float sInitAz = 9999.0f;
+static float sInitEl = 9999.0f;
+static int   sInitFlowAxis = -1;
+static int   sInitFlowSign = 0;
+static bool  sInitGroundEn = false;
+static float sInitGroundH = 0.0f;
+static bool  sInitUseGround = false;
+static float sInitGroundHeight = 0.0f;
+static float sInitAirDensity = -1.0f;
+
+// Асинхронный рабочий поток LBM (изолированные буферы, передача через O(1) swap)
+struct LBMFieldState {
+    bool valid = false;
+    std::vector<float> rho, ux, uy, uz;
+    std::vector<float> uxW, uyW, uzW;
+    std::vector<float> pressure, vort, qCrit, tkeField, strain;
+    std::vector<float> prevRho;
+    int prevTotal = -1;
+    int prevStep = -1;
+    float prevKinetic = 0.0f;
+    float prevMaxVelLB = 0.0f;
+    int step = 0;
+    float avgRho = 1.0f, avgKE = 0.0f, maxVelLB = 0.0f, maxVelWorld = 0.0f;
+    float tke = 0.0f, convergence = 0.0f;
+    bool converged = false;
+    float pMin = 0.0f, pMax = 0.0f, resRho = 0.0f, resU = 0.0f, timeMs = 0.0f;
+    float maxNuTRatio = 0.0f, lastEnstrophy = 0.0f, lastResidualU = 0.0f;
+    long long negPops = 0, badPops = 0, rhoOut = 0, rhoNan = 0, uLim = 0, pNan = 0;
+    bool cvValid = false;
+    glm::vec3 cvForceN{0.0f};
+};
+
+static LBMFieldState s_workerState;
+static LBMFieldState s_readySnap;
+static std::mutex s_snapMtx;
+static std::mutex s_asyncMtx;
+static std::condition_variable s_asyncCV;
+static std::thread s_asyncThread;
+static std::atomic<bool> s_asyncStop{false};
+static std::atomic<bool> s_asyncRunning{false};
+static int s_asyncPendingSteps = 0;
+static bool s_cachedCVValid = false;
+static glm::vec3 s_cachedCVForceN{0.0f};
+
+static void stepLBMCPUImpl(int steps, bool updateWorldFields, LBMFieldState* st);
+static void computeLBMVorticityAndQImpl(LBMFieldState* st);
+static bool computeControlVolumeForceWorldFrom(
+    const std::vector<float>& rhoVec,
+    const std::vector<float>& uxVec,
+    const std::vector<float>& uyVec,
+    const std::vector<float>& uzVec,
+    int step, float avgRho, glm::vec3* outForceN);
 // v1.36.0 — число ЯЧЕЕК ЖИДКОСТИ (домен минус твёрдые и земля).
 // Раньше средняя плотность считалась как усреднение только по жидкости, но
 // делилась на все ячейки домена. Любая модель с заметной долей твёрдых ячеек
@@ -902,6 +961,9 @@ glm::vec3 getTotalPressureColor(float pt, float ptInf) {
 }
 
 void initLBM() {
+    lbmStopAsyncWorker();
+    s_cachedCVValid = false;
+    s_cachedCVForceN = glm::vec3(0.0f);
     std::cout << "[LBM] Initializing " << AEROS_VERSION_STRING << "..." << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -1402,6 +1464,22 @@ void initLBM() {
     s_didWarmup = false;
     rebuildLBMTiles();
 
+    {
+        int axInit, sgnInit;
+        glm::vec3 fdInit;
+        computeFlowAxis(axInit, sgnInit, fdInit);
+        sInitFlowSpeed = flowSpeed;
+        sInitAz = flowAzimuth;
+        sInitEl = flowElevation;
+        sInitFlowAxis = axInit;
+        sInitFlowSign = sgnInit;
+        sInitGroundEn = aeroGroundEffect;
+        sInitGroundH = aeroGroundHeight;
+        sInitUseGround = lbmParams.useGround;
+        sInitGroundHeight = lbmParams.groundHeight;
+        sInitAirDensity = airDensity;
+    }
+
     auto t1 = std::chrono::high_resolution_clock::now();
     lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
     std::cout << "[LBM] Initialized " << AEROS_VERSION_STRING << ": " << lbmNx << "x" << lbmNy << "x" << lbmNz << " = " << total
@@ -1776,6 +1854,9 @@ void resetLBM() {
 }
 
 void shutdownLBM() {
+    lbmStopAsyncWorker();
+    s_cachedCVValid = false;
+    s_cachedCVForceN = glm::vec3(0.0f);
     if (lbmInitialized) DBG_PHYS("LBM: остановлен на шаге %d", lbmCurrentStep);
     thermalShutdown();
     lbmWallDist.clear();
@@ -1797,12 +1878,50 @@ void stepLBMCPU(int steps) {
 }
 
 void stepLBMCPUEx(int steps, bool updateWorldFields) {
+    stepLBMCPUImpl(steps, updateWorldFields, nullptr);
+}
+
+static void stepLBMCPUImpl(int steps, bool updateWorldFields, LBMFieldState* st) {
     if (!lbmInitialized) return;
     if (lbmNx <= 0 || lbmNy <= 0 || lbmNz <= 0) return;
     size_t totalSz = (size_t)lbmNx * (size_t)lbmNy * (size_t)lbmNz;
     if (totalSz == 0 || totalSz > 20*1024*1024) return;
     int total = (int)totalSz;
-    if (total != (int)lbmRho.size()) return;
+    std::vector<float>& rhoVec   = st ? st->rho      : lbmRho;
+    std::vector<float>& uxVec    = st ? st->ux       : lbmUx;
+    std::vector<float>& uyVec    = st ? st->uy       : lbmUy;
+    std::vector<float>& uzVec    = st ? st->uz       : lbmUz;
+    std::vector<float>& uxWVec   = st ? st->uxW      : lbmUxWorld;
+    std::vector<float>& uyWVec   = st ? st->uyW      : lbmUyWorld;
+    std::vector<float>& uzWVec   = st ? st->uzW      : lbmUzWorld;
+    std::vector<float>& pressVec = st ? st->pressure : lbmPressure;
+    std::vector<float>& tkeVec   = st ? st->tkeField : lbmTKEField;
+    std::vector<float>& strVec   = st ? st->strain   : lbmStrainMag;
+
+    int&       curStepRef    = st ? st->step          : lbmCurrentStep;
+    float&     avgRhoRef     = st ? st->avgRho        : lbmAvgRho;
+    float&     avgKERef      = st ? st->avgKE         : lbmAvgKineticEnergy;
+    float&     maxVelLBRef   = st ? st->maxVelLB      : lbmMaxVelocityLB;
+    float&     maxVelWRef    = st ? st->maxVelWorld   : lbmMaxVelocityWorld;
+    float&     tkeScalarRef  = st ? st->tke           : lbmTKE;
+    float&     convRef       = st ? st->convergence   : lbmConvergence;
+    bool&      convergedRef  = st ? st->converged     : lbmConverged;
+    float&     pMinRef       = st ? st->pMin          : lbmPressureMin;
+    float&     pMaxRef       = st ? st->pMax          : lbmPressureMax;
+    float&     resRhoRef     = st ? st->resRho        : lbmResidualRho;
+    float&     resURef       = st ? st->resU          : lbmResidualU;
+    float&     timeMsRef     = st ? st->timeMs        : lbmTimeMs;
+    float&     maxNuTRef     = st ? st->maxNuTRatio   : s_maxNuTRatio;
+    float&     lastEnstRef   = st ? st->lastEnstrophy : s_lastEnstrophy;
+    float&     lastResURef   = st ? st->lastResidualU : s_lastResidualU;
+    long long& negPopsRef    = st ? st->negPops       : lbmNegativePops;
+    long long& badPopsRef    = st ? st->badPops       : lbmBadPops;
+    long long& rhoOutRef     = st ? st->rhoOut        : lbmRhoOutOfRange;
+    long long& rhoNanRef     = st ? st->rhoNan        : lbmRhoNonFinite;
+    long long& uLimRef       = st ? st->uLim          : lbmULimited;
+    long long& pNanRef       = st ? st->pNan          : lbmPressureNonFinite;
+
+    if (total != (int)rhoVec.size()) return;
     if (f.size() != totalSz * (size_t)Q) return;
     if ((int)s_nuT.size() != total) s_nuT.assign(total, 0.0f);
 
@@ -1838,12 +1957,12 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
 
     float* __restrict fPtr = f.data();
     float* __restrict fNextPtr = fNext.data();
-    float* __restrict rhoPtr = lbmRho.data();
-    float* __restrict uxPtr = lbmUx.data();
-    float* __restrict uyPtr = lbmUy.data();
-    float* __restrict uzPtr = lbmUz.data();
-    float* __restrict tkePtr = lbmTKEField.data();
-    float* __restrict strainPtr = lbmStrainMag.data();
+    float* __restrict rhoPtr = rhoVec.data();
+    float* __restrict uxPtr = uxVec.data();
+    float* __restrict uyPtr = uyVec.data();
+    float* __restrict uzPtr = uzVec.data();
+    float* __restrict tkePtr = tkeVec.data();
+    float* __restrict strainPtr = strVec.data();
     float* __restrict nuTPtr = s_nuT.data();
     const char* __restrict solidPtr = lbmIsSolid.data();
     const char* __restrict groundPtr = lbmIsGround.data();
@@ -1872,14 +1991,15 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
     for (int qi = 0; qi < Q; ++qi)
         offQ[qi] = -(c[qi][2]*Ny*Nx) - c[qi][1]*Nx - c[qi][0];
 
-    static float prevKinetic = 0.0f;
+    static float s_syncPrevKinetic = 0.0f;
+    float& prevKinetic = st ? st->prevKinetic : s_syncPrevKinetic;
     bool hasDiverged = false;
 
     for (int s = 0; s < steps; ++s) {
         float stepInUx = inUx, stepInUy = inUy, stepInUz = inUz;
         if (!s_didWarmup && lbmParams.rampSteps > 0 && !lbmParams.periodicX &&
-            lbmCurrentStep < lbmParams.rampSteps) {
-            const float tRamp = (float)(lbmCurrentStep + 1) / (float)lbmParams.rampSteps;
+            curStepRef < lbmParams.rampSteps) {
+            const float tRamp = (float)(curStepRef + 1) / (float)lbmParams.rampSteps;
             const float rampFactor = 0.15f + 0.85f * 0.5f * (1.0f - cosf(3.14159265f * tRamp));
             stepInUx *= rampFactor;
             stepInUy *= rampFactor;
@@ -2717,35 +2837,35 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
         fPtr = f.data();
         fNextPtr = fNext.data();
 
-        if (thermalParams.enabled)
-            thermalStep(lbmUx.data(), lbmUy.data(), lbmUz.data());
+        if (!st && thermalParams.enabled)
+            thermalStep(uxVec.data(), uyVec.data(), uzVec.data());
 
-        lbmCurrentStep++;
-        lbmAvgRho = (float)(avgRhoAcc / sFluidCells);
-        lbmAvgKineticEnergy = (float)(kineticAcc / sFluidCells);
-        lbmMaxVelocityLB = maxVelGlobal;
-        lbmTKE = (float)(tkeAcc / sFluidCells);
-        s_maxNuTRatio = (nu0 > 1e-9f) ? (maxNuTLocal / nu0) : 0.0f;
-        s_lastEnstrophy = (float)(0.5 * enstrophyAcc / (double)sFluidCells) * velScale2;
+        curStepRef++;
+        avgRhoRef = (float)(avgRhoAcc / sFluidCells);
+        avgKERef = (float)(kineticAcc / sFluidCells);
+        maxVelLBRef = maxVelGlobal;
+        tkeScalarRef = (float)(tkeAcc / sFluidCells);
+        maxNuTRef = (nu0 > 1e-9f) ? (maxNuTLocal / nu0) : 0.0f;
+        lastEnstRef = (float)(0.5 * enstrophyAcc / (double)sFluidCells) * velScale2;
 
         float scale = flowSpeed / U0mag;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
         if (scale < 0.01f) scale = 0.01f;
-        lbmMaxVelocityWorld = maxVelGlobal * scale;
+        maxVelWRef = maxVelGlobal * scale;
 
-        lbmNegativePops = negPops;
-        lbmBadPops = badPops;
-        lbmRhoOutOfRange = rhoOut;
-        lbmRhoNonFinite  = rhoNonFin;
-        lbmULimited      = uLim;
-        lbmConvergence = std::fabs(lbmAvgKineticEnergy - prevKinetic);
-        prevKinetic = lbmAvgKineticEnergy;
-        lbmConverged = (lbmConvergence < lbmParams.convergenceThreshold);
+        negPopsRef = negPops;
+        badPopsRef = badPops;
+        rhoOutRef  = rhoOut;
+        rhoNanRef  = rhoNonFin;
+        uLimRef    = uLim;
+        convRef = std::fabs(avgKERef - prevKinetic);
+        prevKinetic = avgKERef;
+        convergedRef = (convRef < lbmParams.convergenceThreshold);
 
-        if (!std::isfinite(lbmAvgRho) || lbmAvgRho > 1.2f || lbmAvgRho < 0.8f) {
-            std::cout << "[LBM] Divergence detected rho=" << lbmAvgRho << " — resetting" << std::endl;
+        if (!std::isfinite(avgRhoRef) || avgRhoRef > 1.2f || avgRhoRef < 0.8f) {
+            std::cout << "[LBM] Divergence detected rho=" << avgRhoRef << " — resetting" << std::endl;
             DBG_ERROR("LBM разошёлся: rho=%.6f вне диапазона 0.8..1.2 на шаге %d (скорость потока %.3f м/с) — перезапуск",
-                      lbmAvgRho, lbmCurrentStep, flowSpeed);
+                      avgRhoRef, curStepRef, flowSpeed);
             hasDiverged = true;
             break;
         }
@@ -2763,11 +2883,11 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
             for (int qi = 0; qi < Q; ++qi) {
                 f[(size_t)qi * totalSz + (size_t)cell] = computeEquilibriumFast(qi, 1.0f, inUx2, inUy2, inUz2, usqr);
             }
-            lbmRho[cell] = 1.0f;
-            lbmUx[cell] = inUx2; lbmUy[cell] = inUy2; lbmUz[cell] = inUz2;
+            rhoVec[cell] = 1.0f;
+            uxVec[cell] = inUx2; uyVec[cell] = inUy2; uzVec[cell] = inUz2;
         }
-        lbmAvgRho = 1.0f;
-        lbmAvgKineticEnergy = usqr;
+        avgRhoRef = 1.0f;
+        avgKERef = usqr;
     }
 
     if (updateWorldFields || hasDiverged) {
@@ -2777,10 +2897,10 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
         if (!std::isfinite(U0mag2) || U0mag2 < 1e-6f) U0mag2 = 0.08f;
         float scale = flowSpeed / U0mag2;
         if (!std::isfinite(scale) || scale > 1000.0f) scale = 20.0f;
-        float* __restrict uxW = lbmUxWorld.data();
-        float* __restrict uyW = lbmUyWorld.data();
-        float* __restrict uzW = lbmUzWorld.data();
-        float* __restrict pPtr = lbmPressure.data();
+        float* __restrict uxW = uxWVec.data();
+        float* __restrict uyW = uyWVec.data();
+        float* __restrict uzW = uzWVec.data();
+        float* __restrict pPtr = pressVec.data();
         const char* __restrict solidPtr2 = lbmIsSolid.data();
         const char* __restrict groundPtr2 = lbmIsGround.data();
         const float rho0 = airDensity;
@@ -2788,11 +2908,17 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
         long long pBad = 0;
         float pMin = 1e30f, pMax = -1e30f;
 
-        static std::vector<float> prevRho;
-        static int prevTotal = -1;
-        static int prevStep  = -1;
+        static std::vector<float> s_syncPrevRho;
+        static int s_syncPrevTotal = -1;
+        static int s_syncPrevStep  = -1;
+        static float s_syncPrevMaxVelLB = 0.0f;
+        std::vector<float>& prevRho = st ? st->prevRho : s_syncPrevRho;
+        int& prevTotal = st ? st->prevTotal : s_syncPrevTotal;
+        int& prevStep  = st ? st->prevStep  : s_syncPrevStep;
+        float& prevMaxVelLB = st ? st->prevMaxVelLB : s_syncPrevMaxVelLB;
+
         bool residualValid = ((int)prevRho.size() == total && prevTotal == total &&
-                              prevStep >= 0 && lbmCurrentStep >= prevStep);
+                              prevStep >= 0 && curStepRef >= prevStep);
         if ((int)prevRho.size() != total) {
             try { prevRho.assign((size_t)total, 1.0f); } catch (...) { prevRho.clear(); }
         }
@@ -2815,14 +2941,14 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
                 pPtr[cell] = 0;
                 if (doRes) prevRhoPtr[cell] = 1.0f;
             } else {
-                float ux = lbmUx[cell], uy = lbmUy[cell], uz = lbmUz[cell];
+                float ux = uxPtr[cell], uy = uyPtr[cell], uz = uzPtr[cell];
                 if (!std::isfinite(ux)) ux = 0;
                 if (!std::isfinite(uy)) uy = 0;
                 if (!std::isfinite(uz)) uz = 0;
                 uxW[cell] = ux * scale;
                 uyW[cell] = uy * scale;
                 uzW[cell] = uz * scale;
-                float rho = lbmRho[cell];
+                float rho = rhoPtr[cell];
                 if (!std::isfinite(rho)) rho = 1.0f;
                 float pPhys = (rho - 1.0f) * pFactor;
                 if (!std::isfinite(pPhys)) { pBad++; pPhys = 0.0f; }
@@ -2849,20 +2975,19 @@ void stepLBMCPUEx(int steps, bool updateWorldFields) {
         #else
         pMin = tPMin; pMax = tPMax;
         #endif
-        lbmPressureNonFinite = pBad;
-        lbmPressureMin = (pMin <= pMax && std::isfinite(pMin)) ? pMin : 0.0f;
-        lbmPressureMax = (pMin <= pMax && std::isfinite(pMax)) ? pMax : 0.0f;
-        lbmResidualRho = (doRes && nSampled > 0) ? (float)std::sqrt(sumSq / (double)nSampled) : 0.0f;
-        static float prevMaxVelLB = 0.0f;
-        lbmResidualU = std::fabs(lbmMaxVelocityLB - prevMaxVelLB);
-        s_lastResidualU = lbmResidualU;
-        prevMaxVelLB = lbmMaxVelocityLB;
+        pNanRef = pBad;
+        pMinRef = (pMin <= pMax && std::isfinite(pMin)) ? pMin : 0.0f;
+        pMaxRef = (pMin <= pMax && std::isfinite(pMax)) ? pMax : 0.0f;
+        resRhoRef = (doRes && nSampled > 0) ? (float)std::sqrt(sumSq / (double)nSampled) : 0.0f;
+        resURef = std::fabs(maxVelLBRef - prevMaxVelLB);
+        lastResURef = resURef;
+        prevMaxVelLB = maxVelLBRef;
         prevTotal = total;
-        prevStep  = lbmCurrentStep;
+        prevStep  = curStepRef;
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
-    lbmTimeMs = std::chrono::duration<float, std::milli>(t1-t0).count();
+    timeMsRef = std::chrono::duration<float, std::milli>(t1-t0).count();
 }
 
 // v1.29.0 — сколько ФИЗИЧЕСКИХ секунд занимает один шаг решётки.
@@ -2888,12 +3013,219 @@ float lbmLatticeDtWorld() {
     return dt;
 }
 
+static void applyFieldBuffersToGlobals(LBMFieldState& st) {
+    if (!st.valid) return;
+    lbmRho.swap(st.rho);
+    lbmUx.swap(st.ux);
+    lbmUy.swap(st.uy);
+    lbmUz.swap(st.uz);
+    lbmUxWorld.swap(st.uxW);
+    lbmUyWorld.swap(st.uyW);
+    lbmUzWorld.swap(st.uzW);
+    lbmPressure.swap(st.pressure);
+    lbmVorticityMag.swap(st.vort);
+    lbmQCriterion.swap(st.qCrit);
+    lbmTKEField.swap(st.tkeField);
+    lbmStrainMag.swap(st.strain);
+
+    lbmCurrentStep      = st.step;
+    lbmAvgRho           = st.avgRho;
+    lbmAvgKineticEnergy = st.avgKE;
+    lbmMaxVelocityLB    = st.maxVelLB;
+    lbmMaxVelocityWorld = st.maxVelWorld;
+    lbmTKE              = st.tke;
+    lbmConvergence      = st.convergence;
+    lbmConverged        = st.converged;
+    lbmPressureMin      = st.pMin;
+    lbmPressureMax      = st.pMax;
+    lbmResidualRho      = st.resRho;
+    lbmResidualU        = st.resU;
+    lbmTimeMs           = st.timeMs;
+    s_maxNuTRatio       = st.maxNuTRatio;
+    s_lastEnstrophy     = st.lastEnstrophy;
+    s_lastResidualU     = st.lastResidualU;
+    lbmNegativePops     = st.negPops;
+    lbmBadPops          = st.badPops;
+    lbmRhoOutOfRange    = st.rhoOut;
+    lbmRhoNonFinite     = st.rhoNan;
+    lbmULimited         = st.uLim;
+    lbmPressureNonFinite= st.pNan;
+    s_cachedCVValid     = st.cvValid;
+    s_cachedCVForceN    = st.cvForceN;
+}
+
+static void captureGlobalsToFieldBuffers(LBMFieldState& st) {
+    st.rho = lbmRho;
+    st.ux = lbmUx;
+    st.uy = lbmUy;
+    st.uz = lbmUz;
+    st.uxW = lbmUxWorld;
+    st.uyW = lbmUyWorld;
+    st.uzW = lbmUzWorld;
+    st.pressure = lbmPressure;
+    st.vort = lbmVorticityMag;
+    st.qCrit = lbmQCriterion;
+    st.tkeField = lbmTKEField;
+    st.strain = lbmStrainMag;
+    st.prevRho.clear();
+    st.prevTotal = -1;
+    st.prevStep = -1;
+    st.prevKinetic = lbmAvgKineticEnergy;
+    st.prevMaxVelLB = lbmMaxVelocityLB;
+
+    st.step = lbmCurrentStep;
+    st.avgRho = lbmAvgRho;
+    st.avgKE = lbmAvgKineticEnergy;
+    st.maxVelLB = lbmMaxVelocityLB;
+    st.maxVelWorld = lbmMaxVelocityWorld;
+    st.tke = lbmTKE;
+    st.convergence = lbmConvergence;
+    st.converged = lbmConverged;
+    st.pMin = lbmPressureMin;
+    st.pMax = lbmPressureMax;
+    st.resRho = lbmResidualRho;
+    st.resU = lbmResidualU;
+    st.timeMs = lbmTimeMs;
+    st.maxNuTRatio = s_maxNuTRatio;
+    st.lastEnstrophy = s_lastEnstrophy;
+    st.lastResidualU = s_lastResidualU;
+    st.negPops = lbmNegativePops;
+    st.badPops = lbmBadPops;
+    st.rhoOut = lbmRhoOutOfRange;
+    st.rhoNan = lbmRhoNonFinite;
+    st.uLim = lbmULimited;
+    st.pNan = lbmPressureNonFinite;
+    st.cvValid = s_cachedCVValid;
+    st.cvForceN = s_cachedCVForceN;
+    st.valid = true;
+}
+
+bool lbmIsAsyncWorkerRunning() {
+    return s_asyncRunning.load();
+}
+
+void lbmStopAsyncWorker() {
+    if (s_asyncThread.joinable()) {
+        {
+            std::lock_guard<std::mutex> lk(s_asyncMtx);
+            s_asyncStop.store(true);
+        }
+        s_asyncCV.notify_all();
+        s_asyncThread.join();
+    }
+    s_asyncRunning.store(false);
+    s_asyncStop.store(false);
+    if (s_workerState.valid) {
+        applyFieldBuffersToGlobals(s_workerState);
+        s_workerState = LBMFieldState{};
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_snapMtx);
+        s_readySnap = LBMFieldState{};
+    }
+    s_asyncPendingSteps = 0;
+}
+
+static void lbmStartAsyncWorkerIfNeeded() {
+    if (s_asyncThread.joinable()) return;
+    if (!lbmInitialized) return;
+    captureGlobalsToFieldBuffers(s_workerState);
+    s_asyncStop.store(false);
+    s_asyncRunning.store(true);
+    s_asyncThread = std::thread([]() {
+        float wEmaMs = 15.0f;
+        while (true) {
+            int n = 0;
+            {
+                std::unique_lock<std::mutex> lk(s_asyncMtx);
+                s_asyncCV.wait(lk, [&]() {
+                    return s_asyncStop.load() || s_asyncPendingSteps > 0;
+                });
+                if (s_asyncStop.load()) break;
+                const int maxChunk = std::max(1, std::min(8, (int)(40.0f / std::max(1.0f, wEmaMs))));
+                n = std::min(s_asyncPendingSteps, maxChunk);
+                if (n < 1) n = 1;
+                s_asyncPendingSteps -= n;
+            }
+            const int prevStep = s_workerState.step;
+            stepLBMCPUImpl(n, true, &s_workerState);
+            if (n > 0 && std::isfinite(s_workerState.timeMs) && s_workerState.timeMs > 0.0f) {
+                const float msPerStep = s_workerState.timeMs / (float)n;
+                wEmaMs = 0.7f * wEmaMs + 0.3f * msPerStep;
+            }
+            if ((s_workerState.step / 15) != (prevStep / 15)) {
+                computeLBMVorticityAndQImpl(&s_workerState);
+            }
+            s_workerState.cvValid = computeControlVolumeForceWorldFrom(
+                s_workerState.rho, s_workerState.ux, s_workerState.uy, s_workerState.uz,
+                s_workerState.step, s_workerState.avgRho, &s_workerState.cvForceN);
+            s_workerState.valid = true;
+
+            LBMFieldState snap;
+            snap.rho = s_workerState.rho;
+            snap.ux = s_workerState.ux;
+            snap.uy = s_workerState.uy;
+            snap.uz = s_workerState.uz;
+            snap.uxW = s_workerState.uxW;
+            snap.uyW = s_workerState.uyW;
+            snap.uzW = s_workerState.uzW;
+            snap.pressure = s_workerState.pressure;
+            snap.vort = s_workerState.vort;
+            snap.qCrit = s_workerState.qCrit;
+            snap.tkeField = s_workerState.tkeField;
+            snap.strain = s_workerState.strain;
+            snap.step = s_workerState.step;
+            snap.avgRho = s_workerState.avgRho;
+            snap.avgKE = s_workerState.avgKE;
+            snap.maxVelLB = s_workerState.maxVelLB;
+            snap.maxVelWorld = s_workerState.maxVelWorld;
+            snap.tke = s_workerState.tke;
+            snap.convergence = s_workerState.convergence;
+            snap.converged = s_workerState.converged;
+            snap.pMin = s_workerState.pMin;
+            snap.pMax = s_workerState.pMax;
+            snap.resRho = s_workerState.resRho;
+            snap.resU = s_workerState.resU;
+            snap.timeMs = s_workerState.timeMs;
+            snap.maxNuTRatio = s_workerState.maxNuTRatio;
+            snap.lastEnstrophy = s_workerState.lastEnstrophy;
+            snap.lastResidualU = s_workerState.lastResidualU;
+            snap.negPops = s_workerState.negPops;
+            snap.badPops = s_workerState.badPops;
+            snap.rhoOut = s_workerState.rhoOut;
+            snap.rhoNan = s_workerState.rhoNan;
+            snap.uLim = s_workerState.uLim;
+            snap.pNan = s_workerState.pNan;
+            snap.cvValid = s_workerState.cvValid;
+            snap.cvForceN = s_workerState.cvForceN;
+            snap.valid = true;
+            {
+                std::lock_guard<std::mutex> lk(s_snapMtx);
+                std::swap(s_readySnap, snap);
+            }
+        }
+        s_asyncRunning.store(false);
+    });
+}
+
 void updateLBM(float deltaTime, int forceSteps) {
-    if (!lbmParams.enabled) return;
+    if (!lbmParams.enabled) {
+        if (s_asyncThread.joinable()) lbmStopAsyncWorker();
+        return;
+    }
     if (!lbmInitialized) { initLBM(); return; }
-    // v1.34.0 — домен намеренно больше воксельного бокса (см. initLBM), поэтому
-    // сравнение lbmNx с g_voxNx перезапускало бы решатель каждый кадр. Следим
-    // за боксом самой модели: его изменение и есть повод для переинициализации.
+
+    // Синхронизируем готовый снимок от фонового потока LBM (O(1) swap, < 0.01 мс)
+    if (s_asyncThread.joinable()) {
+        LBMFieldState snap;
+        {
+            std::lock_guard<std::mutex> lk(s_snapMtx);
+            if (s_readySnap.valid) std::swap(snap, s_readySnap);
+        }
+        if (snap.valid) applyFieldBuffersToGlobals(snap);
+    }
+
+    // Проверяем изменение геометрии, земли или параметров потока — живая реакция без ручного сброса
     {
         const bool haveBody = !(g_voxelData.empty() || g_voxNx <= 0 || g_voxNy <= 0 || g_voxNz <= 0);
         bool changed = false;
@@ -2908,20 +3240,36 @@ void updateLBM(float deltaTime, int forceSteps) {
                       std::fabs(sBodyMax[1] - g_voxMaxY) > 1e-4f ||
                       std::fabs(sBodyMax[2] - g_voxMaxZ) > 1e-4f;
         }
-        if (changed) {
-            std::cout << "[LBM] Voxel grid changed, reinit" << std::endl;
-            DBG_PHYS("LBM: воксельная сетка изменилась (%dx%dx%d -> %dx%dx%d), переустановка решателя",
-                     sBodyN[0], sBodyN[1], sBodyN[2], g_voxNx, g_voxNy, g_voxNz);
+        const bool groundChanged = (sInitGroundEn != aeroGroundEffect) ||
+                                   (std::fabs(sInitGroundH - aeroGroundHeight) > 1e-4f) ||
+                                   (sInitUseGround != lbmParams.useGround) ||
+                                   (std::fabs(sInitGroundHeight - lbmParams.groundHeight) > 1e-4f);
+        int curAx, curSgn;
+        glm::vec3 curFd;
+        computeFlowAxis(curAx, curSgn, curFd);
+        const float speedTol = std::max(0.15f, 0.025f * std::max(flowSpeed, sInitFlowSpeed));
+        const bool flowChanged = (curAx != sInitFlowAxis) ||
+                                 (curSgn != sInitFlowSign) ||
+                                 (std::fabs(flowAzimuth - sInitAz) > 2.0f) ||
+                                 (std::fabs(flowElevation - sInitEl) > 2.0f) ||
+                                 (std::fabs(flowSpeed - sInitFlowSpeed) > speedTol) ||
+                                 (std::fabs(airDensity - sInitAirDensity) > 1e-4f);
+        if (changed || groundChanged || flowChanged) {
+            if (changed) {
+                std::cout << "[LBM] Voxel grid changed, reinit" << std::endl;
+                DBG_PHYS("LBM: воксельная сетка изменилась (%dx%dx%d -> %dx%dx%d), переустановка решателя",
+                         sBodyN[0], sBodyN[1], sBodyN[2], g_voxNx, g_voxNy, g_voxNz);
+            } else {
+                DBG_PHYS("LBM: изменились параметры потока/земли (V=%.2f, az=%.1f, el=%.1f, ground=%d), переинициализация",
+                         flowSpeed, flowAzimuth, flowElevation, (aeroGroundEffect || lbmParams.useGround) ? 1 : 0);
+            }
             initLBM();
             return;
         }
     }
+
     int steps;
     if (forceSteps >= 0) {
-        // v1.29.0 — число шагов пришло из тактового генератора: оно посчитано по
-        // модельному времени, поэтому результат больше не зависит от герцовки
-        // монитора и от просадок кадров. 0 — законный ответ: за этот кадр
-        // модельное время ещё не накопилось на целый шаг решётки.
         steps = forceSteps;
         if (steps > 64) steps = 64;
     } else {
@@ -2930,12 +3278,33 @@ void updateLBM(float deltaTime, int forceSteps) {
         if (steps > 50) steps = 50;
         if (deltaTime > 0.02f) steps = std::min(steps*2, 50);
     }
+
+    const bool useAsync = aeroAsyncLBM && !thermalParams.enabled && !g_isLiteMode;
+    if (!useAsync && s_asyncThread.joinable()) {
+        lbmStopAsyncWorker();
+    }
     if (steps <= 0) return;
 
-    // Интерактивный бюджет кадра (~28 мс): на крупной сетке (1M+ ячеек на CPU)
-    // 64 шага подряд занимали бы десятки секунд на кадр, вешая UI и вызывая
-    // 100% загрузку CPU / таймаут ОС. Первый шаг после initLBM() измеряет цену
-    // одного шага, далее число шагов за кадр подстраивается под бюджет (минимум 1).
+    if (useAsync) {
+        // Если пользователь поменял настройки оператора LBM на лету — безопасно синхронизируем их
+        static LBMParams s_lastAsyncCfg{};
+        static bool s_hasLastAsyncCfg = false;
+        if (s_asyncThread.joinable() && s_hasLastAsyncCfg &&
+            std::memcmp(&s_lastAsyncCfg, &lbmParams, sizeof(LBMParams)) != 0) {
+            lbmStopAsyncWorker();
+        }
+        s_lastAsyncCfg = lbmParams;
+        s_hasLastAsyncCfg = true;
+
+        lbmStartAsyncWorkerIfNeeded();
+        {
+            std::lock_guard<std::mutex> lk(s_asyncMtx);
+            s_asyncPendingSteps = std::min(48, s_asyncPendingSteps + steps);
+        }
+        s_asyncCV.notify_one();
+        return;
+    }
+
     static float s_emaMsPerStep = -1.0f;
     static unsigned int s_pacedInitStamp = 0;
     const unsigned int curStamp = ((unsigned int)lbmNx * 73856093u) ^
@@ -3190,16 +3559,20 @@ float getLBMStrainWorld(const glm::vec3& worldPos) {
 }
 
 void computeLBMVorticityAndQ() {
+    computeLBMVorticityAndQImpl(nullptr);
+}
+
+static void computeLBMVorticityAndQImpl(LBMFieldState* st) {
     if (!lbmInitialized) return;
     int total = lbmNx * lbmNy * lbmNz;
     if (total <= 0) return;
     const int Nx = lbmNx, Ny = lbmNy, Nz = lbmNz;
-    const float* uxW = lbmUxWorld.data();
-    const float* uyW = lbmUyWorld.data();
-    const float* uzW = lbmUzWorld.data();
-    float* vortPtr = lbmVorticityMag.data();
-    float* qPtr = lbmQCriterion.data();
-    float* strainPtr = lbmStrainMag.data();
+    const float* uxW = (st ? st->uxW : lbmUxWorld).data();
+    const float* uyW = (st ? st->uyW : lbmUyWorld).data();
+    const float* uzW = (st ? st->uzW : lbmUzWorld).data();
+    float* vortPtr   = (st ? st->vort     : lbmVorticityMag).data();
+    float* qPtr      = (st ? st->qCrit    : lbmQCriterion).data();
+    float* strainPtr = (st ? st->strain   : lbmStrainMag).data();
     // ИСПРАВЛЕНО: здесь брался ещё и float* tkePtr = lbmTKEField.data(), и в конце
     // цикла постобработка писала в него
     //     tke = 0.5f*vortMag*vortMag*0.01f + S2*0.005f;   if (tke > 10) tke = 10;
@@ -3445,6 +3818,112 @@ float lbmProjectedAreaCells(int axis) {
 void computeLBMForcesFromLBM() {
     lbmReynolds = computeLBMRe();
     aeroReNumber = lbmReynolds;
+}
+
+static bool computeControlVolumeForceWorldFrom(
+    const std::vector<float>& rhoVec,
+    const std::vector<float>& uxVec,
+    const std::vector<float>& uyVec,
+    const std::vector<float>& uzVec,
+    int step, float avgRho, glm::vec3* outForceN)
+{
+    if (!outForceN || !lbmInitialized) return false;
+    *outForceN = glm::vec3(0.0f);
+    if (step < 80) return false;
+    if (lbmParams.useGround || aeroGroundEffect) return false;
+    if (lbmBlockageRatio > 0.22f) return false;
+    if (!std::isfinite(avgRho) || std::fabs(avgRho - 1.0f) > 0.05f) return false;
+    if (lbmNx < 8 || lbmNy < 8 || lbmNz < 8) return false;
+    const size_t need = (size_t)lbmNx * (size_t)lbmNy * (size_t)lbmNz;
+    if (rhoVec.size() != need || uxVec.size() != need || uyVec.size() != need || uzVec.size() != need ||
+        lbmIsSolid.size() != need || lbmIsGround.size() != need)
+        return false;
+
+    int sx0 = lbmNx, sx1 = -1, sy0 = lbmNy, sy1 = -1, sz0 = lbmNz, sz1 = -1;
+    const char* solid = lbmIsSolid.data();
+    const char* ground = lbmIsGround.data();
+    for (int z = 0; z < lbmNz; ++z) {
+        for (int y = 0; y < lbmNy; ++y) {
+            const int row = (z * lbmNy + y) * lbmNx;
+            for (int x = 0; x < lbmNx; ++x) {
+                if (!solid[row + x]) continue;
+                if (x < sx0) sx0 = x;
+                if (x > sx1) sx1 = x;
+                if (y < sy0) sy0 = y;
+                if (y > sy1) sy1 = y;
+                if (z < sz0) sz0 = z;
+                if (z > sz1) sz1 = z;
+            }
+        }
+    }
+    if (sx1 < sx0) return false;
+
+    const int margin = 2;
+    const int x0 = sx0 - margin, x1 = sx1 + margin;
+    const int y0 = sy0 - margin, y1 = sy1 + margin;
+    const int z0 = sz0 - margin, z1 = sz1 + margin;
+    if (x0 < 1 || x1 > lbmNx - 2 || y0 < 1 || y1 > lbmNy - 2 || z0 < 1 || z1 > lbmNz - 2)
+        return false;
+
+    const float areaX = lbmCellSizeY * lbmCellSizeZ;
+    const float areaY = lbmCellSizeX * lbmCellSizeZ;
+    const float areaZ = lbmCellSizeX * lbmCellSizeY;
+
+    double fx = 0.0, fy = 0.0, fz = 0.0;
+    bool hitSolid = false;
+    auto addFace = [&](int cell, float nx, float ny, float nz, float faceArea) {
+        if (solid[cell] || ground[cell]) { hitSolid = true; return; }
+        const float r = rhoVec[cell];
+        const float ux = uxVec[cell], uy = uyVec[cell], uz = uzVec[cell];
+        if (!std::isfinite(r) || !std::isfinite(ux) || !std::isfinite(uy) || !std::isfinite(uz)) return;
+        const float p = (1.0f / 3.0f) * (r - 1.0f);
+        const float un = ux * nx + uy * ny + uz * nz;
+        fx += (double)(p * nx + r * ux * un) * (double)faceArea;
+        fy += (double)(p * ny + r * uy * un) * (double)faceArea;
+        fz += (double)(p * nz + r * uz * un) * (double)faceArea;
+    };
+
+    for (int z = z0; z <= z1 && !hitSolid; ++z)
+        for (int y = y0; y <= y1 && !hitSolid; ++y) {
+            addFace((z * lbmNy + y) * lbmNx + x0, -1.0f, 0.0f, 0.0f, areaX);
+            addFace((z * lbmNy + y) * lbmNx + x1, +1.0f, 0.0f, 0.0f, areaX);
+        }
+    for (int z = z0; z <= z1 && !hitSolid; ++z)
+        for (int x = x0; x <= x1 && !hitSolid; ++x) {
+            addFace((z * lbmNy + y0) * lbmNx + x, 0.0f, -1.0f, 0.0f, areaY);
+            addFace((z * lbmNy + y1) * lbmNx + x, 0.0f, +1.0f, 0.0f, areaY);
+        }
+    for (int y = y0; y <= y1 && !hitSolid; ++y)
+        for (int x = x0; x <= x1 && !hitSolid; ++x) {
+            addFace((z0 * lbmNy + y) * lbmNx + x, 0.0f, 0.0f, -1.0f, areaZ);
+            addFace((z1 * lbmNy + y) * lbmNx + x, 0.0f, 0.0f, +1.0f, areaZ);
+        }
+    if (hitSolid) return false;
+
+    float inUx, inUy, inUz;
+    computeInletVelocityLB(inUx, inUy, inUz);
+    float U0 = std::sqrt(inUx * inUx + inUy * inUy + inUz * inUz);
+    if (!std::isfinite(U0) || U0 < 1e-6f) U0 = 0.08f;
+    float velScale = flowSpeed / U0;
+    if (!std::isfinite(velScale) || velScale > 1000.0f) velScale = 20.0f;
+    if (velScale < 0.01f) velScale = 0.01f;
+
+    const float rhoPhys = (std::isfinite(airDensity) && airDensity > 0.01f) ? airDensity : 1.225f;
+    const float fScale = rhoPhys * velScale * velScale;
+    glm::vec3 res((float)(-fx) * fScale, (float)(-fy) * fScale, (float)(-fz) * fScale);
+    if (!std::isfinite(res.x) || !std::isfinite(res.y) || !std::isfinite(res.z)) return false;
+    *outForceN = res;
+    return true;
+}
+
+bool lbmControlVolumeForceWorld(glm::vec3* outForceN) {
+    if (!outForceN || !lbmInitialized) return false;
+    if (s_cachedCVValid) {
+        *outForceN = s_cachedCVForceN;
+        return true;
+    }
+    return computeControlVolumeForceWorldFrom(
+        lbmRho, lbmUx, lbmUy, lbmUz, lbmCurrentStep, lbmAvgRho, outForceN);
 }
 
 bool lbmValidateInitialization() {

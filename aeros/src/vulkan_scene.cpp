@@ -13,6 +13,7 @@
 #include "flow_params.h"
 #include "forces.h"
 #include "lbm.h"
+#include "interesting.h"
 #include "scene_geometry.h"
 #include "vulkan_renderer.h"
 
@@ -197,6 +198,28 @@ void buildVulkanScene(IRenderer* renderer, const VulkanSceneFrame& frame) {
         if (!arrows.empty())
             renderer->sceneLines(arrows.data(), (int)(arrows.size() / 6), glm::vec3(1.0f), 1.0f, 3.0f,
                                  frame.model);
+    }
+
+    if (aeroVolumetricEnabled || aeroShowVortexTubes || aeroShowStreaklines || aeroShowAeroAcoustic) {
+        static std::vector<float> vkSmokePos, vkSmokeCol, vkVortexVerts, vkStreakVerts, vkAcoustPos, vkAcoustCol;
+        buildInterestingRenderBuffers(vkSmokePos, vkSmokeCol, vkVortexVerts, vkStreakVerts, vkAcoustPos, vkAcoustCol);
+        const glm::mat4 worldIdentity(1.0f);
+        if (!vkVortexVerts.empty()) {
+            renderer->sceneLines(vkVortexVerts.data(), (int)(vkVortexVerts.size() / 6), glm::vec3(1.0f),
+                                 glm::clamp(aeroVortexTubeOpacity, 0.1f, 1.0f), 2.5f, worldIdentity);
+        }
+        if (!vkStreakVerts.empty()) {
+            renderer->sceneLines(vkStreakVerts.data(), (int)(vkStreakVerts.size() / 6), glm::vec3(1.0f),
+                                 glm::clamp(aeroStreakOpacity, 0.1f, 1.0f), 2.0f, worldIdentity);
+        }
+        if (!vkSmokePos.empty()) {
+            renderer->sceneParticles(vkSmokePos.data(), vkSmokeCol.data(),
+                                     (int)(vkSmokePos.size() / 3), 6.0f);
+        }
+        if (!vkAcoustPos.empty()) {
+            renderer->sceneParticles(vkAcoustPos.data(), vkAcoustCol.data(),
+                                     (int)(vkAcoustPos.size() / 3), 9.0f);
+        }
     }
 
     renderer->flushScene();

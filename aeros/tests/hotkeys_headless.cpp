@@ -76,6 +76,8 @@ int main(int argc, char** argv) {
         {"E",            "GLFW_KEY_E",            false},
         {"Shift",        "GLFW_KEY_LEFT_SHIFT",   false},
         {"Ctrl (камера)","cameraSpeed *= 5.0f",    false},
+        {"[ / ]",        "GLFW_KEY_LEFT_BRACKET", false},
+        {"Shift+Колесо", "GLFW_KEY_RIGHT_SHIFT",  false},
         {"Ctrl+R",       "GLFW_KEY_R",            false},
         {"F1",           "GLFW_KEY_F1",           false},
         {"F2",           "GLFW_KEY_F2",           false},
